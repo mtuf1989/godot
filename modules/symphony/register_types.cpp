@@ -9,9 +9,15 @@
 #include "nodes/envelopes/symphony_gain.h"
 #include "nodes/envelopes/symphony_adsr.h"
 #include "nodes/math/symphony_math_add.h"
+#include "nodes/io/symphony_graph_input.h"
 #include "nodes/io/symphony_graph_output.h"
+#include "nodes/io/symphony_trigger_input.h"
 
 #include "core/object/class_db.h"
+
+#ifdef TOOLS_ENABLED
+#include "editor/symphony_editor_plugin.h"
+#endif
 
 void initialize_symphony_module(ModuleInitializationLevel p_level) {
 	if (p_level == MODULE_INITIALIZATION_LEVEL_SCENE) {
@@ -23,10 +29,17 @@ void initialize_symphony_module(ModuleInitializationLevel p_level) {
 		SymphonyADSR::register_operator();
 		SymphonyMathAdd::register_operator();
 		SymphonyGraphOutput::register_operator();
+		SymphonyGraphInput::register_operator();
+		SymphonyTriggerInput::register_operator();
 
 		// Register Godot classes
 		GDREGISTER_CLASS(AudioStreamSymphony);
 		GDREGISTER_CLASS(AudioStreamPlaybackSymphony);
+#ifdef TOOLS_ENABLED
+	} else if (p_level == MODULE_INITIALIZATION_LEVEL_EDITOR) {
+		GDREGISTER_CLASS(SymphonyGraphEditor);
+		EditorPlugins::add_by_type<SymphonyEditorPlugin>();
+#endif
 	}
 }
 

@@ -2,13 +2,11 @@
 #include "core/object/class_db.h"
 
 void AudioStreamPlaybackSymphony::_bind_methods() {
-	ClassDB::bind_method(D_METHOD("set_parameter", "name", "value"), &AudioStreamPlaybackSymphony::set_parameter);
 	ClassDB::bind_method(D_METHOD("trigger", "name", "value"), &AudioStreamPlaybackSymphony::trigger, DEFVAL(1.0f));
 }
 
 void AudioStreamPlaybackSymphony::start(double p_from_pos) {
 	active = true;
-	// Check if a graph was pre-loaded via swap_graph before play
 	CompiledGraph *pending = pending_graph.exchange(nullptr, std::memory_order_acquire);
 	if (pending) {
 		if (current_graph) {
@@ -17,6 +15,7 @@ void AudioStreamPlaybackSymphony::start(double p_from_pos) {
 		}
 		current_graph = pending;
 		find_graph_output();
+		rebuild_routing_tables();
 	}
 }
 
@@ -28,6 +27,8 @@ void AudioStreamPlaybackSymphony::stop() {
 		current_graph = nullptr;
 	}
 	graph_output_node = nullptr;
+	parameter_map.clear();
+	trigger_map.clear();
 }
 
 bool AudioStreamPlaybackSymphony::is_playing() const {
@@ -53,17 +54,14 @@ int AudioStreamPlaybackSymphony::mix(AudioFrame *p_buffer, float p_rate_scale, i
 	// Hot-swap check: pick up new graph if available.
 	CompiledGraph *pending = pending_graph.exchange(nullptr, std::memory_order_acquire);
 	if (pending) {
-		// Old graph goes to graveyard (will be freed on main thread).
-		// NOTE Phase 3 limitation: no state migration. New graph starts from silence.
-		// See work_doc/phase4_design_notes.md for future ExportState/ImportState plan.
 		cleanup_graveyard();
 		graveyard = current_graph;
 		current_graph = pending;
 		find_graph_output();
+		rebuild_routing_tables();
 	}
 
 	if (!current_graph || !graph_output_node) {
-		// No graph loaded — output silence
 		for (int i = 0; i < p_frames; i++) {
 			p_buffer[i] = AudioFrame(0, 0);
 		}
@@ -84,22 +82,44 @@ int AudioStreamPlaybackSymphony::mix(AudioFrame *p_buffer, float p_rate_scale, i
 }
 
 void AudioStreamPlaybackSymphony::swap_graph(CompiledGraph *p_graph) {
-	// Store the new graph for the audio thread to pick up.
+	// State migration: export from current graph, import into new graph by matching node IDs.
+	if (current_graph && p_graph) {
+		uint8_t state_buf[256]; // Sufficient for all current operators' state.
+		for (int32_t old_i = 0; old_i < current_graph->operator_count; old_i++) {
+			size_t state_size = current_graph->operators[old_i]->export_state(nullptr, 0);
+			if (state_size == 0 || state_size > sizeof(state_buf)) {
+				continue;
+			}
+			current_graph->operators[old_i]->export_state(state_buf, sizeof(state_buf));
+			int32_t old_id = current_graph->node_ids[old_i];
+			// Find matching node in new graph.
+			for (int32_t new_i = 0; new_i < p_graph->operator_count; new_i++) {
+				if (p_graph->node_ids[new_i] == old_id) {
+					p_graph->operators[new_i]->import_state(state_buf, state_size);
+					break;
+				}
+			}
+		}
+	}
+
 	CompiledGraph *old_pending = pending_graph.exchange(p_graph, std::memory_order_release);
-	// If there was already a pending graph that was never picked up, free it.
 	if (old_pending) {
 		memdelete(old_pending);
 	}
 }
 
-void AudioStreamPlaybackSymphony::set_parameter(const StringName &p_name, float p_value) {
-	// Phase 3 stub: parameter routing not yet implemented.
-	// Will be wired to SafeNumeric slots feeding GraphInput nodes.
+void AudioStreamPlaybackSymphony::set_parameter(const StringName &p_name, const Variant &p_value) {
+	SymphonyGraphInput **ptr = parameter_map.getptr(p_name);
+	if (ptr) {
+		(*ptr)->set_value((float)p_value);
+	}
 }
 
 void AudioStreamPlaybackSymphony::trigger(const StringName &p_name, float p_value) {
-	// Phase 3 stub: trigger routing not yet implemented.
-	// Will queue a TriggerEvent to the appropriate trigger buffer.
+	SymphonyTriggerInput **ptr = trigger_map.getptr(p_name);
+	if (ptr) {
+		(*ptr)->fire(p_value);
+	}
 }
 
 void AudioStreamPlaybackSymphony::cleanup_graveyard() {
@@ -114,12 +134,30 @@ void AudioStreamPlaybackSymphony::find_graph_output() {
 	if (!current_graph) {
 		return;
 	}
-	// Find the GraphOutput operator (last in topological order typically, but search to be safe)
 	for (int32_t i = 0; i < current_graph->operator_count; i++) {
 		SymphonyGraphOutput *out = dynamic_cast<SymphonyGraphOutput *>(current_graph->operators[i]);
 		if (out) {
 			graph_output_node = out;
 			break;
+		}
+	}
+}
+
+void AudioStreamPlaybackSymphony::rebuild_routing_tables() {
+	parameter_map.clear();
+	trigger_map.clear();
+	if (!current_graph) {
+		return;
+	}
+	for (int32_t i = 0; i < current_graph->operator_count; i++) {
+		SymphonyGraphInput *gi = dynamic_cast<SymphonyGraphInput *>(current_graph->operators[i]);
+		if (gi && current_graph->node_names[i] != StringName()) {
+			parameter_map[current_graph->node_names[i]] = gi;
+			continue;
+		}
+		SymphonyTriggerInput *ti = dynamic_cast<SymphonyTriggerInput *>(current_graph->operators[i]);
+		if (ti && current_graph->node_names[i] != StringName()) {
+			trigger_map[current_graph->node_names[i]] = ti;
 		}
 	}
 }

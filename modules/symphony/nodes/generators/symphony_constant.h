@@ -28,6 +28,7 @@ public:
 		desc.type_name = "Constant";
 		// No inputs
 		desc.outputs.push_back({ "output", SymphonyPinType::AUDIO, false });
+		desc.params.push_back({ "value", 440.0f, -10000.0f, 10000.0f, 1.0f });
 		desc.state_size = sizeof(SymphonyConstant);
 		desc.state_align = alignof(SymphonyConstant);
 		desc.create_fn = &SymphonyConstant::create;

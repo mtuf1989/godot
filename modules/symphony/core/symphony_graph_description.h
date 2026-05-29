@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/math/vector2.h"
 #include "core/string/string_name.h"
 #include "core/templates/hash_map.h"
 #include "core/variant/variant.h"
@@ -9,6 +10,7 @@ struct NodeDesc {
 	int32_t id = -1; // Unique node ID within this graph
 	StringName type_name; // Must match a registered OperatorDescriptor
 	HashMap<StringName, Variant> params; // Operator-specific parameters
+	Vector2 editor_position; // Editor-only: node position on GraphEdit canvas
 };
 
 // Describes a connection between two nodes.

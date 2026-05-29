@@ -97,12 +97,36 @@ public:
 		}
 	}
 
+	virtual size_t export_state(uint8_t *p_buffer, size_t p_max_size) const override {
+		constexpr size_t needed = sizeof(State) + sizeof(float);
+		if (!p_buffer) {
+			return needed;
+		}
+		if (p_max_size >= needed) {
+			memcpy(p_buffer, &state, sizeof(State));
+			memcpy(p_buffer + sizeof(State), &envelope_value, sizeof(float));
+		}
+		return needed;
+	}
+
+	virtual void import_state(const uint8_t *p_buffer, size_t p_size) override {
+		constexpr size_t needed = sizeof(State) + sizeof(float);
+		if (p_size >= needed) {
+			memcpy(&state, p_buffer, sizeof(State));
+			memcpy(&envelope_value, p_buffer + sizeof(State), sizeof(float));
+		}
+	}
+
 	static void register_operator() {
 		OperatorDescriptor desc;
 		desc.type_name = "ADSR";
 		desc.inputs.push_back({ "input", SymphonyPinType::AUDIO, true });
 		desc.inputs.push_back({ "trigger", SymphonyPinType::TRIGGER, false }); // Optional
 		desc.outputs.push_back({ "output", SymphonyPinType::AUDIO, false });
+		desc.params.push_back({ "attack", 0.005f, 0.0f, 10.0f, 0.001f });
+		desc.params.push_back({ "decay", 0.01f, 0.0f, 10.0f, 0.001f });
+		desc.params.push_back({ "sustain", 0.7f, 0.0f, 1.0f, 0.01f });
+		desc.params.push_back({ "release", 0.02f, 0.0f, 10.0f, 0.001f });
 		desc.state_size = sizeof(SymphonyADSR);
 		desc.state_align = alignof(SymphonyADSR);
 		desc.create_fn = &SymphonyADSR::create;

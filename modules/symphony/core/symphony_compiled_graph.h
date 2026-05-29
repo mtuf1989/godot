@@ -4,6 +4,7 @@
 #include "symphony_operator.h"
 #include "symphony_trigger.h"
 #include "symphony_pin_types.h"
+#include "core/string/string_name.h"
 
 // The output of the GraphCompiler: a ready-to-execute graph.
 // Owns the arena memory. Freed when this struct is destroyed.
@@ -11,6 +12,10 @@ struct CompiledGraph {
 	// Operators in topological execution order (pointers into the arena).
 	SymphonyOperator **operators = nullptr;
 	int32_t operator_count = 0;
+
+	// Parallel arrays: routing names and original node IDs for each operator.
+	StringName *node_names = nullptr;
+	int32_t *node_ids = nullptr;
 
 	// Trigger buffers (one per trigger-type output pin, stored in arena).
 	TriggerBuffer **trigger_buffers = nullptr;
@@ -37,6 +42,14 @@ struct CompiledGraph {
 			operators[i]->~SymphonyOperator();
 		}
 		arena.free();
+		if (node_names) {
+			memdelete_arr(node_names);
+			node_names = nullptr;
+		}
+		if (node_ids) {
+			memdelete_arr(node_ids);
+			node_ids = nullptr;
+		}
 		operators = nullptr;
 		operator_count = 0;
 		trigger_buffers = nullptr;

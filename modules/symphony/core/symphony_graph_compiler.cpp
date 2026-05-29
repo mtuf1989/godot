@@ -229,6 +229,10 @@ GraphCompiler::CompileResult GraphCompiler::compile(const GraphDescription &p_de
 	}
 
 	// --- Phase 7: Create operators and bind pins (in topological order) ---
+	// Allocate node_names and node_ids arrays (heap, freed by CompiledGraph destructor).
+	compiled->node_names = memnew_arr(StringName, node_count);
+	compiled->node_ids = memnew_arr(int32_t, node_count);
+
 	for (int32_t s = 0; s < node_count; s++) {
 		int32_t node_idx = sorted_order[s];
 		const NodeDesc &nd = p_desc.nodes[node_idx];
@@ -242,6 +246,18 @@ GraphCompiler::CompileResult GraphCompiler::compile(const GraphDescription &p_de
 			return result;
 		}
 		compiled->operators[s] = op;
+
+		// Store the node ID for state migration matching.
+		compiled->node_ids[s] = nd.id;
+
+		// Store the routing name for GraphInput/TriggerInput nodes.
+		if (nd.type_name == StringName("GraphInput") && nd.params.has("parameter_name")) {
+			compiled->node_names[s] = StringName(String(nd.params["parameter_name"]));
+		} else if (nd.type_name == StringName("TriggerInput") && nd.params.has("trigger_name")) {
+			compiled->node_names[s] = StringName(String(nd.params["trigger_name"]));
+		} else {
+			compiled->node_names[s] = StringName();
+		}
 
 		// Build input pointer array
 		int32_t input_count = desc->inputs.size();

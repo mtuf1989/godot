@@ -30,6 +30,7 @@ public:
 		desc.type_name = "Gain";
 		desc.inputs.push_back({ "input", SymphonyPinType::AUDIO, true });
 		desc.outputs.push_back({ "output", SymphonyPinType::AUDIO, false });
+		desc.params.push_back({ "gain", 0.5f, 0.0f, 2.0f, 0.01f });
 		desc.state_size = sizeof(SymphonyGain);
 		desc.state_align = alignof(SymphonyGain);
 		desc.create_fn = &SymphonyGain::create;

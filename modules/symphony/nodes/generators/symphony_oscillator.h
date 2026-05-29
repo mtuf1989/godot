@@ -34,11 +34,28 @@ public:
 		}
 	}
 
+	virtual size_t export_state(uint8_t *p_buffer, size_t p_max_size) const override {
+		if (!p_buffer) {
+			return sizeof(float);
+		}
+		if (p_max_size >= sizeof(float)) {
+			memcpy(p_buffer, &phase, sizeof(float));
+		}
+		return sizeof(float);
+	}
+
+	virtual void import_state(const uint8_t *p_buffer, size_t p_size) override {
+		if (p_size >= sizeof(float)) {
+			memcpy(&phase, p_buffer, sizeof(float));
+		}
+	}
+
 	static void register_operator() {
 		OperatorDescriptor desc;
 		desc.type_name = "Oscillator";
 		desc.inputs.push_back({ "frequency", SymphonyPinType::AUDIO, false }); // Optional: uses default_freq if unconnected
 		desc.outputs.push_back({ "output", SymphonyPinType::AUDIO, false });
+		desc.params.push_back({ "frequency", 440.0f, 0.0f, 20000.0f, 1.0f });
 		desc.state_size = sizeof(SymphonyOscillator);
 		desc.state_align = alignof(SymphonyOscillator);
 		desc.create_fn = &SymphonyOscillator::create;

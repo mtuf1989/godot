@@ -1,14 +1,200 @@
 #include "audio_stream_symphony.h"
 #include "audio_stream_playback_symphony.h"
 #include "../core/symphony_graph_compiler.h"
+#include "../core/symphony_operator_registry.h"
 
 #include "core/object/class_db.h"
+#include "core/io/resource.h"
 
 void AudioStreamSymphony::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_mix_rate", "rate"), &AudioStreamSymphony::set_mix_rate);
 	ClassDB::bind_method(D_METHOD("get_mix_rate"), &AudioStreamSymphony::get_mix_rate);
 	ClassDB::bind_method(D_METHOD("load_test_graph"), &AudioStreamSymphony::load_test_graph);
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "mix_rate", PROPERTY_HINT_RANGE, "22050,96000,1"), "set_mix_rate", "get_mix_rate");
+}
+
+// --- Resource serialization ---
+
+void AudioStreamSymphony::_get_property_list(List<PropertyInfo> *p_list) const {
+	// node_count — so the loader knows how many nodes to expect
+	p_list->push_back(PropertyInfo(Variant::INT, "graph/node_count", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_STORAGE));
+
+	for (int32_t i = 0; i < graph_desc.nodes.size(); i++) {
+		String prefix = vformat("graph/nodes/%d/", i);
+		p_list->push_back(PropertyInfo(Variant::INT, prefix + "id", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_STORAGE));
+		p_list->push_back(PropertyInfo(Variant::STRING_NAME, prefix + "type", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_STORAGE));
+		p_list->push_back(PropertyInfo(Variant::VECTOR2, prefix + "position", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_STORAGE));
+		p_list->push_back(PropertyInfo(Variant::DICTIONARY, prefix + "params", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_STORAGE));
+	}
+
+	// connections
+	p_list->push_back(PropertyInfo(Variant::INT, "graph/connection_count", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_STORAGE));
+
+	for (int32_t i = 0; i < graph_desc.connections.size(); i++) {
+		String prefix = vformat("graph/connections/%d/", i);
+		p_list->push_back(PropertyInfo(Variant::INT, prefix + "from_node", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_STORAGE));
+		p_list->push_back(PropertyInfo(Variant::INT, prefix + "from_pin", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_STORAGE));
+		p_list->push_back(PropertyInfo(Variant::INT, prefix + "to_node", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_STORAGE));
+		p_list->push_back(PropertyInfo(Variant::INT, prefix + "to_pin", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_STORAGE));
+	}
+}
+
+bool AudioStreamSymphony::_get(const StringName &p_name, Variant &r_ret) const {
+	String name = String(p_name);
+
+	if (name == "graph/node_count") {
+		r_ret = graph_desc.nodes.size();
+		return true;
+	}
+	if (name == "graph/connection_count") {
+		r_ret = graph_desc.connections.size();
+		return true;
+	}
+
+	if (name.begins_with("graph/nodes/")) {
+		// Parse: graph/nodes/<idx>/<field>
+		String rest = name.substr(String("graph/nodes/").length());
+		int slash = rest.find("/");
+		if (slash < 0) {
+			return false;
+		}
+		int idx = rest.substr(0, slash).to_int();
+		String field = rest.substr(slash + 1);
+
+		if (idx < 0 || idx >= graph_desc.nodes.size()) {
+			return false;
+		}
+		const NodeDesc &nd = graph_desc.nodes[idx];
+
+		if (field == "id") {
+			r_ret = nd.id;
+			return true;
+		} else if (field == "type") {
+			r_ret = nd.type_name;
+			return true;
+		} else if (field == "position") {
+			r_ret = nd.editor_position;
+			return true;
+		} else if (field == "params") {
+			Dictionary d;
+			for (const KeyValue<StringName, Variant> &kv : nd.params) {
+				d[String(kv.key)] = kv.value;
+			}
+			r_ret = d;
+			return true;
+		}
+	}
+
+	if (name.begins_with("graph/connections/")) {
+		String rest = name.substr(String("graph/connections/").length());
+		int slash = rest.find("/");
+		if (slash < 0) {
+			return false;
+		}
+		int idx = rest.substr(0, slash).to_int();
+		String field = rest.substr(slash + 1);
+
+		if (idx < 0 || idx >= graph_desc.connections.size()) {
+			return false;
+		}
+		const ConnectionDesc &conn = graph_desc.connections[idx];
+
+		if (field == "from_node") {
+			r_ret = conn.from_node;
+			return true;
+		} else if (field == "from_pin") {
+			r_ret = conn.from_pin;
+			return true;
+		} else if (field == "to_node") {
+			r_ret = conn.to_node;
+			return true;
+		} else if (field == "to_pin") {
+			r_ret = conn.to_pin;
+			return true;
+		}
+	}
+
+	return false;
+}
+
+bool AudioStreamSymphony::_set(const StringName &p_name, const Variant &p_value) {
+	String name = String(p_name);
+
+	if (name == "graph/node_count") {
+		int count = p_value;
+		graph_desc.nodes.resize(count);
+		return true;
+	}
+	if (name == "graph/connection_count") {
+		int count = p_value;
+		graph_desc.connections.resize(count);
+		return true;
+	}
+
+	if (name.begins_with("graph/nodes/")) {
+		String rest = name.substr(String("graph/nodes/").length());
+		int slash = rest.find("/");
+		if (slash < 0) {
+			return false;
+		}
+		int idx = rest.substr(0, slash).to_int();
+		String field = rest.substr(slash + 1);
+
+		if (idx < 0 || idx >= graph_desc.nodes.size()) {
+			return false;
+		}
+		NodeDesc &nd = graph_desc.nodes.write[idx];
+
+		if (field == "id") {
+			nd.id = p_value;
+			return true;
+		} else if (field == "type") {
+			nd.type_name = p_value;
+			return true;
+		} else if (field == "position") {
+			nd.editor_position = p_value;
+			return true;
+		} else if (field == "params") {
+			Dictionary d = p_value;
+			nd.params.clear();
+			LocalVector<Variant> keys = d.get_key_list();
+			for (const Variant &key : keys) {
+				nd.params[StringName(String(key))] = d[key];
+			}
+			return true;
+		}
+	}
+
+	if (name.begins_with("graph/connections/")) {
+		String rest = name.substr(String("graph/connections/").length());
+		int slash = rest.find("/");
+		if (slash < 0) {
+			return false;
+		}
+		int idx = rest.substr(0, slash).to_int();
+		String field = rest.substr(slash + 1);
+
+		if (idx < 0 || idx >= graph_desc.connections.size()) {
+			return false;
+		}
+		ConnectionDesc &conn = graph_desc.connections.write[idx];
+
+		if (field == "from_node") {
+			conn.from_node = p_value;
+			return true;
+		} else if (field == "from_pin") {
+			conn.from_pin = p_value;
+			return true;
+		} else if (field == "to_node") {
+			conn.to_node = p_value;
+			return true;
+		} else if (field == "to_pin") {
+			conn.to_pin = p_value;
+			return true;
+		}
+	}
+
+	return false;
 }
 
 void AudioStreamSymphony::set_mix_rate(float p_mix_rate) {

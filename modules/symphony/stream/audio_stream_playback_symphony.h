@@ -5,6 +5,8 @@
 #include "../core/symphony_pin_types.h"
 #include "../core/symphony_compiled_graph.h"
 #include "../nodes/io/symphony_graph_output.h"
+#include "../nodes/io/symphony_graph_input.h"
+#include "../nodes/io/symphony_trigger_input.h"
 
 #include <atomic>
 
@@ -23,14 +25,18 @@ private:
 	std::atomic<CompiledGraph *> pending_graph{ nullptr };
 
 	// Graveyard: old graphs waiting to be freed on the main thread.
-	// Simple approach: store one pointer, freed next time we swap or stop.
 	CompiledGraph *graveyard = nullptr;
 
-	// Pointer to the GraphOutput operator in the current graph (for set_output calls).
+	// Pointer to the GraphOutput operator in the current graph.
 	SymphonyGraphOutput *graph_output_node = nullptr;
+
+	// Parameter/trigger routing tables (rebuilt on graph swap).
+	HashMap<StringName, SymphonyGraphInput *> parameter_map;
+	HashMap<StringName, SymphonyTriggerInput *> trigger_map;
 
 	void cleanup_graveyard();
 	void find_graph_output();
+	void rebuild_routing_tables();
 
 protected:
 	static void _bind_methods();
@@ -45,11 +51,10 @@ public:
 	virtual int mix(AudioFrame *p_buffer, float p_rate_scale, int p_frames) override;
 
 	// Hot-swap: publish a new compiled graph (called from main thread).
-	// Takes ownership of p_graph. The old graph will be freed on the main thread.
 	void swap_graph(CompiledGraph *p_graph);
 
-	// GDScript API stubs (Phase 3: signatures only, minimal implementation)
-	void set_parameter(const StringName &p_name, float p_value);
+	// GDScript API — overrides AudioStreamPlayback virtuals.
+	virtual void set_parameter(const StringName &p_name, const Variant &p_value) override;
 	void trigger(const StringName &p_name, float p_value = 1.0f);
 
 	~AudioStreamPlaybackSymphony();

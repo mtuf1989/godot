@@ -15,6 +15,15 @@ struct PinDescriptor {
 	bool required = true; // If true, compiler errors when unconnected (inputs only)
 };
 
+// Describes an editable parameter on an operator type.
+struct ParamDescriptor {
+	StringName name;
+	float default_value = 0.0f;
+	float min_value = -10000.0f;
+	float max_value = 10000.0f;
+	float step = 0.01f;
+};
+
 // Function signature for creating an operator instance via placement new in the arena.
 // Returns the operator pointer (which lives inside the arena).
 using OperatorCreateFunc = SymphonyOperator *(*)(ArenaAllocator &p_arena, const HashMap<StringName, Variant> &p_params, float p_mix_rate);
@@ -24,6 +33,7 @@ struct OperatorDescriptor {
 	StringName type_name;
 	Vector<PinDescriptor> inputs;
 	Vector<PinDescriptor> outputs;
+	Vector<ParamDescriptor> params; // Editable parameters exposed in the editor
 	size_t state_size = 0; // sizeof(ConcreteOperator)
 	size_t state_align = 8; // alignof(ConcreteOperator)
 	OperatorCreateFunc create_fn = nullptr;
