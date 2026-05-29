@@ -23,6 +23,7 @@ private:
 	GraphEdit *graph_edit = nullptr;
 	MenuButton *add_node_menu = nullptr;
 	Button *preview_button = nullptr;
+	Button *save_button = nullptr;
 	AudioStreamPlayer *preview_player = nullptr;
 	bool previewing = false;
 
@@ -50,6 +51,7 @@ private:
 	void _on_delete_nodes_request(const TypedArray<StringName> &p_nodes);
 	void _on_node_position_changed(const StringName &p_node);
 	void _on_preview_pressed();
+	void _on_save_pressed();
 	void _on_param_changed(double p_value, int32_t p_node_id, const StringName &p_param_name);
 
 	void _sync_graph_description();

@@ -1,101 +1,130 @@
 # Phase 4.5 Design Notes — Editor Polish & Remaining Nodes
 
-## Context
+## Status (as of 2026-05-29)
 
-Phase 4 (core) delivers: basic graph editing, serialization (.tres), connection validation, live preview, GDScript API (set_parameter/trigger), and state migration for hot-swap. Phase 4.5 completes the editor experience and adds the remaining v1 node library.
+### Completed
+- **4.5B (Node Library)** — All 13 new nodes implemented and registered. Total: 20 operators.
+- **Float→Audio implicit conversion** — Compiler auto-promotes Float→Audio connections.
+- **Categorized sub-menus** — Add Node menu grouped by category.
+- **Save button** — Added to toolbar, uses `save_resource_as()` for first save, `ResourceSaver::save()` for subsequent.
+- **Parameter editing** — SpinBox controls on each GraphNode for inline param editing.
 
----
-
-## 4.5A: Editor Polish Features
-
-These features were scoped out of Phase 4 core to validate the basic edit→save→play loop first.
-
-### Undo/Redo
-- Integrate with Godot's `EditorUndoRedoManager`
-- Every graph mutation (add node, delete node, connect, disconnect, change param) must be undoable
-- Implementation: each action stores a forward/backward lambda or uses Godot's `do_method`/`undo_method` pattern
-
-### Copy/Paste/Duplicate
-- Selection-based: user selects a set of nodes, copies them
-- Paste creates new nodes with new IDs, preserving internal connections within the selection
-- External connections (wires going outside the selection) are dropped on paste
-- Duplicate = copy + paste in place with offset
-
-### Node Palette Enhancements
-- Categorized tree: Generators, Filters, Envelopes, Math, Timing, I/O
-- Search/filter by name
-- Drag from palette onto canvas to create
-- Right-click context menu on canvas for quick node creation
-
-### Inspector Integration
-- Selecting a node in GraphEdit shows its parameters in Godot's Inspector panel
-- Parameters editable via Inspector (alternative to inline editing on the node)
-- Changes in Inspector trigger graph recompile for live preview
-
-### Wire Visual Polish
-- Type-based color coding:
-  - Audio = thick blue
-  - Float = thin green
-  - Int = thin yellow
-  - Bool = thin white
-  - Trigger = dashed orange
-- Animated flow direction indicator (optional, low priority)
+### Remaining: 4.5A (Editor Polish)
 
 ---
 
-## 4.5B: Remaining V1 Node Library
+## UI Bugs to Fix (from user feedback)
 
-Phase 4 ships with the 6 existing operators: Oscillator, Constant, Gain, ADSR, MathAdd, GraphOutput.
+### Bug 1: "â" character in pin labels
+The `→` (U+2192) arrow between input/output pin names renders as `â` due to font encoding issues. 
 
-Phase 4.5 implements the remaining ~14 nodes to complete the v1 library:
+**Fix:** Don't concatenate input and output labels on the same row. Instead, use separate left-aligned and right-aligned labels. When a slot has both an input and output pin, show the input name left-aligned and output name right-aligned (or just show the input name on the left side and output name on the right side of the node naturally via GraphNode's slot system).
 
-### Generators
-- **Noise** — White and pink noise (linear feedback shift register for white, Voss-McCartney for pink)
-- **WavePlayer** — Plays an `AudioStreamWAV` resource with pitch/speed control. Needs resource reference in params.
-- **LFO** — Sub-audio-rate oscillator (sine/tri/saw/square) outputting a Float pin, not Audio. Rate in Hz.
+**Root cause:** In `_create_graph_node`, the code does:
+```cpp
+text = String(op_desc->inputs[i].name) + "  →  " + String(op_desc->outputs[i].name);
+```
+This should be replaced with proper left/right label separation.
 
-### Filters
-- **Biquad Filter** — LP/HP/BP/Notch with audio-rate cutoff modulation. Robert Bristow-Johnson's cookbook formulas.
-- **One-Pole Filter** — Simple exponential smoothing. Useful for parameter interpolation.
-- **DC Blocker** — High-pass at ~5Hz to remove DC offset.
-- **Saturator** — Soft clip (tanh) and hard clip. Drive parameter.
+### Bug 2: Output pin label alignment
+The "output" text should be right-aligned (flush with the right pin dot), not left-aligned or concatenated with input text. GraphNode supports this via separate left/right child controls or using `set_text_direction`.
 
-### Envelopes & Dynamics
-- **Compressor** — RMS-based dynamic range compression. Threshold, ratio, attack, release.
+**Fix:** Use an HBoxContainer with a left Label (input name) and a right Label (output name, right-aligned) for slots that have both pins.
 
-### Math & Utility
-- **Mix/Crossfade** — Blend two audio inputs with a float mix parameter (0=A, 1=B).
-- **MapRange** — Remap float from [in_min, in_max] to [out_min, out_max] with optional clamp.
-- **Sample & Hold** — Capture input value on trigger, hold until next trigger.
+### Feature 3: Collapsible parameters (show/hide toggle)
+Add a small button on the GraphNode title bar to collapse/expand the parameter SpinBoxes. When collapsed, only pin slots are visible — makes the node compact. Similar to Unreal Engine Blueprint node collapse.
 
-### Timing & Sequencing
-- **Clock** — Generates periodic triggers at a given BPM. Output is a Trigger pin.
-- **TriggerDelay** — Delays incoming triggers by N samples or milliseconds.
+**Implementation:** Add a `Button` (toggle, small "▼"/"▶" icon) to the title bar. When toggled, hide/show the parameter HBoxContainer rows. Store collapse state in `NodeDesc` (or a separate editor-only map).
 
-### I/O
-- **GraphInput** — Exposes a named parameter to GDScript. Outputs Float or Trigger. (Note: this is implemented in Phase 4 core as part of the GDScript API, but listed here for completeness of the node library.)
+### Feature 4: Comment node (optional, low priority)
+A non-functional node that displays user text on the canvas. Used for documentation/organization.
+
+**Implementation options:**
+- Godot 4.6 has `GraphFrame` (successor to the deprecated `GraphComment`/`VisualShaderNodeComment`). We can use `GraphFrame` directly — it's a built-in GraphEdit feature that groups nodes with a title and description. No custom operator needed.
+- Alternative: A custom "Comment" operator with no pins, just a text param displayed as a Label.
+
+**Recommendation:** Use `GraphFrame` — it's already in Godot 4.6, supports resizing, and groups nodes visually. Just need to add a "Add Comment Frame" button to the toolbar.
+
+---
+
+## 4.5A: Editor Polish Features (Full List)
+
+Priority order:
+
+1. **Fix pin label rendering** (Bug 1 & 2 above)
+2. **Collapsible parameters** (Feature 3)
+3. **Undo/Redo** — Integrate with `EditorUndoRedoManager`
+4. **Comment frames** — Use `GraphFrame` (Feature 4)
+5. **Copy/Paste/Duplicate** — Selection-based node duplication
+6. **Wire visual polish** — Type-based thickness/color already works via slot colors; add line thickness differentiation if possible
+7. **Inspector integration** — Show selected node params in Godot's Inspector panel
 
 ---
 
 ## 4.5C: Sub-Graph (Patch) Support
 
-Deferred from Phase 4 core. Requires:
-
-1. **Patch node type** — A special node in the editor that references another `.tres` Symphony resource.
-2. **Dynamic pin display** — The patch node shows input/output pins matching the referenced sub-graph's GraphInput/GraphOutput nodes.
-3. **Compiler flattening** — At compile time, inline the sub-graph's nodes into the parent graph. Map sub-graph's GraphInput pins to the parent's incoming connections, and sub-graph's GraphOutput to the parent's outgoing connections.
-4. **Editor UX** — Double-click a patch node to open the sub-graph in a new editor tab. Breadcrumb navigation.
-5. **Cycle detection** — Must detect cycles that span across sub-graph boundaries (A references B which references A).
-6. **Resource dependency tracking** — If a sub-graph changes, parent graphs that reference it should recompile.
-
----
-
-## Priority Order
-
-1. **4.5B (Remaining nodes)** — Unblocks real-world graph authoring
-2. **4.5A (Editor polish)** — Undo/redo is highest priority within this group
-3. **4.5C (Sub-graphs)** — Needed for v1 completion but can ship after the above
+Deferred. Requires:
+1. Patch node type referencing another `.tres` Symphony resource
+2. Dynamic pin display matching sub-graph's GraphInput/GraphOutput
+3. Compiler flattening (inline sub-graph nodes into parent)
+4. Editor UX (double-click to open, breadcrumb navigation)
+5. Cross-boundary cycle detection
+6. Resource dependency tracking
 
 ---
 
-*Document created: May 29, 2026*
+## Decisions Made This Session
+
+| Decision | Choice |
+|----------|--------|
+| Float→Audio conversion | Implicit promotion (compiler fills 64-sample buffer from single float) |
+| Biquad cutoff modulation | Per-micro-block coefficient recalculation (not per-sample) |
+| Compressor detection | Peak-based for v1, RMS mode param reserved (needs ring buffer in arena) |
+| LFO output type | Float pin (control-rate), connects to Audio inputs via implicit promotion |
+| Node menu organization | Sub-menus by category |
+| WavePlayer | Deferred to 4.5A (needs resource picker widget, not just SpinBox) |
+
+---
+
+## Technical Notes for Next Session
+
+### Current file structure:
+```
+modules/symphony/
+├── editor/symphony_editor_plugin.{h,cpp}  — GraphEdit editor, save, preview
+├── core/                                   — Compiler, registry, arena, types
+├── stream/                                 — AudioStreamSymphony, Playback
+├── nodes/generators/                       — Oscillator, Constant, Noise, LFO
+├── nodes/filters/                          — BiquadFilter, OnePole, DCBlocker, Saturator
+├── nodes/envelopes/                        — Gain, ADSR, Compressor
+├── nodes/math/                             — MathAdd, Mix, MapRange, SampleHold
+├── nodes/timing/                           — Clock, TriggerDelay
+└── nodes/io/                               — GraphInput, GraphOutput, TriggerInput
+```
+
+### Build command:
+```bash
+scons platform=macos target=editor rendering_driver=opengl3 vulkan=no -j$(sysctl -n hw.ncpu)
+```
+
+### Key APIs used:
+- `GraphEdit::get_connections()` returns `Vector<Ref<GraphEdit::Connection>>`
+- `GraphNode::set_slot(idx, left_enable, left_type, left_color, right_enable, right_type, right_color)`
+- `EditorPlugin::add_control_to_bottom_panel()`, `make_bottom_panel_item_visible()`, `hide_bottom_panel()`
+- `EditorNode::get_singleton()->save_resource_as(resource)`
+- `ResourceSaver::save(resource, path)`
+- `Dictionary::get_key_list()` returns `LocalVector<Variant>` (Godot 4.6)
+- `AudioStreamPlayback::set_parameter(StringName, Variant)` — base class virtual we override
+
+### Compressor RMS mode (future implementation notes):
+When mode=1 (RMS), the compressor needs:
+- A ring buffer of `window_size` floats (e.g., 480 floats for 10ms at 48kHz)
+- Running sum of squared samples
+- `sqrt(sum / window_size)` per sample for the RMS level
+- The ring buffer must be pre-allocated in the arena during compilation
+- The `create_fn` should check the mode param and allocate accordingly
+- Arena size calculation in the compiler needs to account for this extra allocation
+
+---
+
+*Last updated: May 29, 2026*

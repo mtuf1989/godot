@@ -1,5 +1,7 @@
 #include "symphony_editor_plugin.h"
 
+#include "core/io/resource_saver.h"
+#include "editor/editor_node.h"
 #include "scene/gui/label.h"
 
 // --- SymphonyGraphEditor ---
@@ -24,6 +26,11 @@ SymphonyGraphEditor::SymphonyGraphEditor() {
 	preview_button->set_toggle_mode(true);
 	preview_button->connect("pressed", callable_mp(this, &SymphonyGraphEditor::_on_preview_pressed));
 	toolbar->add_child(preview_button);
+
+	save_button = memnew(Button);
+	save_button->set_text("Save");
+	save_button->connect("pressed", callable_mp(this, &SymphonyGraphEditor::_on_save_pressed));
+	toolbar->add_child(save_button);
 
 	// GraphEdit
 	graph_edit = memnew(GraphEdit);
@@ -376,6 +383,22 @@ void SymphonyGraphEditor::_on_param_changed(double p_value, int32_t p_node_id, c
 
 	stream->emit_changed();
 	_recompile_and_preview();
+}
+
+void SymphonyGraphEditor::_on_save_pressed() {
+	if (!stream.is_valid()) {
+		return;
+	}
+
+	_sync_graph_description();
+
+	String path = stream->get_path();
+	if (path.is_empty()) {
+		// Resource has never been saved — open save dialog.
+		EditorNode::get_singleton()->save_resource_as(stream);
+	} else {
+		ResourceSaver::save(stream, path);
+	}
 }
 
 void SymphonyGraphEditor::_on_preview_pressed() {
