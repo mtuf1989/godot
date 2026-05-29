@@ -3,8 +3,10 @@
 #include "servers/audio/audio_stream.h"
 #include "audio_stream_symphony.h"
 #include "../core/symphony_pin_types.h"
+#include "../core/symphony_trigger.h"
 #include "../nodes/generators/symphony_oscillator.h"
 #include "../nodes/envelopes/symphony_gain.h"
+#include "../nodes/envelopes/symphony_adsr.h"
 #include "../nodes/io/symphony_graph_output.h"
 
 class AudioStreamPlaybackSymphony : public AudioStreamPlayback {
@@ -14,14 +16,20 @@ class AudioStreamPlaybackSymphony : public AudioStreamPlayback {
 private:
 	Ref<AudioStreamSymphony> stream;
 	bool active = false;
+	bool first_block = true;
 
-	// Pre-allocated mono buffers (one per operator output)
+	// Pre-allocated mono buffers
 	float osc_buffer[SYMPHONY_MICRO_BLOCK_SIZE] = {};
 	float gain_buffer[SYMPHONY_MICRO_BLOCK_SIZE] = {};
+	float adsr_buffer[SYMPHONY_MICRO_BLOCK_SIZE] = {};
+
+	// Trigger buffer for ADSR
+	TriggerBuffer adsr_trigger;
 
 	// Hardcoded operators
 	SymphonyOscillator oscillator;
 	SymphonyGain gain;
+	SymphonyADSR adsr;
 	SymphonyGraphOutput graph_output;
 
 protected:
