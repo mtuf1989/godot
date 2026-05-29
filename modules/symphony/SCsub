@@ -10,8 +10,10 @@ env_symphony.add_source_files(env.modules_sources, "*.cpp")
 env_symphony.add_source_files(env.modules_sources, "core/*.cpp")
 env_symphony.add_source_files(env.modules_sources, "stream/*.cpp")
 env_symphony.add_source_files(env.modules_sources, "nodes/generators/*.cpp")
+env_symphony.add_source_files(env.modules_sources, "nodes/filters/*.cpp")
 env_symphony.add_source_files(env.modules_sources, "nodes/envelopes/*.cpp")
 env_symphony.add_source_files(env.modules_sources, "nodes/math/*.cpp")
+env_symphony.add_source_files(env.modules_sources, "nodes/timing/*.cpp")
 env_symphony.add_source_files(env.modules_sources, "nodes/io/*.cpp")
 
 if env.editor_build:

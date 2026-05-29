@@ -120,6 +120,7 @@ public:
 	static void register_operator() {
 		OperatorDescriptor desc;
 		desc.type_name = "ADSR";
+		desc.category = "Envelopes";
 		desc.inputs.push_back({ "input", SymphonyPinType::AUDIO, true });
 		desc.inputs.push_back({ "trigger", SymphonyPinType::TRIGGER, false }); // Optional
 		desc.outputs.push_back({ "output", SymphonyPinType::AUDIO, false });

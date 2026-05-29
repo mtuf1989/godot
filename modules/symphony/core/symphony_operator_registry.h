@@ -31,6 +31,7 @@ using OperatorCreateFunc = SymphonyOperator *(*)(ArenaAllocator &p_arena, const 
 // Describes an operator type: its pins, state size, and factory function.
 struct OperatorDescriptor {
 	StringName type_name;
+	String category; // For editor menu grouping (e.g., "Generators", "Filters")
 	Vector<PinDescriptor> inputs;
 	Vector<PinDescriptor> outputs;
 	Vector<ParamDescriptor> params; // Editable parameters exposed in the editor

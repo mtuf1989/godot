@@ -29,6 +29,7 @@ public:
 	static void register_operator() {
 		OperatorDescriptor desc;
 		desc.type_name = "MathAdd";
+		desc.category = "Math";
 		desc.inputs.push_back({ "a", SymphonyPinType::AUDIO, true });
 		desc.inputs.push_back({ "b", SymphonyPinType::AUDIO, true });
 		desc.outputs.push_back({ "output", SymphonyPinType::AUDIO, false });

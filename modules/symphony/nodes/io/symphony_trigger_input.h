@@ -44,6 +44,7 @@ public:
 	static void register_operator() {
 		OperatorDescriptor desc;
 		desc.type_name = "TriggerInput";
+		desc.category = "I/O";
 		desc.outputs.push_back({ "output", SymphonyPinType::TRIGGER, false });
 		desc.state_size = sizeof(SymphonyTriggerInput);
 		desc.state_align = alignof(SymphonyTriggerInput);

@@ -44,6 +44,7 @@ public:
 	static void register_operator() {
 		OperatorDescriptor desc;
 		desc.type_name = "GraphInput";
+		desc.category = "I/O";
 		// No inputs — this is a source node fed from the game thread.
 		desc.outputs.push_back({ "output", SymphonyPinType::FLOAT, false });
 		desc.state_size = sizeof(SymphonyGraphInput);

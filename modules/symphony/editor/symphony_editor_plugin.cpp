@@ -32,10 +32,11 @@ SymphonyGraphEditor::SymphonyGraphEditor() {
 	graph_edit->set_custom_minimum_size(Vector2(0, 300));
 	add_child(graph_edit);
 
-	// Register valid connection types (same type only).
+	// Register valid connection types (same type + Float→Audio promotion).
 	for (int i = 0; i <= SLOT_TRIGGER; i++) {
 		graph_edit->add_valid_connection_type(i, i);
 	}
+	graph_edit->add_valid_connection_type(SLOT_FLOAT, SLOT_AUDIO); // Float→Audio promotion
 
 	graph_edit->connect("connection_request", callable_mp(this, &SymphonyGraphEditor::_on_connection_request));
 	graph_edit->connect("disconnection_request", callable_mp(this, &SymphonyGraphEditor::_on_disconnection_request));
@@ -80,8 +81,28 @@ void SymphonyGraphEditor::_populate_add_menu() {
 
 	Vector<StringName> types;
 	reg->get_registered_types(types);
+
+	// Group by category.
+	HashMap<String, Vector<int>> categories;
 	for (int i = 0; i < types.size(); i++) {
-		popup->add_item(String(types[i]), i);
+		const OperatorDescriptor *desc = reg->find(types[i]);
+		String cat = desc && !desc->category.is_empty() ? desc->category : "Other";
+		if (!categories.has(cat)) {
+			categories[cat] = Vector<int>();
+		}
+		categories[cat].push_back(i);
+	}
+
+	// Create sub-menus for each category.
+	for (const KeyValue<String, Vector<int>> &kv : categories) {
+		PopupMenu *sub = memnew(PopupMenu);
+		sub->set_name(kv.key);
+		for (int idx : kv.value) {
+			sub->add_item(String(types[idx]), idx);
+		}
+		sub->connect("id_pressed", callable_mp(this, &SymphonyGraphEditor::_on_add_node_id_pressed));
+		popup->add_child(sub);
+		popup->add_submenu_item(kv.key, kv.key);
 	}
 }
 
@@ -388,8 +409,6 @@ void SymphonyGraphEditor::_sync_graph_description() {
 			desc.connections.push_back(cd);
 		}
 	}
-
-	print_line(vformat("Symphony: synced %d nodes, %d connections", desc.nodes.size(), desc.connections.size()));
 
 	stream->notify_property_list_changed();
 	stream->emit_changed();

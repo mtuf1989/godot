@@ -71,6 +71,7 @@ GraphCompiler::CompileResult GraphCompiler::compile(const GraphDescription &p_de
 	struct PinSource {
 		int32_t source_node_idx = -1;
 		int32_t source_pin = -1;
+		bool needs_promotion = false; // Float→Audio promotion needed
 	};
 	Vector<Vector<PinSource>> input_sources; // [node_idx][input_pin_idx]
 	input_sources.resize(node_count);
@@ -109,16 +110,19 @@ GraphCompiler::CompileResult GraphCompiler::compile(const GraphDescription &p_de
 			return result;
 		}
 
-		// Type check
+		// Type check (allow Float→Audio implicit promotion)
 		SymphonyPinType out_type = from_desc->outputs[conn.from_pin].type;
 		SymphonyPinType in_type = to_desc->inputs[conn.to_pin].type;
-		if (out_type != in_type) {
+		bool type_ok = (out_type == in_type) ||
+				(out_type == SymphonyPinType::FLOAT && in_type == SymphonyPinType::AUDIO);
+		if (!type_ok) {
 			result.errors.push_back(vformat("Connection %d: type mismatch (output pin type %d != input pin type %d).", c, (int)out_type, (int)in_type));
 			return result;
 		}
 
 		// Record the connection
-		input_sources.write[to_idx].write[conn.to_pin] = { from_idx, conn.from_pin };
+		bool promotion = (out_type == SymphonyPinType::FLOAT && in_type == SymphonyPinType::AUDIO);
+		input_sources.write[to_idx].write[conn.to_pin] = { from_idx, conn.from_pin, promotion };
 
 		// Build adjacency for topological sort
 		adjacency.write[from_idx].push_back(to_idx);
@@ -194,6 +198,19 @@ GraphCompiler::CompileResult GraphCompiler::compile(const GraphDescription &p_de
 	// Space for trigger buffer pointer array
 	arena_size += sizeof(TriggerBuffer *) * total_trigger_buffers + 32;
 
+	// Count Float→Audio promotions needed
+	int32_t total_promotions = 0;
+	for (int32_t i = 0; i < node_count; i++) {
+		for (int32_t p = 0; p < input_sources[i].size(); p++) {
+			if (input_sources[i][p].needs_promotion) {
+				total_promotions++;
+			}
+		}
+	}
+	// Space for promotion buffers (64 floats each) and promotion array
+	arena_size += total_promotions * (sizeof(float) * SYMPHONY_MICRO_BLOCK_SIZE + 32);
+	arena_size += sizeof(CompiledGraph::Promotion) * total_promotions + 32;
+
 	// --- Phase 6: Allocate arena and build compiled graph ---
 	CompiledGraph *compiled = memnew(CompiledGraph);
 	if (!compiled->arena.init(arena_size)) {
@@ -209,6 +226,11 @@ GraphCompiler::CompileResult GraphCompiler::compile(const GraphDescription &p_de
 	// Allocate trigger buffer pointer array
 	compiled->trigger_buffers = (TriggerBuffer **)compiled->arena.alloc(sizeof(TriggerBuffer *) * total_trigger_buffers, 8);
 	compiled->trigger_buffer_count = total_trigger_buffers;
+
+	// Allocate promotion array
+	compiled->promotions = (CompiledGraph::Promotion *)compiled->arena.alloc(sizeof(CompiledGraph::Promotion) * total_promotions, 8);
+	compiled->promotion_count = total_promotions;
+	int32_t promotion_idx = 0;
 
 	// Allocate output buffers for each node (indexed by [node_idx][pin_idx])
 	Vector<Vector<void *>> output_buffers;
@@ -270,7 +292,16 @@ GraphCompiler::CompileResult GraphCompiler::compile(const GraphDescription &p_de
 		for (int32_t p = 0; p < input_count && p < 32; p++) {
 			const PinSource &src = input_sources[node_idx][p];
 			if (src.source_node_idx >= 0) {
-				input_ptrs[p] = output_buffers[src.source_node_idx][src.source_pin];
+				if (src.needs_promotion) {
+					// Allocate a 64-float promotion buffer and register the promotion.
+					float *promo_buf = (float *)compiled->arena.alloc(sizeof(float) * SYMPHONY_MICRO_BLOCK_SIZE, 32);
+					compiled->promotions[promotion_idx].src = (const float *)output_buffers[src.source_node_idx][src.source_pin];
+					compiled->promotions[promotion_idx].dst = promo_buf;
+					promotion_idx++;
+					input_ptrs[p] = promo_buf;
+				} else {
+					input_ptrs[p] = output_buffers[src.source_node_idx][src.source_pin];
+				}
 			} else {
 				input_ptrs[p] = nullptr; // Unconnected optional input
 			}

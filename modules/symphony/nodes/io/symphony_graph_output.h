@@ -39,6 +39,7 @@ public:
 	static void register_operator() {
 		OperatorDescriptor desc;
 		desc.type_name = "GraphOutput";
+		desc.category = "I/O";
 		desc.inputs.push_back({ "input", SymphonyPinType::AUDIO, true });
 		// No outputs — this is the terminal node
 		desc.state_size = sizeof(SymphonyGraphOutput);

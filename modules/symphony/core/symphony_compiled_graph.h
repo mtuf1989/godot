@@ -21,11 +21,26 @@ struct CompiledGraph {
 	TriggerBuffer **trigger_buffers = nullptr;
 	int32_t trigger_buffer_count = 0;
 
+	// Float→Audio promotion: pairs of (source float*, dest audio buffer*).
+	struct Promotion {
+		const float *src;
+		float *dst;
+	};
+	Promotion *promotions = nullptr;
+	int32_t promotion_count = 0;
+
 	// The single contiguous memory block for all operator states + buffers.
 	ArenaAllocator arena;
 
 	// Execute all operators for one micro-block.
 	void execute(int32_t p_num_frames) {
+		// Fill promotion buffers (Float→Audio).
+		for (int32_t i = 0; i < promotion_count; i++) {
+			float val = promotions[i].src[0];
+			for (int32_t s = 0; s < p_num_frames; s++) {
+				promotions[i].dst[s] = val;
+			}
+		}
 		// Clear all trigger buffers at the start of each micro-block
 		for (int32_t i = 0; i < trigger_buffer_count; i++) {
 			trigger_buffers[i]->clear();

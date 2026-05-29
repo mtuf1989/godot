@@ -26,6 +26,7 @@ public:
 	static void register_operator() {
 		OperatorDescriptor desc;
 		desc.type_name = "Constant";
+		desc.category = "Generators";
 		// No inputs
 		desc.outputs.push_back({ "output", SymphonyPinType::AUDIO, false });
 		desc.params.push_back({ "value", 440.0f, -10000.0f, 10000.0f, 1.0f });

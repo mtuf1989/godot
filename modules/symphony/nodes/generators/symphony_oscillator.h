@@ -53,6 +53,7 @@ public:
 	static void register_operator() {
 		OperatorDescriptor desc;
 		desc.type_name = "Oscillator";
+		desc.category = "Generators";
 		desc.inputs.push_back({ "frequency", SymphonyPinType::AUDIO, false }); // Optional: uses default_freq if unconnected
 		desc.outputs.push_back({ "output", SymphonyPinType::AUDIO, false });
 		desc.params.push_back({ "frequency", 440.0f, 0.0f, 20000.0f, 1.0f });
