@@ -136,4 +136,5 @@ Read only as needed:
 - `references/ownership-and-lifetime.md`
 - `references/boundary-design-checklist.md`
 - `references/examples-and-validation.md`
+- `references/editor-plugin-patterns.md`
 - `../../foundation/Godot Language Strategy Guide.md`

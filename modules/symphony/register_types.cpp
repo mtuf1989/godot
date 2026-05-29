@@ -73,6 +73,7 @@ void initialize_symphony_module(ModuleInitializationLevel p_level) {
 		GDREGISTER_CLASS(AudioStreamPlaybackSymphony);
 #ifdef TOOLS_ENABLED
 	} else if (p_level == MODULE_INITIALIZATION_LEVEL_EDITOR) {
+		GDREGISTER_CLASS(SymphonyNodeInspectorProxy);
 		GDREGISTER_CLASS(SymphonyGraphEditor);
 		EditorPlugins::add_by_type<SymphonyEditorPlugin>();
 #endif
