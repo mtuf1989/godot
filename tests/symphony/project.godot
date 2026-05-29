@@ -11,7 +11,7 @@ config_version=5
 [application]
 
 config/name="Symphony Test"
-run/main_scene="res://test_phase2.tscn"
+run/main_scene="res://test_phase3.tscn"
 config/features=PackedStringArray("4.4")
 
 [audio]
