@@ -25,6 +25,7 @@ public:
 
 	virtual void execute(int32_t p_num_frames) override {
 		SYMPHONY_ASSUME_FRAMES(p_num_frames);
+		SYMPHONY_UNROLL
 		for (int32_t i = 0; i < p_num_frames; i++) {
 			output[i] = Math::sin(phase * Math::TAU);
 			float freq = freq_input ? freq_input[i] : default_freq;

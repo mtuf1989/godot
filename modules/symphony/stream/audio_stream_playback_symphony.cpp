@@ -1,18 +1,7 @@
 #include "audio_stream_playback_symphony.h"
 #include "../core/symphony_voice_manager.h"
+#include "../core/symphony_platform_time.h"
 #include "core/object/class_db.h"
-
-#include <mach/mach_time.h>
-
-static double s_timebase_us = 0.0;
-
-static void ensure_timebase() {
-	if (s_timebase_us == 0.0) {
-		mach_timebase_info_data_t info;
-		mach_timebase_info(&info);
-		s_timebase_us = (double)info.numer / (double)info.denom / 1000.0;
-	}
-}
 
 void AudioStreamPlaybackSymphony::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("trigger", "name", "value"), &AudioStreamPlaybackSymphony::trigger, DEFVAL(1.0f));
@@ -81,8 +70,7 @@ int AudioStreamPlaybackSymphony::mix(AudioFrame *p_buffer, float p_rate_scale, i
 		return 0;
 	}
 
-	ensure_timebase();
-	uint64_t t_start = mach_absolute_time();
+	uint64_t t_start = symphony_time_usec();
 
 	// Hot-swap check: pick up new graph if available.
 	CompiledGraph *pending = pending_graph.exchange(nullptr, std::memory_order_acquire);
@@ -112,8 +100,8 @@ int AudioStreamPlaybackSymphony::mix(AudioFrame *p_buffer, float p_rate_scale, i
 	}
 
 	// Timing
-	uint64_t t_end = mach_absolute_time();
-	last_mix_time_us = (float)((t_end - t_start) * s_timebase_us);
+	uint64_t t_end = symphony_time_usec();
+	last_mix_time_us = (float)(t_end - t_start);
 	last_frame_count = p_frames;
 
 	// RMS computation (cheap: sum of squares from output buffer)
@@ -123,6 +111,12 @@ int AudioStreamPlaybackSymphony::mix(AudioFrame *p_buffer, float p_rate_scale, i
 		sum_sq += s * s;
 	}
 	last_rms = sqrtf(sum_sq / (float)p_frames);
+
+	// Enforce voice limits (stealing) after metrics are updated.
+	SymphonyVoiceManager *mgr = SymphonyVoiceManager::get_singleton();
+	if (mgr) {
+		mgr->enforce_voice_limits();
+	}
 
 	return p_frames;
 }

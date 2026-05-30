@@ -9,6 +9,7 @@
 #include "nodes/generators/symphony_constant.h"
 #include "nodes/generators/symphony_noise.h"
 #include "nodes/generators/symphony_lfo.h"
+#include "nodes/generators/symphony_wave_player.h"
 #include "nodes/filters/symphony_biquad_filter.h"
 #include "nodes/filters/symphony_one_pole.h"
 #include "nodes/filters/symphony_dc_blocker.h"
@@ -23,6 +24,7 @@
 #include "nodes/timing/symphony_clock.h"
 #include "nodes/timing/symphony_trigger_delay.h"
 #include "nodes/io/symphony_graph_input.h"
+#include "nodes/io/symphony_graph_input_audio.h"
 #include "nodes/io/symphony_graph_output.h"
 #include "nodes/io/symphony_trigger_input.h"
 #include "nodes/io/symphony_subgraph.h"
@@ -44,6 +46,7 @@ void initialize_symphony_module(ModuleInitializationLevel p_level) {
 		SymphonyConstant::register_operator();
 		SymphonyNoise::register_operator();
 		SymphonyLFO::register_operator();
+		SymphonyWavePlayer::register_operator();
 
 		// Filters
 		SymphonyBiquadFilter::register_operator();
@@ -69,6 +72,7 @@ void initialize_symphony_module(ModuleInitializationLevel p_level) {
 		// I/O
 		SymphonyGraphOutput::register_operator();
 		SymphonyGraphInput::register_operator();
+		SymphonyGraphInputAudio::register_operator();
 		SymphonyTriggerInput::register_operator();
 		SymphonySubGraph::register_operator();
 

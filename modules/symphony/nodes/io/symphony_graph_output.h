@@ -31,6 +31,7 @@ public:
 			return;
 		}
 		SYMPHONY_ASSUME_FRAMES(p_num_frames);
+		SYMPHONY_UNROLL
 		for (int32_t i = 0; i < p_num_frames; i++) {
 			float sample = input[i];
 			output_frames[output_offset + i] = AudioFrame(sample, sample);

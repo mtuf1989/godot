@@ -107,67 +107,81 @@ float SymphonyVoiceManager::get_critical_threshold() const {
 }
 
 void SymphonyVoiceManager::enforce_voice_limits() {
-	std::lock_guard<std::mutex> lock(registry_mutex);
+	Vector<AudioStreamPlaybackSymphony *> victims;
 
-	// Voice count limit
-	if (max_voices > 0 && active_voices.size() > max_voices) {
-		// Sort by priority ASC, then RMS ASC — steal lowest priority, quietest first
-		// Use a simple selection: find the worst candidate and stop it
-		while (active_voices.size() > max_voices) {
-			int worst_idx = -1;
-			int worst_priority = INT32_MAX;
-			float worst_rms = FLT_MAX;
+	{
+		std::lock_guard<std::mutex> lock(registry_mutex);
 
-			for (int i = 0; i < active_voices.size(); i++) {
-				int pri = active_voices[i]->get_effective_priority();
-				float rms = active_voices[i]->get_last_rms();
-				if (pri < worst_priority || (pri == worst_priority && rms < worst_rms)) {
-					worst_priority = pri;
-					worst_rms = rms;
-					worst_idx = i;
+		// Voice count limit
+		if (max_voices > 0 && active_voices.size() > max_voices) {
+			while (active_voices.size() - victims.size() > max_voices) {
+				int worst_idx = -1;
+				int worst_priority = INT32_MAX;
+				float worst_rms = FLT_MAX;
+
+				for (int i = 0; i < active_voices.size(); i++) {
+					if (victims.find(active_voices[i]) >= 0) {
+						continue;
+					}
+					int pri = active_voices[i]->get_effective_priority();
+					float rms = active_voices[i]->get_last_rms();
+					if (pri < worst_priority || (pri == worst_priority && rms < worst_rms)) {
+						worst_priority = pri;
+						worst_rms = rms;
+						worst_idx = i;
+					}
+				}
+
+				if (worst_idx >= 0) {
+					victims.push_back(active_voices[worst_idx]);
+				} else {
+					break;
 				}
 			}
-
-			if (worst_idx >= 0) {
-				active_voices[worst_idx]->stop();
-				active_voices.remove_at(worst_idx);
-			} else {
-				break;
-			}
 		}
-	}
 
-	// Budget critical threshold — force-stop voices until under warning threshold
-	float total_budget = 0.0f;
-	for (const AudioStreamPlaybackSymphony *v : active_voices) {
-		total_budget += v->get_budget_percent();
-	}
+		// Budget critical threshold — collect more victims until under warning threshold
+		float total_budget = 0.0f;
+		for (const AudioStreamPlaybackSymphony *v : active_voices) {
+			if (victims.find(const_cast<AudioStreamPlaybackSymphony *>(v)) >= 0) {
+				continue;
+			}
+			total_budget += v->get_budget_percent();
+		}
 
-	if (total_budget > critical_threshold * 100.0f) {
-		while (total_budget > warning_threshold * 100.0f && !active_voices.is_empty()) {
-			int worst_idx = -1;
-			int worst_priority = INT32_MAX;
-			float worst_rms = FLT_MAX;
+		if (total_budget > critical_threshold * 100.0f) {
+			while (total_budget > warning_threshold * 100.0f && !active_voices.is_empty()) {
+				int worst_idx = -1;
+				int worst_priority = INT32_MAX;
+				float worst_rms = FLT_MAX;
 
-			for (int i = 0; i < active_voices.size(); i++) {
-				int pri = active_voices[i]->get_effective_priority();
-				float rms = active_voices[i]->get_last_rms();
-				if (pri < worst_priority || (pri == worst_priority && rms < worst_rms)) {
-					worst_priority = pri;
-					worst_rms = rms;
-					worst_idx = i;
+				for (int i = 0; i < active_voices.size(); i++) {
+					if (victims.find(active_voices[i]) >= 0) {
+						continue;
+					}
+					int pri = active_voices[i]->get_effective_priority();
+					float rms = active_voices[i]->get_last_rms();
+					if (pri < worst_priority || (pri == worst_priority && rms < worst_rms)) {
+						worst_priority = pri;
+						worst_rms = rms;
+						worst_idx = i;
+					}
+				}
+
+				if (worst_idx >= 0) {
+					total_budget -= active_voices[worst_idx]->get_budget_percent();
+					victims.push_back(active_voices[worst_idx]);
+				} else {
+					break;
 				}
 			}
-
-			if (worst_idx >= 0) {
-				total_budget -= active_voices[worst_idx]->get_budget_percent();
-				active_voices[worst_idx]->stop();
-				active_voices.remove_at(worst_idx);
-			} else {
-				break;
-			}
+		} else if (total_budget > warning_threshold * 100.0f) {
+			WARN_PRINT_ONCE("Symphony: Voice budget exceeds warning threshold.");
 		}
-	} else if (total_budget > warning_threshold * 100.0f) {
-		WARN_PRINT_ONCE("Symphony: Voice budget exceeds warning threshold.");
+	} // mutex released here
+
+	// Stop victims outside the lock (stop() calls unregister_voice() which takes the lock)
+	for (AudioStreamPlaybackSymphony *v : victims) {
+		v->stop();
 	}
 }

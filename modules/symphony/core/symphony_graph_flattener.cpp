@@ -1,5 +1,6 @@
 #include "symphony_graph_flattener.h"
 #include "../stream/audio_stream_symphony.h"
+#include "../core/symphony_operator_registry.h"
 #include "core/io/resource_loader.h"
 #include "core/templates/hash_set.h"
 
@@ -15,6 +16,7 @@ struct SubGraphPin {
 	int32_t sort_order = 0;
 	float editor_y = 0.0f;
 	String name;
+	bool is_audio = false; // True for GraphInputAudio nodes
 };
 
 struct SubGraphPinCompare {
@@ -86,6 +88,7 @@ static GraphFlattener::FlattenResult _flatten_recursive(const GraphDescription &
 	struct InlinedSubGraph {
 		// Maps pin index (sorted) -> internal node ID that handles that pin.
 		Vector<int32_t> input_node_ids;  // GraphInput nodes (become input pins on SubGraph)
+		Vector<bool> input_is_audio;     // True if the pin is GraphInputAudio
 		Vector<int32_t> output_node_ids; // GraphOutput nodes (become output pins on SubGraph)
 	};
 	HashMap<int32_t, InlinedSubGraph> inlined_map; // SubGraph node_id -> inlined info
@@ -158,12 +161,13 @@ static GraphFlattener::FlattenResult _flatten_recursive(const GraphDescription &
 			id_remap.insert(nd.id, new_id);
 			nd.id = new_id;
 
-			if (nd.type_name == StringName("GraphInput")) {
+			if (nd.type_name == StringName("GraphInput") || nd.type_name == StringName("GraphInputAudio")) {
 				SubGraphPin pin;
 				pin.node_id = new_id;
 				pin.sort_order = nd.params.has("sort_order") ? (int32_t)(float)nd.params["sort_order"] : 0;
 				pin.editor_y = nd.editor_position.y;
 				pin.name = nd.params.has("parameter_name") ? String(nd.params["parameter_name"]) : "";
+				pin.is_audio = (nd.type_name == StringName("GraphInputAudio"));
 				input_pins.push_back(pin);
 			} else if (nd.type_name == StringName("GraphOutput")) {
 				SubGraphPin pin;
@@ -181,6 +185,7 @@ static GraphFlattener::FlattenResult _flatten_recursive(const GraphDescription &
 
 		for (const SubGraphPin &p : input_pins) {
 			inlined.input_node_ids.push_back(p.node_id);
+			inlined.input_is_audio.push_back(p.is_audio);
 		}
 		for (const SubGraphPin &p : output_pins) {
 			inlined.output_node_ids.push_back(p.node_id);
@@ -251,6 +256,28 @@ static GraphFlattener::FlattenResult _flatten_recursive(const GraphDescription &
 			result.errors.push_back(vformat("SubGraph node %d: input pin %d out of range (has %d inputs).", conn.to_node, conn.to_pin, inlined.input_node_ids.size()));
 			return result;
 		}
+
+		// Validate: AUDIO-type inputs reject non-AUDIO sources.
+		if (inlined.input_is_audio[conn.to_pin]) {
+			// Look up the source node's output pin type.
+			int32_t from_idx = -1;
+			for (int32_t i = 0; i < p_desc.nodes.size(); i++) {
+				if (p_desc.nodes[i].id == conn.from_node) {
+					from_idx = i;
+					break;
+				}
+			}
+			if (from_idx >= 0) {
+				const OperatorDescriptor *from_desc = OperatorRegistry::get_singleton()->find(p_desc.nodes[from_idx].type_name);
+				if (from_desc && conn.from_pin < from_desc->outputs.size()) {
+					if (from_desc->outputs[conn.from_pin].type != SymphonyPinType::AUDIO) {
+						result.errors.push_back(vformat("SubGraph node %d: audio input pin %d requires an AUDIO source, got FLOAT.", conn.to_node, conn.to_pin));
+						return result;
+					}
+				}
+			}
+		}
+
 		int32_t graph_input_node_id = inlined.input_node_ids[conn.to_pin];
 
 		// Find all connections in result.graph.connections that have from_node == graph_input_node_id

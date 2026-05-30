@@ -13,6 +13,8 @@
 - [Phase 4.A] `MERGE_ENDS` merge mode on undo actions is appropriate for continuous changes (slider drags, position moves) — it collapses rapid sequential changes into one undo step.
 - [Phase 4.A] Inspector proxy pattern: create an Object subclass with dynamic `_get_property_list`/`_get`/`_set` to expose arbitrary data in Godot's Inspector. Call `push_item(proxy, "", true)` with `p_inspector_only=true`.
 - [Phase 4.A] Static class members work for cross-instance clipboard in Godot modules (e.g., `static ClipboardData clipboard` for copy/paste across graph instances).
+- [Phase 6] When a mutex-holding function needs to call code that re-acquires the same mutex, collect work items into a local container, release the lock, then process them. Don't use recursive_mutex — it hides design issues.
+- [Phase 6] `AudioStreamWAV::get_data()` returns a Vector copy, not a reference to internal storage. If you need a stable pointer to PCM data, store the Vector yourself.
 
 ## Known Quirks And Errors
 

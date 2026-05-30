@@ -357,14 +357,35 @@ GraphNode *SymphonyGraphEditor::_create_graph_node(const NodeDesc &p_node) {
 	}
 
 	// Parameter editors — special handling for GraphInput/GraphOutput.
-	bool is_io_node = (p_node.type_name == StringName("GraphInput") || p_node.type_name == StringName("GraphOutput"));
+	bool is_io_node = (p_node.type_name == StringName("GraphInput") || p_node.type_name == StringName("GraphInputAudio") || p_node.type_name == StringName("GraphOutput"));
 	int slot_idx = max_slots;
 
 	for (int i = 0; i < op_desc->params.size(); i++) {
 		const ParamDescriptor &pd = op_desc->params[i];
 
-		// Skip string-type params that are stored as Variant strings (parameter_name, display_name, resource_path).
-		if (pd.name == StringName("parameter_name") || pd.name == StringName("display_name") || pd.name == StringName("resource_path")) {
+		// Skip string-type params that are stored as Variant strings (parameter_name, display_name).
+		if (pd.name == StringName("parameter_name") || pd.name == StringName("display_name")) {
+			continue;
+		}
+
+		// resource_path: show a file picker button (except for SubGraph which has its own UI).
+		if (pd.name == StringName("resource_path") && p_node.type_name != StringName("SubGraph")) {
+			HBoxContainer *row = memnew(HBoxContainer);
+			row->set_meta("_param_row", true);
+
+			Button *pick_btn = memnew(Button);
+			String current_path;
+			if (p_node.params.has("resource_path")) {
+				current_path = String(p_node.params["resource_path"]);
+			}
+			pick_btn->set_text(current_path.is_empty() ? "[Select WAV...]" : current_path.get_file());
+			pick_btn->set_custom_minimum_size(Vector2(120, 0));
+			pick_btn->set_clip_text(true);
+			pick_btn->connect("pressed", callable_mp(this, &SymphonyGraphEditor::_on_resource_pick_pressed).bind(p_node.id));
+			row->add_child(pick_btn);
+			gn->add_child(row);
+			gn->set_slot(slot_idx, false, 0, Color(), false, 0, Color());
+			slot_idx++;
 			continue;
 		}
 
@@ -460,6 +481,7 @@ void SymphonyGraphEditor::_on_add_node_id_pressed(int p_id) {
 	// Handle SubGraph special menu entries.
 	if (p_id == SUBGRAPH_MENU_ID) {
 		pending_subgraph_node_id = next_node_id++;
+		pending_resource_node_id = -1;
 		if (!file_dialog) {
 			file_dialog = memnew(FileDialog);
 			file_dialog->set_file_mode(FileDialog::FILE_MODE_OPEN_FILE);
@@ -1116,6 +1138,13 @@ GraphNode *SymphonyGraphEditor::_create_subgraph_node(const NodeDesc &p_node) {
 					int pt = nd.params.has("pin_type") ? (int)(float)nd.params["pin_type"] : 1; // default FLOAT
 					pi.type = (SymphonyPinType)pt;
 					inputs.push_back(pi);
+				} else if (nd.type_name == StringName("GraphInputAudio")) {
+					PinInfo pi;
+					pi.name = nd.params.has("parameter_name") ? String(nd.params["parameter_name"]) : "audio_in";
+					pi.sort_order = nd.params.has("sort_order") ? (int)(float)nd.params["sort_order"] : 0;
+					pi.editor_y = nd.editor_position.y;
+					pi.type = SymphonyPinType::AUDIO;
+					inputs.push_back(pi);
 				} else if (nd.type_name == StringName("GraphOutput")) {
 					PinInfo pi;
 					pi.name = nd.params.has("display_name") ? String(nd.params["display_name"]) : "out";
@@ -1180,8 +1209,51 @@ GraphNode *SymphonyGraphEditor::_create_subgraph_node(const NodeDesc &p_node) {
 	return gn;
 }
 
+void SymphonyGraphEditor::_on_resource_pick_pressed(int32_t p_node_id) {
+	pending_resource_node_id = p_node_id;
+	pending_subgraph_node_id = -1;
+	if (!file_dialog) {
+		file_dialog = memnew(FileDialog);
+		file_dialog->set_file_mode(FileDialog::FILE_MODE_OPEN_FILE);
+		file_dialog->set_access(FileDialog::ACCESS_RESOURCES);
+		file_dialog->connect("file_selected", callable_mp(this, &SymphonyGraphEditor::_on_file_dialog_file_selected));
+		add_child(file_dialog);
+	}
+	file_dialog->clear_filters();
+	file_dialog->add_filter("*.wav", "WAV Audio");
+	file_dialog->add_filter("*.tres", "Resource");
+	file_dialog->set_title("Select Audio Resource");
+	file_dialog->popup_centered_ratio(0.6);
+}
+
+void SymphonyGraphEditor::_on_resource_file_selected(const String &p_path) {
+	// Unused — routing handled in _on_file_dialog_file_selected
+}
+
 void SymphonyGraphEditor::_on_file_dialog_file_selected(const String &p_path) {
-	if (!stream.is_valid() || pending_subgraph_node_id < 0) {
+	if (!stream.is_valid()) {
+		return;
+	}
+
+	// Route: resource_path pick for an existing node
+	if (pending_resource_node_id >= 0) {
+		int32_t node_id = pending_resource_node_id;
+		pending_resource_node_id = -1;
+
+		GraphDescription &desc = const_cast<GraphDescription &>(stream->get_graph_description());
+		for (NodeDesc &nd : desc.nodes) {
+			if (nd.id == node_id) {
+				nd.params["resource_path"] = p_path;
+				break;
+			}
+		}
+		stream->emit_changed();
+		_rebuild_graph_edit();
+		return;
+	}
+
+	// Route: SubGraph creation
+	if (pending_subgraph_node_id < 0) {
 		return;
 	}
 

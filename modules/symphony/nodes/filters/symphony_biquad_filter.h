@@ -83,6 +83,7 @@ public:
 		calc_coefficients(fc, resonance);
 
 		SYMPHONY_ASSUME_FRAMES(p_num_frames);
+		SYMPHONY_UNROLL
 		for (int32_t i = 0; i < p_num_frames; i++) {
 			float x0 = input[i];
 			float y0 = b0 * x0 + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;

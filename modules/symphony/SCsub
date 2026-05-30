@@ -6,6 +6,10 @@ Import("env_modules")
 
 env_symphony = env_modules.Clone()
 
+# Enable WebAssembly SIMD for auto-vectorization on web builds.
+if env["platform"] == "web":
+    env_symphony.Append(CCFLAGS=["-msimd128"])
+
 env_symphony.add_source_files(env.modules_sources, "*.cpp")
 env_symphony.add_source_files(env.modules_sources, "core/*.cpp")
 env_symphony.add_source_files(env.modules_sources, "stream/*.cpp")

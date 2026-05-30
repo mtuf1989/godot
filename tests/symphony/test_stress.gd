@@ -1,7 +1,7 @@
 extends Control
-## Phase 5 Stress Test: Spawns N AudioStreamPlayers with configurable graph complexity.
+## Phase 5/6 Stress Test: Spawns N AudioStreamPlayers with configurable graph complexity.
 ## HUD shows: active voices, budget %, per-voice avg µs, arena memory.
-## Controls: Up/Down = add/remove voices, 1/2/3 = tier select, Escape = quit.
+## Controls: Up/Down = add/remove voices, 1-5 = tier select, Escape = quit.
 
 @export var initial_voices: int = 10
 @export var ramp_interval: float = 0.5  # seconds between auto-ramp spawns
@@ -10,6 +10,7 @@ var voice_manager: Object
 var players: Array[AudioStreamPlayer] = []
 var current_tier: int = 1
 var hud_label: Label
+var peak_budget: float = 0.0
 
 
 func _ready() -> void:
@@ -23,8 +24,8 @@ func _ready() -> void:
 	for i in initial_voices:
 		_spawn_voice(current_tier)
 
-	print("Phase 5 Stress Test started. Tier %d, %d voices." % [current_tier, initial_voices])
-	print("  Up/Down = add/remove voice | 1/2/3 = tier | Escape = quit")
+	print("Stress Test started. Tier %d, %d voices." % [current_tier, initial_voices])
+	print("  Up/Down = add/remove 10 voices | 1-5 = tier | Escape = quit")
 
 
 func _process(_delta: float) -> void:
@@ -44,13 +45,20 @@ func _process(_delta: float) -> void:
 		current_tier = 2
 	if Input.is_key_pressed(KEY_3):
 		current_tier = 3
+	if Input.is_key_pressed(KEY_4):
+		current_tier = 4
+	if Input.is_key_pressed(KEY_5):
+		current_tier = 5
 
 	# Update HUD
 	var count: int = voice_manager.get_active_voice_count() if voice_manager else players.size()
 	var budget: float = voice_manager.get_total_budget_percent() if voice_manager else 0.0
 	var avg_us: float = voice_manager.get_average_voice_microseconds() if voice_manager else 0.0
-	hud_label.text = "Tier: %d | Voices: %d | Budget: %.1f%% | Avg: %.0f µs" % [
-		current_tier, count, budget, avg_us
+	peak_budget = maxf(peak_budget, budget)
+	var mem_kb: float = OS.get_static_memory_usage() / 1024.0
+
+	hud_label.text = "Tier: %d | Voices: %d | Budget: %.1f%% (peak %.1f%%) | Avg: %.0f µs | Mem: %.0f KB" % [
+		current_tier, count, budget, peak_budget, avg_us, mem_kb
 	]
 
 
@@ -60,7 +68,6 @@ func _spawn_voice(p_tier: int) -> void:
 	stream.mix_rate = 44100.0
 	stream.voice_priority = randi_range(10, 90)
 
-	# Build graph programmatically based on tier
 	match p_tier:
 		1:
 			_build_small_graph(stream)
@@ -70,6 +77,24 @@ func _spawn_voice(p_tier: int) -> void:
 			else:
 				_build_small_graph(stream)
 		3:
+			var r := randf()
+			if r < 0.33:
+				_build_small_graph(stream)
+			elif r < 0.66:
+				_build_medium_graph(stream)
+			else:
+				_build_large_graph(stream)
+		4:
+			# Tier 4 (80 voices target): same mix as tier 3
+			var r := randf()
+			if r < 0.33:
+				_build_small_graph(stream)
+			elif r < 0.66:
+				_build_medium_graph(stream)
+			else:
+				_build_large_graph(stream)
+		5:
+			# Tier 5 (120 voices target): same mix as tier 3
 			var r := randf()
 			if r < 0.33:
 				_build_small_graph(stream)

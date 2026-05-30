@@ -64,6 +64,7 @@ private:
 	// SubGraph support.
 	FileDialog *file_dialog = nullptr;
 	int32_t pending_subgraph_node_id = -1; // ID reserved for the SubGraph node being created via file picker
+	int32_t pending_resource_node_id = -1; // ID of node whose resource_path is being picked
 	static constexpr int SUBGRAPH_MENU_ID = 9999;
 	static constexpr int CREATE_SUBGRAPH_MENU_ID = 9998;
 
@@ -118,6 +119,8 @@ private:
 
 	// SubGraph support.
 	void _on_file_dialog_file_selected(const String &p_path);
+	void _on_resource_file_selected(const String &p_path);
+	void _on_resource_pick_pressed(int32_t p_node_id);
 	void _on_create_new_subgraph();
 	GraphNode *_create_subgraph_node(const NodeDesc &p_node);
 
