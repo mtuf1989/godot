@@ -7,7 +7,8 @@
 
 // Exposes a named parameter to the game thread (GDScript API).
 // Game thread writes via SafeNumeric; audio thread reads each micro-block.
-// Outputs a FLOAT pin (control-rate single value).
+// pin_type param controls the output type (only FLOAT functional in Slice 1).
+// sort_order + display_name control how this appears as a pin on a SubGraph node.
 class SymphonyGraphInput : public SymphonyOperator {
 private:
 	float *output = nullptr;
@@ -28,7 +29,6 @@ public:
 		output[0] = v;
 	}
 
-	// Called from game thread via set_parameter routing.
 	void set_value(float p_value) {
 		value.set(p_value);
 	}
@@ -45,8 +45,12 @@ public:
 		OperatorDescriptor desc;
 		desc.type_name = "GraphInput";
 		desc.category = "I/O";
-		// No inputs — this is a source node fed from the game thread.
 		desc.outputs.push_back({ "output", SymphonyPinType::FLOAT, false });
+		desc.params.push_back({ "parameter_name", 0.0f, 0.0f, 0.0f, 0.0f }); // String stored via node params
+		desc.params.push_back({ "default_value", 0.0f, -10000.0f, 10000.0f, 0.01f });
+		desc.params.push_back({ "pin_type", 0.0f, 0.0f, 4.0f, 1.0f }); // 0=AUDIO,1=FLOAT,2=INT,3=BOOL,4=TRIGGER
+		desc.params.push_back({ "sort_order", 0.0f, -1000.0f, 1000.0f, 1.0f });
+		desc.params.push_back({ "display_name", 0.0f, 0.0f, 0.0f, 0.0f }); // String stored via node params
 		desc.state_size = sizeof(SymphonyGraphInput);
 		desc.state_align = alignof(SymphonyGraphInput);
 		desc.create_fn = &SymphonyGraphInput::create;

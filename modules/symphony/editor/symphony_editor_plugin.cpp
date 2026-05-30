@@ -1,6 +1,7 @@
 #include "symphony_editor_plugin.h"
 
 #include "core/io/resource_saver.h"
+#include "core/io/resource_loader.h"
 #include "core/object/class_db.h"
 #include "editor/editor_node.h"
 #include "scene/gui/label.h"
@@ -122,6 +123,16 @@ SymphonyGraphEditor::SymphonyGraphEditor() {
 	save_button->connect("pressed", callable_mp(this, &SymphonyGraphEditor::_on_save_pressed));
 	toolbar->add_child(save_button);
 
+	Button *delete_button = memnew(Button);
+	delete_button->set_text("Delete");
+	delete_button->connect("pressed", callable_mp(this, &SymphonyGraphEditor::_on_delete_pressed));
+	toolbar->add_child(delete_button);
+
+	// Breadcrumb bar (for SubGraph navigation).
+	breadcrumb_bar = memnew(HBoxContainer);
+	breadcrumb_bar->hide(); // Hidden until we navigate into a sub-graph.
+	add_child(breadcrumb_bar);
+
 	// GraphEdit
 	graph_edit = memnew(GraphEdit);
 	graph_edit->set_v_size_flags(SIZE_EXPAND_FILL);
@@ -193,6 +204,9 @@ void SymphonyGraphEditor::_populate_add_menu() {
 	HashMap<String, Vector<int>> categories;
 	for (int i = 0; i < types.size(); i++) {
 		const OperatorDescriptor *desc = reg->find(types[i]);
+		if (desc->type_name == StringName("SubGraph")) {
+			continue; // SubGraph gets special menu entries below.
+		}
 		String cat = desc && !desc->category.is_empty() ? desc->category : "Other";
 		if (!categories.has(cat)) {
 			categories[cat] = Vector<int>();
@@ -202,14 +216,20 @@ void SymphonyGraphEditor::_populate_add_menu() {
 
 	for (const KeyValue<String, Vector<int>> &kv : categories) {
 		PopupMenu *sub = memnew(PopupMenu);
-		sub->set_name(kv.key);
+		String safe_name = kv.key.replace("/", "_").replace(" ", "_");
+		sub->set_name(safe_name);
 		for (int idx : kv.value) {
 			sub->add_item(String(types[idx]), idx);
 		}
 		sub->connect("id_pressed", callable_mp(this, &SymphonyGraphEditor::_on_add_node_id_pressed));
 		popup->add_child(sub);
-		popup->add_submenu_item(kv.key, kv.key);
+		popup->add_submenu_item(kv.key, safe_name);
 	}
+
+	// SubGraph special entries.
+	popup->add_separator();
+	popup->add_item("Add SubGraph (from file)...", SUBGRAPH_MENU_ID);
+	popup->add_item("Create New SubGraph...", CREATE_SUBGRAPH_MENU_ID);
 }
 
 void SymphonyGraphEditor::edit(Ref<AudioStreamSymphony> p_stream) {
@@ -217,6 +237,7 @@ void SymphonyGraphEditor::edit(Ref<AudioStreamSymphony> p_stream) {
 		return;
 	}
 	stream = p_stream;
+	nav_stack.clear();
 
 	next_node_id = 0;
 	next_frame_id = 0;
@@ -235,6 +256,7 @@ void SymphonyGraphEditor::edit(Ref<AudioStreamSymphony> p_stream) {
 	}
 
 	_rebuild_graph_edit();
+	_rebuild_breadcrumbs();
 }
 
 void SymphonyGraphEditor::_rebuild_graph_edit() {
@@ -281,6 +303,11 @@ void SymphonyGraphEditor::_rebuild_graph_edit() {
 }
 
 GraphNode *SymphonyGraphEditor::_create_graph_node(const NodeDesc &p_node) {
+	// SubGraph nodes get special rendering with dynamic pins.
+	if (p_node.type_name == StringName("SubGraph")) {
+		return _create_subgraph_node(p_node);
+	}
+
 	GraphNode *gn = memnew(GraphNode);
 	gn->set_name(_name_from_node_id(p_node.id));
 	gn->set_title(String(p_node.type_name));
@@ -329,9 +356,50 @@ GraphNode *SymphonyGraphEditor::_create_graph_node(const NodeDesc &p_node) {
 		gn->set_slot(i, has_left, left_type, left_color, has_right, right_type, right_color);
 	}
 
-	// Parameter editors.
+	// Parameter editors — special handling for GraphInput/GraphOutput.
+	bool is_io_node = (p_node.type_name == StringName("GraphInput") || p_node.type_name == StringName("GraphOutput"));
+	int slot_idx = max_slots;
+
 	for (int i = 0; i < op_desc->params.size(); i++) {
 		const ParamDescriptor &pd = op_desc->params[i];
+
+		// Skip string-type params that are stored as Variant strings (parameter_name, display_name, resource_path).
+		if (pd.name == StringName("parameter_name") || pd.name == StringName("display_name") || pd.name == StringName("resource_path")) {
+			continue;
+		}
+
+		// pin_type gets a dropdown instead of SpinBox.
+		if (pd.name == StringName("pin_type") && is_io_node) {
+			HBoxContainer *row = memnew(HBoxContainer);
+			row->set_meta("_param_row", true);
+			Label *lbl = memnew(Label);
+			lbl->set_text("pin_type:");
+			lbl->set_custom_minimum_size(Vector2(60, 0));
+			row->add_child(lbl);
+
+			OptionButton *opt = memnew(OptionButton);
+			opt->add_item("Audio", 0);
+			opt->add_item("Float", 1);
+			opt->add_item("Int", 2);
+			opt->add_item("Bool", 3);
+			opt->add_item("Trigger", 4);
+			opt->set_custom_minimum_size(Vector2(80, 0));
+
+			int current = 0;
+			if (p_node.params.has("pin_type")) {
+				current = (int)(float)p_node.params["pin_type"];
+			} else {
+				// Default: GraphInput=FLOAT(1), GraphOutput=AUDIO(0)
+				current = (p_node.type_name == StringName("GraphInput")) ? 1 : 0;
+			}
+			opt->select(current);
+			opt->connect("item_selected", callable_mp(this, &SymphonyGraphEditor::_on_pin_type_changed).bind(p_node.id));
+			row->add_child(opt);
+			gn->add_child(row);
+			gn->set_slot(slot_idx, false, 0, Color(), false, 0, Color());
+			slot_idx++;
+			continue;
+		}
 
 		HBoxContainer *row = memnew(HBoxContainer);
 		row->set_meta("_param_row", true);
@@ -355,7 +423,8 @@ GraphNode *SymphonyGraphEditor::_create_graph_node(const NodeDesc &p_node) {
 		row->add_child(spin);
 		gn->add_child(row);
 
-		gn->set_slot(max_slots + i, false, 0, Color(), false, 0, Color());
+		gn->set_slot(slot_idx, false, 0, Color(), false, 0, Color());
+		slot_idx++;
 	}
 
 	// Collapse button.
@@ -385,6 +454,27 @@ GraphNode *SymphonyGraphEditor::_create_graph_node(const NodeDesc &p_node) {
 
 void SymphonyGraphEditor::_on_add_node_id_pressed(int p_id) {
 	if (!stream.is_valid()) {
+		return;
+	}
+
+	// Handle SubGraph special menu entries.
+	if (p_id == SUBGRAPH_MENU_ID) {
+		pending_subgraph_node_id = next_node_id++;
+		if (!file_dialog) {
+			file_dialog = memnew(FileDialog);
+			file_dialog->set_file_mode(FileDialog::FILE_MODE_OPEN_FILE);
+			file_dialog->set_access(FileDialog::ACCESS_RESOURCES);
+			file_dialog->add_filter("*.tres", "Symphony Resource");
+			file_dialog->connect("file_selected", callable_mp(this, &SymphonyGraphEditor::_on_file_dialog_file_selected));
+			add_child(file_dialog);
+		}
+		file_dialog->set_title("Select SubGraph Resource");
+		file_dialog->popup_centered_ratio(0.6);
+		return;
+	}
+
+	if (p_id == CREATE_SUBGRAPH_MENU_ID) {
+		_on_create_new_subgraph();
 		return;
 	}
 
@@ -453,9 +543,13 @@ void SymphonyGraphEditor::_on_delete_nodes_request(const TypedArray<StringName> 
 	undo_redo->create_action("Delete Symphony Nodes");
 
 	const GraphDescription &desc = stream->get_graph_description();
+	bool has_actions = false;
 
 	for (int i = 0; i < p_nodes.size(); i++) {
 		int32_t node_id = _node_id_from_name(p_nodes[i]);
+		if (node_id < 0) {
+			continue; // Skip frames or invalid names.
+		}
 
 		// Find and record connections to undo.
 		for (int c = 0; c < desc.connections.size(); c++) {
@@ -471,12 +565,34 @@ void SymphonyGraphEditor::_on_delete_nodes_request(const TypedArray<StringName> 
 			if (desc.nodes[n].id == node_id) {
 				undo_redo->add_do_method(this, "_ur_remove_node", node_id);
 				undo_redo->add_undo_method(this, "_ur_add_node", _node_desc_to_dict(desc.nodes[n]));
+				has_actions = true;
 				break;
 			}
 		}
 	}
 
-	undo_redo->commit_action();
+	if (has_actions) {
+		undo_redo->commit_action();
+	}
+}
+
+void SymphonyGraphEditor::_on_delete_pressed() {
+	if (!stream.is_valid()) {
+		return;
+	}
+
+	// Collect selected nodes.
+	TypedArray<StringName> selected;
+	for (int i = 0; i < graph_edit->get_child_count(); i++) {
+		GraphNode *gn = Object::cast_to<GraphNode>(graph_edit->get_child(i));
+		if (gn && gn->is_selected()) {
+			selected.push_back(gn->get_name());
+		}
+	}
+
+	if (!selected.is_empty()) {
+		_on_delete_nodes_request(selected);
+	}
 }
 
 void SymphonyGraphEditor::_on_node_position_changed(const StringName &p_node) {
@@ -946,6 +1062,367 @@ void SymphonyGraphEditor::_on_paste_nodes_request() {
 void SymphonyGraphEditor::_on_duplicate_nodes_request() {
 	_on_copy_nodes_request();
 	_on_paste_nodes_request();
+}
+
+// --- SubGraph support ---
+
+GraphNode *SymphonyGraphEditor::_create_subgraph_node(const NodeDesc &p_node) {
+	GraphNode *gn = memnew(GraphNode);
+	gn->set_name(_name_from_node_id(p_node.id));
+	gn->set_position_offset(p_node.editor_position);
+
+	String resource_path;
+	if (p_node.params.has("resource_path")) {
+		resource_path = String(p_node.params["resource_path"]);
+	}
+
+	// Title shows the filename.
+	String title = "SubGraph";
+	if (!resource_path.is_empty()) {
+		title = resource_path.get_file().get_basename();
+	}
+	gn->set_title(title);
+
+	// Load the referenced resource to determine pins.
+	if (!resource_path.is_empty()) {
+		Ref<AudioStreamSymphony> sub_res = ResourceLoader::load(resource_path, "AudioStreamSymphony");
+		if (sub_res.is_valid()) {
+			const GraphDescription &sub_desc = sub_res->get_graph_description();
+
+			// Collect input pins (GraphInput nodes) and output pins (GraphOutput nodes).
+			struct PinInfo {
+				String name;
+				int sort_order = 0;
+				float editor_y = 0.0f;
+				SymphonyPinType type = SymphonyPinType::FLOAT;
+			};
+			struct PinInfoCompare {
+				bool operator()(const PinInfo &a, const PinInfo &b) const {
+					if (a.sort_order != b.sort_order) return a.sort_order < b.sort_order;
+					if (a.editor_y != b.editor_y) return a.editor_y < b.editor_y;
+					return a.name < b.name;
+				}
+			};
+
+			Vector<PinInfo> inputs;
+			Vector<PinInfo> outputs;
+
+			for (const NodeDesc &nd : sub_desc.nodes) {
+				if (nd.type_name == StringName("GraphInput")) {
+					PinInfo pi;
+					pi.name = nd.params.has("parameter_name") ? String(nd.params["parameter_name"]) : "in";
+					pi.sort_order = nd.params.has("sort_order") ? (int)(float)nd.params["sort_order"] : 0;
+					pi.editor_y = nd.editor_position.y;
+					int pt = nd.params.has("pin_type") ? (int)(float)nd.params["pin_type"] : 1; // default FLOAT
+					pi.type = (SymphonyPinType)pt;
+					inputs.push_back(pi);
+				} else if (nd.type_name == StringName("GraphOutput")) {
+					PinInfo pi;
+					pi.name = nd.params.has("display_name") ? String(nd.params["display_name"]) : "out";
+					if (pi.name.is_empty()) {
+						pi.name = "out";
+					}
+					pi.sort_order = nd.params.has("sort_order") ? (int)(float)nd.params["sort_order"] : 0;
+					pi.editor_y = nd.editor_position.y;
+					int pt = nd.params.has("pin_type") ? (int)(float)nd.params["pin_type"] : 0; // default AUDIO
+					pi.type = (SymphonyPinType)pt;
+					outputs.push_back(pi);
+				}
+			}
+
+			inputs.sort_custom<PinInfoCompare>();
+			outputs.sort_custom<PinInfoCompare>();
+
+			int max_slots = MAX(inputs.size(), outputs.size());
+			for (int i = 0; i < max_slots; i++) {
+				bool has_left = i < inputs.size();
+				bool has_right = i < outputs.size();
+
+				HBoxContainer *row = memnew(HBoxContainer);
+				if (has_left) {
+					Label *left_lbl = memnew(Label);
+					left_lbl->set_text(inputs[i].name);
+					left_lbl->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+					row->add_child(left_lbl);
+				} else {
+					Control *spacer = memnew(Control);
+					spacer->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+					row->add_child(spacer);
+				}
+				if (has_right) {
+					Label *right_lbl = memnew(Label);
+					right_lbl->set_text(outputs[i].name);
+					right_lbl->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_RIGHT);
+					row->add_child(right_lbl);
+				}
+				gn->add_child(row);
+
+				int left_type = has_left ? get_slot_type(inputs[i].type) : 0;
+				Color left_color = has_left ? get_pin_color(inputs[i].type) : Color(1, 1, 1);
+				int right_type = has_right ? get_slot_type(outputs[i].type) : 0;
+				Color right_color = has_right ? get_pin_color(outputs[i].type) : Color(1, 1, 1);
+
+				gn->set_slot(i, has_left, left_type, left_color, has_right, right_type, right_color);
+			}
+		} else {
+			Label *lbl = memnew(Label);
+			lbl->set_text("Error: cannot load\n" + resource_path);
+			gn->add_child(lbl);
+		}
+	} else {
+		Label *lbl = memnew(Label);
+		lbl->set_text("(no resource set)");
+		gn->add_child(lbl);
+	}
+
+	gn->connect("position_offset_changed", callable_mp(this, &SymphonyGraphEditor::_on_node_position_changed).bind(gn->get_name()));
+	gn->connect("gui_input", callable_mp(this, &SymphonyGraphEditor::_on_node_gui_input).bind(p_node.id));
+	return gn;
+}
+
+void SymphonyGraphEditor::_on_file_dialog_file_selected(const String &p_path) {
+	if (!stream.is_valid() || pending_subgraph_node_id < 0) {
+		return;
+	}
+
+	NodeDesc nd;
+	nd.id = pending_subgraph_node_id;
+	nd.type_name = "SubGraph";
+	nd.editor_position = graph_edit->get_scroll_offset() + Vector2(100, 100);
+	nd.params["resource_path"] = p_path;
+
+	pending_subgraph_node_id = -1;
+
+	EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
+	undo_redo->create_action("Add SubGraph Node");
+	undo_redo->add_do_method(this, "_ur_add_node", _node_desc_to_dict(nd));
+	undo_redo->add_undo_method(this, "_ur_remove_node", nd.id);
+	undo_redo->commit_action();
+}
+
+void SymphonyGraphEditor::_on_create_new_subgraph() {
+	if (!stream.is_valid()) {
+		return;
+	}
+
+	// Create a new AudioStreamSymphony with a minimal graph (one GraphInput + one GraphOutput).
+	Ref<AudioStreamSymphony> new_sub;
+	new_sub.instantiate();
+
+	GraphDescription sub_desc;
+	NodeDesc input_nd;
+	input_nd.id = 0;
+	input_nd.type_name = "GraphInput";
+	input_nd.params["parameter_name"] = "input";
+	input_nd.params["default_value"] = 0.0f;
+	input_nd.params["pin_type"] = 0.0f; // AUDIO
+	input_nd.params["sort_order"] = 0.0f;
+	input_nd.params["display_name"] = "input";
+	input_nd.editor_position = Vector2(0, 0);
+	sub_desc.nodes.push_back(input_nd);
+
+	NodeDesc output_nd;
+	output_nd.id = 1;
+	output_nd.type_name = "GraphOutput";
+	output_nd.params["pin_type"] = 0.0f; // AUDIO
+	output_nd.params["sort_order"] = 0.0f;
+	output_nd.params["display_name"] = "output";
+	output_nd.editor_position = Vector2(400, 0);
+	sub_desc.nodes.push_back(output_nd);
+
+	new_sub->set_graph_description(sub_desc);
+
+	// Ask user to save it.
+	EditorNode::get_singleton()->save_resource_as(new_sub);
+
+	// After save, if it has a path, add a SubGraph node referencing it.
+	String saved_path = new_sub->get_path();
+	if (!saved_path.is_empty()) {
+		NodeDesc nd;
+		nd.id = next_node_id++;
+		nd.type_name = "SubGraph";
+		nd.editor_position = graph_edit->get_scroll_offset() + Vector2(100, 100);
+		nd.params["resource_path"] = saved_path;
+
+		EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
+		undo_redo->create_action("Create New SubGraph");
+		undo_redo->add_do_method(this, "_ur_add_node", _node_desc_to_dict(nd));
+		undo_redo->add_undo_method(this, "_ur_remove_node", nd.id);
+		undo_redo->commit_action();
+	}
+}
+
+void SymphonyGraphEditor::_on_pin_type_changed(int p_index, int32_t p_node_id) {
+	if (!stream.is_valid()) {
+		return;
+	}
+
+	float old_value = 0.0f;
+	const GraphDescription &desc = stream->get_graph_description();
+	for (int i = 0; i < desc.nodes.size(); i++) {
+		if (desc.nodes[i].id == p_node_id && desc.nodes[i].params.has("pin_type")) {
+			old_value = desc.nodes[i].params["pin_type"];
+			break;
+		}
+	}
+
+	if ((int)old_value == p_index) {
+		return;
+	}
+
+	EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
+	undo_redo->create_action("Change Pin Type");
+	undo_redo->add_do_method(this, "_ur_set_param", p_node_id, StringName("pin_type"), (float)p_index);
+	undo_redo->add_undo_method(this, "_ur_set_param", p_node_id, StringName("pin_type"), old_value);
+	undo_redo->commit_action();
+
+	// Rebuild the node to update slot colors/types.
+	_rebuild_graph_edit();
+}
+
+// --- Breadcrumb Navigation ---
+
+void SymphonyGraphEditor::_on_node_gui_input(const Ref<InputEvent> &p_event, int32_t p_node_id) {
+	Ref<InputEventMouseButton> mb = p_event;
+	if (mb.is_valid() && mb->is_double_click() && mb->get_button_index() == MouseButton::LEFT) {
+		if (!stream.is_valid()) {
+			return;
+		}
+		// Check if this node is a SubGraph.
+		const GraphDescription &desc = stream->get_graph_description();
+		for (const NodeDesc &nd : desc.nodes) {
+			if (nd.id == p_node_id && nd.type_name == StringName("SubGraph")) {
+				String resource_path;
+				if (nd.params.has("resource_path")) {
+					resource_path = String(nd.params["resource_path"]);
+				}
+				if (!resource_path.is_empty()) {
+					_push_subgraph(resource_path);
+				}
+				break;
+			}
+		}
+	}
+}
+
+void SymphonyGraphEditor::_push_subgraph(const String &p_resource_path) {
+	Ref<AudioStreamSymphony> sub_res = ResourceLoader::load(p_resource_path, "AudioStreamSymphony");
+	if (sub_res.is_null()) {
+		ERR_PRINT(vformat("Cannot load SubGraph resource: %s", p_resource_path));
+		return;
+	}
+
+	// Save current state to nav stack.
+	NavEntry entry;
+	entry.resource = stream;
+	entry.scroll_offset = graph_edit->get_scroll_offset();
+	nav_stack.push_back(entry);
+
+	// Switch to the sub-graph.
+	stream = sub_res;
+	next_node_id = 0;
+	next_frame_id = 0;
+	const GraphDescription &desc = stream->get_graph_description();
+	for (const NodeDesc &nd : desc.nodes) {
+		if (nd.id >= next_node_id) {
+			next_node_id = nd.id + 1;
+		}
+	}
+	for (const FrameDesc &fd : desc.frames) {
+		if (fd.id >= next_frame_id) {
+			next_frame_id = fd.id + 1;
+		}
+	}
+
+	_rebuild_graph_edit();
+	_rebuild_breadcrumbs();
+
+	// Stop preview when navigating (will restart on the new graph if user presses preview).
+	if (previewing) {
+		preview_player->stop();
+		previewing = false;
+		preview_button->set_pressed(false);
+	}
+}
+
+void SymphonyGraphEditor::_navigate_to(int p_depth) {
+	if (p_depth < 0 || p_depth >= nav_stack.size()) {
+		return;
+	}
+
+	// Restore the target level.
+	NavEntry target = nav_stack[p_depth];
+	stream = target.resource;
+
+	// Remove all entries from p_depth onward.
+	nav_stack.resize(p_depth);
+
+	// Recalculate IDs.
+	next_node_id = 0;
+	next_frame_id = 0;
+	const GraphDescription &desc = stream->get_graph_description();
+	for (const NodeDesc &nd : desc.nodes) {
+		if (nd.id >= next_node_id) {
+			next_node_id = nd.id + 1;
+		}
+	}
+	for (const FrameDesc &fd : desc.frames) {
+		if (fd.id >= next_frame_id) {
+			next_frame_id = fd.id + 1;
+		}
+	}
+
+	_rebuild_graph_edit();
+	graph_edit->set_scroll_offset(target.scroll_offset);
+	_rebuild_breadcrumbs();
+
+	if (previewing) {
+		preview_player->stop();
+		previewing = false;
+		preview_button->set_pressed(false);
+	}
+}
+
+void SymphonyGraphEditor::_rebuild_breadcrumbs() {
+	// Clear existing buttons.
+	while (breadcrumb_bar->get_child_count() > 0) {
+		Node *child = breadcrumb_bar->get_child(0);
+		breadcrumb_bar->remove_child(child);
+		child->queue_free();
+	}
+
+	if (nav_stack.is_empty()) {
+		breadcrumb_bar->hide();
+		return;
+	}
+
+	breadcrumb_bar->show();
+
+	// Add buttons for each level in the stack + current.
+	for (int i = 0; i < nav_stack.size(); i++) {
+		Button *btn = memnew(Button);
+		String name = nav_stack[i].resource->get_path().get_file().get_basename();
+		if (name.is_empty()) {
+			name = "Root";
+		}
+		btn->set_text(name);
+		btn->set_flat(true);
+		btn->connect("pressed", callable_mp(this, &SymphonyGraphEditor::_navigate_to).bind(i));
+		breadcrumb_bar->add_child(btn);
+
+		Label *sep = memnew(Label);
+		sep->set_text(" > ");
+		breadcrumb_bar->add_child(sep);
+	}
+
+	// Current level (non-clickable label).
+	Label *current = memnew(Label);
+	String current_name = stream->get_path().get_file().get_basename();
+	if (current_name.is_empty()) {
+		current_name = "SubGraph";
+	}
+	current->set_text(current_name);
+	breadcrumb_bar->add_child(current);
 }
 
 // --- Save/Preview ---

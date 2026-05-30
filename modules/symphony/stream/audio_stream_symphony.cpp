@@ -1,6 +1,7 @@
 #include "audio_stream_symphony.h"
 #include "audio_stream_playback_symphony.h"
 #include "../core/symphony_graph_compiler.h"
+#include "../core/symphony_graph_flattener.h"
 #include "../core/symphony_operator_registry.h"
 
 #include "core/object/class_db.h"
@@ -321,7 +322,17 @@ const GraphDescription &AudioStreamSymphony::get_graph_description() const {
 }
 
 CompiledGraph *AudioStreamSymphony::compile_graph() const {
-	GraphCompiler::CompileResult result = GraphCompiler::compile(graph_desc, mix_rate);
+	// Pre-pass: flatten any SubGraph nodes into a single graph.
+	String owner_path = get_path();
+	GraphFlattener::FlattenResult flat = GraphFlattener::flatten(graph_desc, owner_path);
+	if (!flat.success()) {
+		for (const String &err : flat.errors) {
+			ERR_PRINT(vformat("Symphony flatten error: %s", err));
+		}
+		return nullptr;
+	}
+
+	GraphCompiler::CompileResult result = GraphCompiler::compile(flat.graph, mix_rate);
 	if (!result.success()) {
 		for (const String &err : result.errors) {
 			ERR_PRINT(vformat("Symphony compile error: %s", err));

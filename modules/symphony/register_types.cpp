@@ -24,6 +24,7 @@
 #include "nodes/io/symphony_graph_input.h"
 #include "nodes/io/symphony_graph_output.h"
 #include "nodes/io/symphony_trigger_input.h"
+#include "nodes/io/symphony_subgraph.h"
 
 #include "core/object/class_db.h"
 
@@ -67,6 +68,7 @@ void initialize_symphony_module(ModuleInitializationLevel p_level) {
 		SymphonyGraphOutput::register_operator();
 		SymphonyGraphInput::register_operator();
 		SymphonyTriggerInput::register_operator();
+		SymphonySubGraph::register_operator();
 
 		// Register Godot classes
 		GDREGISTER_CLASS(AudioStreamSymphony);

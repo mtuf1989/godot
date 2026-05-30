@@ -6,7 +6,8 @@
 #include "servers/audio/audio_stream.h"
 
 // Final output node: copies mono input to stereo AudioFrame buffer (L = R = mono).
-// The output AudioFrame* is set externally each mix() call via set_output().
+// pin_type param controls the input type (only AUDIO functional in Slice 1).
+// sort_order + display_name control how this appears as a pin on a SubGraph node.
 class SymphonyGraphOutput : public SymphonyOperator {
 private:
 	const float *input = nullptr;
@@ -20,7 +21,6 @@ public:
 		input = (const float *)p_input_ptrs[0];
 	}
 
-	// Called externally before each micro-block to set the destination.
 	void set_output(AudioFrame *p_frames, int32_t p_offset) {
 		output_frames = p_frames;
 		output_offset = p_offset;
@@ -41,7 +41,9 @@ public:
 		desc.type_name = "GraphOutput";
 		desc.category = "I/O";
 		desc.inputs.push_back({ "input", SymphonyPinType::AUDIO, true });
-		// No outputs — this is the terminal node
+		desc.params.push_back({ "pin_type", 0.0f, 0.0f, 4.0f, 1.0f }); // 0=AUDIO,1=FLOAT,2=INT,3=BOOL,4=TRIGGER
+		desc.params.push_back({ "sort_order", 0.0f, -1000.0f, 1000.0f, 1.0f });
+		desc.params.push_back({ "display_name", 0.0f, 0.0f, 0.0f, 0.0f }); // String stored via node params
 		desc.state_size = sizeof(SymphonyGraphOutput);
 		desc.state_align = alignof(SymphonyGraphOutput);
 		desc.create_fn = &SymphonyGraphOutput::create;

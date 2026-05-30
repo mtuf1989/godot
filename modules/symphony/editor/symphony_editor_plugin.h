@@ -10,6 +10,8 @@
 #include "scene/gui/menu_button.h"
 #include "scene/gui/popup_menu.h"
 #include "scene/gui/spin_box.h"
+#include "scene/gui/option_button.h"
+#include "scene/gui/file_dialog.h"
 #include "scene/audio/audio_stream_player.h"
 #include "core/object/callable_mp.h"
 
@@ -59,6 +61,25 @@ private:
 
 	SymphonyNodeInspectorProxy *inspector_proxy = nullptr;
 
+	// SubGraph support.
+	FileDialog *file_dialog = nullptr;
+	int32_t pending_subgraph_node_id = -1; // ID reserved for the SubGraph node being created via file picker
+	static constexpr int SUBGRAPH_MENU_ID = 9999;
+	static constexpr int CREATE_SUBGRAPH_MENU_ID = 9998;
+
+	// Breadcrumb navigation stack.
+	struct NavEntry {
+		Ref<AudioStreamSymphony> resource;
+		Vector2 scroll_offset;
+	};
+	Vector<NavEntry> nav_stack; // Stack of parent graphs (current is always `stream`)
+	HBoxContainer *breadcrumb_bar = nullptr;
+
+	void _navigate_to(int p_depth); // Navigate to a specific breadcrumb level
+	void _push_subgraph(const String &p_resource_path);
+	void _rebuild_breadcrumbs();
+	void _on_node_gui_input(const Ref<InputEvent> &p_event, int32_t p_node_id);
+
 	// Clipboard for copy/paste (static for cross-graph support).
 	struct ClipboardData {
 		Vector<NodeDesc> nodes;
@@ -90,9 +111,18 @@ private:
 	void _on_node_position_changed(const StringName &p_node);
 	void _on_preview_pressed();
 	void _on_save_pressed();
+	void _on_delete_pressed();
 	void _on_param_changed(double p_value, int32_t p_node_id, const StringName &p_param_name);
 	void _on_collapse_toggled(bool p_collapsed, int32_t p_node_id);
 	void _set_params_visible(GraphNode *p_node, bool p_visible);
+
+	// SubGraph support.
+	void _on_file_dialog_file_selected(const String &p_path);
+	void _on_create_new_subgraph();
+	GraphNode *_create_subgraph_node(const NodeDesc &p_node);
+
+	// Pin type dropdown.
+	void _on_pin_type_changed(int p_index, int32_t p_node_id);
 
 	// Comment frames.
 	void _on_add_frame_pressed();
