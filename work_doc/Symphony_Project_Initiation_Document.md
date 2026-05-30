@@ -146,25 +146,24 @@ void MyOperator::Execute(int32_t num_frames) {
 ### 3.4 Graph Compilation Pipeline
 
 ```
-[Editor Graph (Resource)]
+[AudioStreamSymphony Resource (.tres)]
         │
         ▼
-[Validation] → Cycle detection, type checking, missing connections
+[GraphFlattener::flatten()] → Inline SubGraph nodes, remap IDs, cycle detection
         │
         ▼
-[Flattening] → Inline sub-graphs, resolve variables
+[GraphCompiler::compile()]
+  ├─ [Validation] → Type checking, missing required connections, unknown types
+  ├─ [Topological Sort] → Kahn's algorithm → linear operator array
+  ├─ [Arena Sizing] → Sum of operator states + output buffers + promotions
+  ├─ [Operator Creation] → Placement new in arena via create_fn
+  └─ [Pin Binding] → Input pointers → upstream output buffer addresses
         │
         ▼
-[Topological Sort] → Kahn's algorithm → linear operator array
-        │
-        ▼
-[Buffer Allocation] → Liveness analysis → arena size calculation
-        │
-        ▼
-[Compiled Graph] → Flat array of IOperator*, pre-allocated arena, pin pointer table
+[CompiledGraph] → Flat array of SymphonyOperator*, pre-allocated arena, promotion table
 ```
 
-Compilation happens on the main thread (or a worker thread). The compiled graph is atomically published to the audio thread via pointer swap.
+Compilation happens on the main thread. The compiled graph is atomically published to the audio thread via `swap_graph()` pointer swap. Old graph freed on main thread via deferred deletion.
 
 ### 3.5 Memory Model
 
@@ -202,21 +201,20 @@ For v1, we use `SafeNumeric<float>` (one atomic per exposed parameter). For v2, 
 
 ## 4. V1 Feature Scope
 
-### 4.1 Built-in Node Library (~20 Nodes)
+### 4.1 Built-in Node Library (21 Nodes — All Implemented)
 
-**Generators (5)**
+**Generators (4)**
 | Node | Description |
 |------|-------------|
 | Oscillator | Sine, saw, square, triangle with audio-rate frequency input |
 | Noise | White, pink noise generator |
-| WavePlayer | Plays an AudioStreamWAV resource with pitch control |
 | Constant | Outputs a fixed float value |
-| LFO | Low-frequency oscillator for modulation (sub-audio rate) |
+| LFO | Low-frequency oscillator for modulation (Float output, connects via implicit promotion) |
 
 **Filters (4)**
 | Node | Description |
 |------|-------------|
-| Biquad Filter | Low-pass, high-pass, band-pass, notch (audio-rate cutoff) |
+| Biquad Filter | Low-pass, high-pass, band-pass, notch (audio-rate cutoff modulation, per-micro-block coefficient recalc) |
 | One-Pole Filter | Simple smoothing filter for parameter interpolation |
 | DC Blocker | Removes DC offset from signal |
 | Saturator | Soft/hard clipping distortion |
@@ -224,15 +222,15 @@ For v1, we use `SafeNumeric<float>` (one atomic per exposed parameter). For v2, 
 **Envelopes & Dynamics (3)**
 | Node | Description |
 |------|-------------|
-| ADSR Envelope | Attack/Decay/Sustain/Release with trigger input |
+| ADSR Envelope | Attack/Decay/Sustain/Release with trigger input (sample-accurate block-splitting) |
 | Gain | Amplitude scaling with audio-rate modulation |
-| Compressor | Dynamic range compression |
+| Compressor | Peak-based dynamic range compression (RMS mode reserved for future) |
 
 **Math & Utility (4)**
 | Node | Description |
 |------|-------------|
-| Math (Add/Multiply/Subtract) | Arithmetic on audio or float signals |
-| Mix/Crossfade | Blend two signals with a mix parameter |
+| MathAdd | Audio-rate addition (A + B) |
+| Mix | Crossfade blend two signals with a mix parameter |
 | Map Range | Remap a value from one range to another |
 | Sample & Hold | Capture a value on trigger, hold until next trigger |
 
@@ -242,24 +240,38 @@ For v1, we use `SafeNumeric<float>` (one atomic per exposed parameter). For v2, 
 | Clock | Generates periodic triggers at a given BPM |
 | Trigger Delay | Delays a trigger by N samples or milliseconds |
 
-**I/O (2)**
+**I/O (4)**
 | Node | Description |
 |------|-------------|
-| Graph Input | Exposes a parameter to the game (GDScript API) |
-| Graph Output | Final stereo output of the graph |
+| GraphInput | Exposes a parameter to the game (GDScript API). Configurable pin_type, sort_order, display_name. |
+| GraphOutput | Final stereo output of the graph. Configurable pin_type, sort_order, display_name. |
+| TriggerInput | Exposes a trigger event to the game (GDScript API). |
+| SubGraph | References another AudioStreamSymphony resource. Flattened at compile time. Dynamic pins from referenced graph's I/O nodes. |
 
-### 4.2 Visual Editor
+**Deferred:**
+| Node | Status |
+|------|--------|
+| WavePlayer | Deferred — needs resource picker widget (not just SpinBox) |
+
+### 4.2 Visual Editor ✅ IMPLEMENTED
 
 - Built as `SymphonyEditorPlugin` in `modules/symphony/editor/`
-- Uses Godot's `GraphEdit` and `GraphNode` widgets
+- Uses Godot's `GraphEdit` and `GraphNode` widgets (bottom panel)
 - Features:
-  - Drag-and-drop node creation from a categorized palette
-  - Typed wire connections with color coding (audio = thick blue, float = thin green, trigger = dashed orange)
-  - Connection validation (type mismatch prevention, cycle detection)
-  - Undo/redo support via Godot's `EditorUndoRedoManager`
-  - Copy/paste/duplicate nodes and sub-selections
-  - Live preview via a hidden `AudioStreamPlayer` in the editor
-  - Per-node parameter editing in the Inspector panel
+  - Categorized Add Node menu (sub-menus by category, sanitized names for Godot node system)
+  - Typed wire connections with color coding (Audio=blue, Float=green, Int=yellow, Bool=white, Trigger=orange)
+  - Connection validation (type mismatch prevention via `add_valid_connection_type`, Float→Audio promotion allowed)
+  - Undo/redo support via `EditorUndoRedoManager` (all operations: add/remove node, connect/disconnect, move, param change, frames)
+  - Copy/paste/duplicate nodes with cross-graph static clipboard and ID remapping
+  - Comment frames using `GraphFrame` (resizable, title editable via Inspector)
+  - Live preview via hidden `AudioStreamPlayer` (hot-swap recompile on topology change)
+  - Per-node parameter editing via inline SpinBoxes + Inspector panel (bidirectional sync)
+  - Collapsible parameters (toggle button on titlebar, node resizes)
+  - Delete button on toolbar + Delete key support
+  - Save button (first save → file dialog, subsequent → overwrite)
+  - SubGraph breadcrumb navigation (double-click to enter, breadcrumb bar to go back)
+  - Pin type dropdown (OptionButton) on GraphInput/GraphOutput nodes
+  - Sort order SpinBox on I/O nodes
 
 ### 4.3 GDScript API
 
@@ -283,12 +295,16 @@ var pos = playback.get_playback_position()
 var is_playing = playback.is_playing()
 ```
 
-### 4.4 Sub-Graph Support
+### 4.4 Sub-Graph Support ✅ IMPLEMENTED
 
-- A Symphony graph can contain "Patch" nodes that reference another Symphony graph resource.
-- At compilation time, patches are inlined (flattened) into the parent graph.
-- Patches expose their Graph Input/Output nodes as pins on the parent node.
-- Enables DRY reuse: build a "Gunshot" patch once, use it in 50 different weapon graphs.
+- Every Symphony graph is a potential sub-graph. Any graph with `GraphInput`/`GraphOutput` nodes can be referenced by another graph.
+- `SubGraph` nodes reference another `AudioStreamSymphony` resource via `resource_path` param.
+- At compilation time, `GraphFlattener` recursively inlines sub-graphs into the parent (pre-pass before `GraphCompiler`).
+- Sub-graph pins are derived from the referenced graph's `GraphInput`/`GraphOutput` nodes, sorted by `(sort_order, editor_y, name)`.
+- Cycle detection: visited-path set + depth limit (32 levels). Compile error on circular reference.
+- Editor: "Add SubGraph (from file)..." opens FileDialog. "Create New SubGraph..." creates empty graph and prompts save.
+- Editor: Double-click SubGraph node → breadcrumb navigation into the sub-graph. Preview works at any depth.
+- Supports both external (separate `.tres`) and embedded (inline sub-resource) references via Godot's native resource system.
 
 ### 4.5 Basic Voice Management
 
@@ -302,142 +318,122 @@ var is_playing = playback.is_playing()
 
 ## 5. Development Roadmap
 
-### Phase 1: The Isolated Execution Sandbox (Weeks 1-2)
+### Phase 1: The Isolated Execution Sandbox ✅ COMPLETE
 
-**Goal:** Prove DSP math works inside Godot's audio pipeline without crashing.
-
-**Deliverables:**
+**Delivered:**
 - `modules/symphony/` directory with `SCsub`, `register_types.cpp`, `config.py`
-- `AudioStreamSymphony` resource class (minimal, holds graph data)
-- `AudioStreamPlaybackSymphony` with a hardcoded 3-node graph: Oscillator → Gain → Output
-- The `mix()` override outputs a clean sine wave through Godot's standard pipeline
-- Zero dynamic allocations during `mix()` — verified via custom `operator new` override in debug builds
+- `AudioStreamSymphony` resource class
+- `AudioStreamPlaybackSymphony` with micro-block execution
+- Clean sine wave output through Godot's standard pipeline
+- Zero dynamic allocations during `mix()`
 
-**Constraints:**
-- No visual UI
-- No serialization
-- No topological sorting (execution order is hardcoded)
-- Nodes are instantiated manually in `start()`
+### Phase 2: Internal Subdivision & Trigger Prototyping ✅ COMPLETE
 
-**Validation:**
-- Attach `AudioStreamSymphony` to an `AudioStreamPlayer` in a test scene
-- Hear a sine wave at the correct frequency
-- No audio glitches over 60 seconds of continuous playback
-- Memory profiler shows zero allocations after `start()` completes
+**Delivered:**
+- Internal 64-sample micro-block loop (8 iterations per 512-sample callback)
+- `TriggerBuffer` / `TriggerEvent` with sample-accurate offsets
+- ADSR envelope responding to triggers at precise sample positions
+- `SymphonyTriggerInput` node for game-thread trigger routing
 
-### Phase 2: Internal Subdivision & Trigger Prototyping (Week 3)
+### Phase 3: Topological Sorter & Pre-Allocation ✅ COMPLETE
 
-**Goal:** Achieve sample-accurate sub-block timing within the 512-sample buffer.
+**Delivered:**
+- `GraphCompiler` with full validation, cycle detection, type checking
+- Kahn's algorithm topological sort
+- `ArenaAllocator` with single contiguous allocation
+- Pin binding (input pointers → upstream output buffers)
+- `CompiledGraph` struct with operator array + arena
+- Atomic graph hot-swap via `swap_graph()` on audio thread
+- Float→Audio implicit promotion (compiler auto-fills 64-sample buffer from single float)
+- `SafeNumeric<float>` parameter routing (game thread → audio thread)
 
-**Deliverables:**
-- Internal micro-block loop: `mix()` iterates 8× over 64-sample chunks
-- `TriggerBuffer` data type implemented
-- `TriggerEvent` carries exact sample offset within micro-block
-- ADSR envelope node that responds to triggers at precise sample positions
-- Test: trigger an envelope at sample offset 35 — verify the attack starts exactly there (not at block boundary)
+### Phase 4: Editor UI & Resource Serialization ✅ COMPLETE
 
-**Validation:**
-- Record output to WAV file
-- Visually inspect waveform in Audacity — envelope onset aligns with expected sample position
-- Compare against a reference: trigger at offset 0 vs offset 35 must produce a 35-sample phase difference
+**Delivered (4A — Editor Polish):**
+- `SymphonyEditorPlugin` with `GraphEdit`-based canvas
+- Categorized Add Node menu (sub-menus by category)
+- Typed wire connections with color coding
+- Connection validation (type mismatch prevention via GraphEdit valid_connection_types)
+- Undo/redo via `EditorUndoRedoManager` for all operations
+- Copy/paste/duplicate with cross-graph static clipboard and ID remapping
+- Comment frames using `GraphFrame` (resizable, title editable)
+- Inspector integration (`SymphonyNodeInspectorProxy` with dynamic property list)
+- Collapsible parameters (toggle button on titlebar)
+- Live preview via hidden `AudioStreamPlayer`
+- Save button (first save → `save_resource_as()`, subsequent → `ResourceSaver::save()`)
+- Delete button on toolbar + Delete key support
+- Per-node parameter editing via inline SpinBoxes (bidirectional sync with Inspector)
 
-### Phase 3: Topological Sorter & Pre-Allocation (Weeks 4-6)
+**Delivered (4B — Node Library):**
+- 20 operators total across 6 categories:
+  - Generators (4): Oscillator, Constant, Noise, LFO
+  - Filters (4): BiquadFilter, OnePole, DCBlocker, Saturator
+  - Envelopes (3): Gain, ADSR, Compressor
+  - Math (4): MathAdd, Mix, MapRange, SampleHold
+  - Timing (2): Clock, TriggerDelay
+  - I/O (4): GraphInput, GraphOutput, TriggerInput, SubGraph
 
-**Goal:** Convert arbitrary node graphs into linear execution queues with pre-allocated memory.
+**Delivered (4C — Sub-Graph / Patch Support):**
+- `SubGraph` node type referencing another `AudioStreamSymphony` resource
+- `GraphFlattener` pre-pass: recursive inlining with ID remapping
+- Cycle detection via visited-path set (depth limit: 32)
+- `GraphInput`/`GraphOutput` upgraded with configurable `pin_type`, `sort_order`, `display_name`
+- Pin ordering: `sort_order` ASC → `editor_position.y` ASC → `name` ASC
+- Editor: dynamic pin rendering on SubGraph nodes (reads referenced resource's I/O)
+- Editor: "Add SubGraph (from file)..." with FileDialog
+- Editor: "Create New SubGraph..." (creates empty graph with one input + one output)
+- Editor: `pin_type` OptionButton dropdown on I/O nodes
+- Editor: Breadcrumb navigation (double-click SubGraph → navigate in, breadcrumb bar to go back)
+- Preview works at any navigation depth (plays currently-viewed graph)
 
-**Deliverables:**
-- `GraphCompiler` class:
-  - Accepts a graph description (nodes + connections)
-  - Validates: cycle detection, type checking, missing required connections
-  - Topological sort (Kahn's algorithm) → produces ordered `IOperator*` array
-  - Computes total arena size (sum of all operator state + output buffers)
-- `ArenaAllocator`:
-  - Single `malloc` during compilation
-  - Bump-pointer allocation for operator states and buffers
-  - `alignas(32)` for SIMD compatibility
-- Pin binding:
-  - After sort, resolve all input pins to point at upstream output buffer addresses
-- Compiled graph struct:
-  - `IOperator** operators` (sorted array)
-  - `int32_t operator_count`
-  - `uint8_t* arena` (single allocation)
-  - `size_t arena_size`
-- Atomic graph swap:
-  - Main thread compiles new graph → stores pointer atomically
-  - Audio thread picks up new graph at next block boundary
-  - Old graph sent to graveyard for deferred deletion
+**Delivered (Resource Serialization):**
+- Full `.tres` serialization via `_get_property_list` / `_get` / `_set`
+- Nodes, connections, frames, params all persisted
+- Sub-graph references stored as resource paths
 
-**Also in this phase:**
-- Design the GDScript API surface (even if not fully implemented yet)
-- Design the custom node registration interface (for future third-party nodes)
-- Error reporting: compilation errors stored as an array of diagnostic messages
+**Delivered (GDScript API):**
+- `set_parameter(name, value)` — routes to `GraphInput` nodes via `SafeNumeric<float>`
+- `trigger(name)` — routes to `TriggerInput` nodes
+- Playback lifecycle via standard `AudioStreamPlayer`
 
-**Validation:**
-- Build a 10-node graph programmatically (no UI yet)
-- Verify topological order respects all dependencies
-- Verify zero allocations during `Execute()` loop
-- Verify graph hot-swap: change a parameter mid-playback, hear the change without glitches
+**Not yet delivered (deferred to Phase 5):**
+- WavePlayer node (needs resource picker widget)
+- Extract-to-SubGraph refactoring operation
+- AUDIO-type `GraphInput` (pass-through audio from parent into sub-graph)
+- State migration for seamless hot-swap (currently brief restart on recompile)
 
-### Phase 4: Editor UI & Resource Serialization (Weeks 7-9)
+### Phase 5: Profiling & Voice Management (NEXT)
 
-**Goal:** Visual authoring workflow and persistence.
+**Goal:** Measure real performance, implement voice management, validate tiers 1-3.
 
-**Deliverables:**
-- `SymphonyEditorPlugin` (`editor/plugins/symphony_editor_plugin.cpp`):
-  - `GraphEdit`-based node canvas
-  - Node palette (categorized: Generators, Filters, Envelopes, Math, Timing, I/O)
-  - Wire drawing with type-based color coding
-  - Connection validation (prevent type mismatches, detect cycles on connect)
-  - Undo/redo via `EditorUndoRedoManager`
-  - Copy/paste/duplicate
-  - Inspector integration for per-node parameter editing
-- Resource serialization:
-  - `AudioStreamSymphony` saves/loads via standard Godot `Resource` system (`.tres` / `.res`)
-  - Graph topology stored as node array + connection array
-  - Sub-graph references stored as resource paths
-- Live editor preview:
-  - Hidden `AudioStreamPlayer` in editor viewport
-  - Plays the current graph on demand (button or auto-play on change)
-  - Recompiles graph on topology change, hot-swaps into playing instance
-- GDScript API implementation:
-  - `set_parameter(name, value)`
-  - `trigger(name, payload)`
-  - `is_playing()`
-  - `get_playback_position()`
+**Planned Deliverables:**
+- Built-in profiling: per-voice timing, total budget %, peak tracking, memory per voice
+- GDScript API: `get_voice_cpu_microseconds()`, `get_budget_percent()`
+- Voice manager: priority-based stealing (priority + quietest), global limit, budget thresholds
+- `voice_priority` property on AudioStreamSymphony (designer-facing) + runtime override
+- RMS tracking per voice (for quietest-first stealing)
+- GDScript stress-test scene (configurable voices, complexity, HUD with metrics)
+- Trivial optimizations: `__restrict__` on pin pointers, loop hints
+- Measurement runs for tiers 1-3 (10, 25, 50 voices)
 
-**Validation:**
-- Create a graph visually in the editor
-- Save, close, reopen — graph is identical
-- Press "Preview" — hear the graph in the editor
-- Connect the graph to an `AudioStreamPlayer` in a scene — plays correctly at runtime
-- Call `set_parameter()` from GDScript — hear the change in real-time
+**Target:** 50 mixed-complexity voices < 40% budget on M2 macOS (512-sample buffer @ 44.1kHz)
 
-### Phase 5: Profiling & Justified Optimization (Week 10+)
+**Deferred to Phase 6:** Web testing, SIMD intrinsics, buffer liveness analysis, worker thread compilation, voice tiers 4+5 (80, 120)
 
-**Goal:** Stress-test under production load. Optimize only where measurements demand it.
+### Phase 6: Optimize For Quest (Web + Scale)
 
-**Deliverables:**
-- Stress test: 100-500 concurrent Symphony voices with varying graph complexity
-- Per-voice CPU cost measurement (rdtsc or high_resolution_clock)
-- Voice management system:
-  - Configurable max voices per graph type
-  - Stealing policy (oldest / quietest / highest-cost)
-  - CPU budget warning when approaching audio deadline
-- Performance profiling:
-  - Identify cache thrashing patterns → implement buffer liveness analysis if needed
-  - Identify mutex contention → implement lock-free command queue if needed
-  - Identify SIMD opportunities → add `__restrict__` and alignment hints to critical loops
-- Cross-platform validation: Windows, Linux, macOS, Android, Web (if applicable)
+**Goal:** Web export validation, advanced optimizations driven by Phase 5 data, scale to 80-120 voices.
 
-**Optimization decisions gated behind data:**
+**Planned Deliverables:**
+- Web export (Emscripten/WASM) — verify module compiles and runs
+- Web performance target: 25 voices < 60% budget (128-sample buffer, 2.9ms deadline)
+- Advanced optimizations as needed: SIMD intrinsics, buffer liveness, worker thread compilation
+- Voice tiers 4+5 (80, 120 voices) stress testing
+- Cross-platform validation (Windows, Linux, Web)
+- WavePlayer node implementation (resource picker widget)
+- AUDIO-type GraphInput (audio pass-through into sub-graphs)
 
-| Observation | Response |
-|-------------|----------|
-| Buffer memory exceeds budget at high voice counts | Implement liveness analysis (register allocation for buffers) |
-| Driver mutex causes measurable dropouts | Propose lock-free command queue patch to `audio_server.cpp` |
-| Inner loops not auto-vectorizing | Add SIMD intrinsics or restructure loops |
-| Graph recompilation causes audio glitch | Implement state migration (ExportState/ImportState) |
-| Editor preview stutters on large graphs | Move compilation to worker thread |
+**Depends on:** Phase 5 profiling data to determine which optimizations are needed.
 
 ---
 
@@ -535,69 +531,67 @@ These topics require study during Phases 3-5. None block Phase 1-2.
 
 ---
 
-## 8. Module File Structure
+## 8. Module File Structure (Current)
 
 ```
 modules/symphony/
-├── SCsub                              # Build configuration
-├── config.py                          # Module detection and dependencies
-├── register_types.cpp                 # ClassDB registration
+├── SCsub                              # Build configuration (globs *.cpp in each subdir)
+├── config.py                          # Module detection
+├── register_types.cpp                 # ClassDB + OperatorRegistry registration
 ├── register_types.h
 │
 ├── core/                              # Runtime execution engine
-│   ├── symphony_operator.h            # IOperator interface
-│   ├── symphony_operator.cpp
-│   ├── symphony_graph_compiler.h      # Topological sort, validation, arena sizing
+│   ├── symphony_operator.h            # SymphonyOperator base class (bind_pins + execute)
+│   ├── symphony_operator_registry.h   # OperatorDescriptor + singleton registry
+│   ├── symphony_operator_registry.cpp
+│   ├── symphony_graph_description.h   # NodeDesc, ConnectionDesc, FrameDesc, GraphDescription
+│   ├── symphony_graph_compiler.h      # GraphCompiler::compile() — validation, topo sort, arena
 │   ├── symphony_graph_compiler.cpp
-│   ├── symphony_arena_allocator.h     # Bump allocator for operator buffers
-│   ├── symphony_arena_allocator.cpp
-│   ├── symphony_trigger.h             # TriggerBuffer, TriggerEvent
-│   ├── symphony_pin_types.h           # Pin type definitions and routing
-│   └── symphony_compiled_graph.h      # Compiled graph struct (operator array + arena)
+│   ├── symphony_graph_flattener.h     # GraphFlattener::flatten() — SubGraph inlining
+│   ├── symphony_graph_flattener.cpp
+│   ├── symphony_compiled_graph.h      # CompiledGraph struct (operator array + arena + execute)
+│   ├── symphony_arena_allocator.h     # Bump allocator (single malloc, aligned alloc)
+│   ├── symphony_pin_types.h           # SymphonyPinType enum + MICRO_BLOCK_SIZE constant
+│   └── symphony_trigger.h             # TriggerBuffer, TriggerEvent (sample-accurate)
 │
 ├── stream/                            # Godot integration layer
-│   ├── audio_stream_symphony.h        # AudioStream resource (holds graph data)
-│   ├── audio_stream_symphony.cpp
-│   ├── audio_stream_playback_symphony.h   # AudioStreamPlayback (runtime executor)
+│   ├── audio_stream_symphony.h        # AudioStream resource (holds GraphDescription)
+│   ├── audio_stream_symphony.cpp      # Serialization, compile_graph(), test graph builder
+│   ├── audio_stream_playback_symphony.h   # AudioStreamPlayback (mix loop, hot-swap)
 │   └── audio_stream_playback_symphony.cpp
 │
-├── nodes/                             # Built-in operator implementations
+├── nodes/                             # Built-in operator implementations (header-only)
 │   ├── generators/
-│   │   ├── symphony_oscillator.h/.cpp
-│   │   ├── symphony_noise.h/.cpp
-│   │   ├── symphony_wave_player.h/.cpp
-│   │   ├── symphony_constant.h/.cpp
-│   │   └── symphony_lfo.h/.cpp
+│   │   ├── symphony_oscillator.h      # Sine/saw/square/triangle, audio-rate freq input
+│   │   ├── symphony_constant.h        # Fixed float value output
+│   │   ├── symphony_noise.h           # White/pink noise
+│   │   └── symphony_lfo.h            # Low-frequency oscillator (Float output)
 │   ├── filters/
-│   │   ├── symphony_biquad_filter.h/.cpp
-│   │   ├── symphony_one_pole.h/.cpp
-│   │   ├── symphony_dc_blocker.h/.cpp
-│   │   └── symphony_saturator.h/.cpp
+│   │   ├── symphony_biquad_filter.h   # LP/HP/BP/Notch with audio-rate cutoff
+│   │   ├── symphony_one_pole.h        # Simple smoothing filter
+│   │   ├── symphony_dc_blocker.h      # DC offset removal
+│   │   └── symphony_saturator.h       # Soft/hard clipping
 │   ├── envelopes/
-│   │   ├── symphony_adsr.h/.cpp
-│   │   ├── symphony_gain.h/.cpp
-│   │   └── symphony_compressor.h/.cpp
+│   │   ├── symphony_gain.h            # Amplitude scaling
+│   │   ├── symphony_adsr.h            # Attack/Decay/Sustain/Release with trigger
+│   │   └── symphony_compressor.h      # Peak-based dynamic range compression
 │   ├── math/
-│   │   ├── symphony_math_ops.h/.cpp
-│   │   ├── symphony_mix.h/.cpp
-│   │   ├── symphony_map_range.h/.cpp
-│   │   └── symphony_sample_hold.h/.cpp
+│   │   ├── symphony_math_add.h        # Audio-rate addition (A + B)
+│   │   ├── symphony_mix.h            # Crossfade blend
+│   │   ├── symphony_map_range.h       # Value remapping
+│   │   └── symphony_sample_hold.h     # Capture on trigger, hold until next
 │   ├── timing/
-│   │   ├── symphony_clock.h/.cpp
-│   │   └── symphony_trigger_delay.h/.cpp
+│   │   ├── symphony_clock.h           # Periodic trigger generator (BPM)
+│   │   └── symphony_trigger_delay.h   # Delay trigger by N samples
 │   └── io/
-│       ├── symphony_graph_input.h/.cpp
-│       └── symphony_graph_output.h/.cpp
+│       ├── symphony_graph_input.h     # Game→audio parameter (SafeNumeric), configurable pin_type
+│       ├── symphony_graph_output.h    # Final output to AudioFrame buffer, configurable pin_type
+│       ├── symphony_trigger_input.h   # Game→audio trigger routing
+│       └── symphony_subgraph.h        # SubGraph reference node (flattener-only, no create_fn)
 │
-├── editor/                            # Editor plugin (only compiled in editor builds)
-│   ├── symphony_editor_plugin.h/.cpp
-│   ├── symphony_graph_edit.h/.cpp     # Custom GraphEdit subclass
-│   ├── symphony_node_palette.h/.cpp   # Node creation menu
-│   └── symphony_preview_player.h/.cpp # Editor audio preview
-│
-└── doc_classes/                       # XML class documentation
-    ├── AudioStreamSymphony.xml
-    └── AudioStreamPlaybackSymphony.xml
+└── editor/                            # Editor plugin (TOOLS_ENABLED only)
+    ├── symphony_editor_plugin.h       # SymphonyEditorPlugin, SymphonyGraphEditor, InspectorProxy
+    └── symphony_editor_plugin.cpp     # Full editor: GraphEdit, menus, undo/redo, breadcrumbs, preview
 ```
 
 ---
@@ -637,16 +631,20 @@ These open-source projects implement similar patterns and serve as implementatio
 
 ---
 
-## 11. Open Questions (To Resolve During Development)
+## 11. Open Questions (Status)
 
-| Question | Phase | Notes |
-|----------|-------|-------|
-| Should the internal micro-block size be user-configurable or fixed at 64? | Phase 2 | Start fixed, make configurable if profiling shows need |
-| How do we handle stereo vs mono signals in the pin system? | Phase 1 | Options: always stereo (simple), typed mono/stereo pins (flexible), auto-upmix |
-| What's the file extension for Symphony graphs? | Phase 4 | `.symphony`, `.sgraph`, `.tres` with custom type? |
-| Should sub-graphs be inlined at compile time or instantiated at runtime? | Phase 3 | Inlining is simpler and faster; runtime instantiation allows dynamic patching |
-| How do we expose Symphony to GDExtension developers for custom node authoring? | Phase 5+ | Need a stable C API for `IOperator` registration |
-| Do we support multi-channel (surround) output or stereo only in v1? | Phase 1 | Stereo only for v1. Multi-channel is a v2 feature. |
+| Question | Phase | Resolution |
+|----------|-------|------------|
+| Should the internal micro-block size be user-configurable or fixed at 64? | Phase 2 | **Fixed at 64.** `SYMPHONY_MICRO_BLOCK_SIZE` is a compile-time constant. |
+| How do we handle stereo vs mono signals in the pin system? | Phase 1 | **Mono internally.** GraphOutput copies mono to stereo AudioFrame (L=R). Multi-channel is v2. |
+| What's the file extension for Symphony graphs? | Phase 4 | **`.tres`** — standard Godot resource format. Custom serialization via `_get_property_list`. |
+| Should sub-graphs be inlined at compile time or instantiated at runtime? | Phase 3 | **Inlined at compile time** via `GraphFlattener` pre-pass. Zero runtime overhead. |
+| How do we expose Symphony to GDExtension developers for custom node authoring? | Phase 5+ | **Open.** Need a stable C API for `OperatorDescriptor` registration. |
+| Do we support multi-channel (surround) output or stereo only in v1? | Phase 1 | **Stereo only.** GraphOutput writes mono→stereo. |
+| Float→Audio type conversion? | Phase 4B | **Implicit promotion.** Compiler auto-fills 64-sample buffer from single float value. |
+| Sub-graph pin ordering? | Phase 4C | **sort_order ASC → editor_y ASC → name ASC.** Visible SpinBox on I/O nodes. |
+| Sub-graph cycle detection? | Phase 4C | **Compile-time only.** Visited-path set + depth limit 32. Edit-time detection deferred. |
+| Sub-graph preview behavior? | Phase 4C | **Preview plays current graph only** (MetaSound pattern). Navigate into sub-graph to preview it. |
 
 ---
 
@@ -669,7 +667,9 @@ These open-source projects implement similar patterns and serve as implementatio
 ---
 
 *Document created: May 21, 2026*
+*Last updated: May 30, 2026*
 *Module name: Symphony*
-*Target engine: Godot (master branch)*
+*Target engine: Godot 4.6 (master branch)*
 *Architecture: C++ Module (`modules/symphony/`)*
-*V1 scope: ~20 nodes, visual editor, GDScript API, sub-graphs, basic voice management*
+*Current status: Phases 1-4 complete. Phase 5 (profiling & optimization) next.*
+*Node count: 21 operators implemented (4 generators, 4 filters, 3 envelopes, 4 math, 2 timing, 4 I/O)*
