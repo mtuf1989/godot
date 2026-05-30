@@ -7,9 +7,9 @@
 // Adds two audio-rate signals sample-by-sample.
 class SymphonyMathAdd : public SymphonyOperator {
 private:
-	const float *input_a = nullptr;
-	const float *input_b = nullptr;
-	float *output = nullptr;
+	const float *__restrict__ input_a = nullptr;
+	const float *__restrict__ input_b = nullptr;
+	float *__restrict__ output = nullptr;
 
 public:
 	SymphonyMathAdd() {}
@@ -21,6 +21,7 @@ public:
 	}
 
 	virtual void execute(int32_t p_num_frames) override {
+		SYMPHONY_ASSUME_FRAMES(p_num_frames);
 		for (int32_t i = 0; i < p_num_frames; i++) {
 			output[i] = input_a[i] + input_b[i];
 		}

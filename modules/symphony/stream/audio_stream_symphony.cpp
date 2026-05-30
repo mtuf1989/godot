@@ -10,8 +10,13 @@
 void AudioStreamSymphony::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_mix_rate", "rate"), &AudioStreamSymphony::set_mix_rate);
 	ClassDB::bind_method(D_METHOD("get_mix_rate"), &AudioStreamSymphony::get_mix_rate);
+	ClassDB::bind_method(D_METHOD("set_voice_priority", "priority"), &AudioStreamSymphony::set_voice_priority);
+	ClassDB::bind_method(D_METHOD("get_voice_priority"), &AudioStreamSymphony::get_voice_priority);
 	ClassDB::bind_method(D_METHOD("load_test_graph"), &AudioStreamSymphony::load_test_graph);
+	ClassDB::bind_method(D_METHOD("load_test_graph_30"), &AudioStreamSymphony::load_test_graph_30);
+	ClassDB::bind_method(D_METHOD("load_test_graph_50"), &AudioStreamSymphony::load_test_graph_50);
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "mix_rate", PROPERTY_HINT_RANGE, "22050,96000,1"), "set_mix_rate", "get_mix_rate");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "voice_priority", PROPERTY_HINT_RANGE, "0,100,1"), "set_voice_priority", "get_voice_priority");
 }
 
 // --- Resource serialization ---
@@ -313,6 +318,14 @@ float AudioStreamSymphony::get_mix_rate() const {
 	return mix_rate;
 }
 
+void AudioStreamSymphony::set_voice_priority(int p_priority) {
+	voice_priority = CLAMP(p_priority, 0, 100);
+}
+
+int AudioStreamSymphony::get_voice_priority() const {
+	return voice_priority;
+}
+
 void AudioStreamSymphony::set_graph_description(const GraphDescription &p_desc) {
 	graph_desc = p_desc;
 }
@@ -446,6 +459,225 @@ GraphDescription AudioStreamSymphony::build_test_graph_10_nodes() {
 
 void AudioStreamSymphony::load_test_graph() {
 	graph_desc = build_test_graph_10_nodes();
+}
+
+void AudioStreamSymphony::load_test_graph_30() {
+	graph_desc = build_test_graph_30_nodes();
+}
+
+void AudioStreamSymphony::load_test_graph_50() {
+	graph_desc = build_test_graph_50_nodes();
+}
+
+GraphDescription AudioStreamSymphony::build_test_graph_30_nodes() {
+	// 30-node graph: 3 oscillator voices, each with filter + envelope, mixed together,
+	// then through a compressor chain.
+	// Voice A: Const(220) -> Osc -> BiquadLP -> Gain -> ADSR
+	// Voice B: Const(330) -> Osc -> BiquadHP -> Gain -> ADSR
+	// Voice C: Const(550) -> Osc -> BiquadLP -> Gain -> ADSR
+	// LFO -> OnePole (smoothed) -> Voice A filter cutoff
+	// Mix A+B -> Mix (A+B)+C -> Gain -> Compressor -> DCBlocker -> Saturator -> Gain -> GraphOutput
+	// Plus extra constants for filter cutoffs and gain staging = 30+ nodes
+
+	GraphDescription desc;
+	int32_t id = 0;
+
+	auto add_node = [&](const char *type, const HashMap<StringName, Variant> &params = {}) -> int32_t {
+		NodeDesc n;
+		n.id = id;
+		n.type_name = type;
+		n.params = params;
+		desc.nodes.push_back(n);
+		return id++;
+	};
+
+	auto connect = [&](int32_t from, int32_t from_pin, int32_t to, int32_t to_pin) {
+		desc.connections.push_back({ from, from_pin, to, to_pin });
+	};
+
+	auto make_params = [](std::initializer_list<std::pair<const char *, float>> list) {
+		HashMap<StringName, Variant> p;
+		for (auto &kv : list) {
+			p[StringName(kv.first)] = kv.second;
+		}
+		return p;
+	};
+
+	// Voice A: nodes 0-4
+	int32_t const_a = add_node("Constant", make_params({ { "value", 220.0f } }));
+	int32_t osc_a = add_node("Oscillator");
+	int32_t filt_a = add_node("BiquadFilter", make_params({ { "mode", 0.0f }, { "cutoff", 2000.0f }, { "resonance", 1.5f } }));
+	int32_t gain_a = add_node("Gain", make_params({ { "gain", 0.4f } }));
+	int32_t adsr_a = add_node("ADSR", make_params({ { "attack", 0.001f }, { "decay", 0.01f }, { "sustain", 1.0f }, { "release", 0.05f } }));
+
+	connect(const_a, 0, osc_a, 0);
+	connect(osc_a, 0, filt_a, 0);
+	connect(filt_a, 0, gain_a, 0);
+	connect(gain_a, 0, adsr_a, 0);
+
+	// Voice B: nodes 5-9
+	int32_t const_b = add_node("Constant", make_params({ { "value", 330.0f } }));
+	int32_t osc_b = add_node("Oscillator");
+	int32_t filt_b = add_node("BiquadFilter", make_params({ { "mode", 1.0f }, { "cutoff", 800.0f }, { "resonance", 0.707f } }));
+	int32_t gain_b = add_node("Gain", make_params({ { "gain", 0.3f } }));
+	int32_t adsr_b = add_node("ADSR", make_params({ { "attack", 0.001f }, { "decay", 0.01f }, { "sustain", 1.0f }, { "release", 0.05f } }));
+
+	connect(const_b, 0, osc_b, 0);
+	connect(osc_b, 0, filt_b, 0);
+	connect(filt_b, 0, gain_b, 0);
+	connect(gain_b, 0, adsr_b, 0);
+
+	// Voice C: nodes 10-14
+	int32_t const_c = add_node("Constant", make_params({ { "value", 550.0f } }));
+	int32_t osc_c = add_node("Oscillator");
+	int32_t filt_c = add_node("BiquadFilter", make_params({ { "mode", 0.0f }, { "cutoff", 3000.0f }, { "resonance", 2.0f } }));
+	int32_t gain_c = add_node("Gain", make_params({ { "gain", 0.3f } }));
+	int32_t adsr_c = add_node("ADSR", make_params({ { "attack", 0.001f }, { "decay", 0.01f }, { "sustain", 1.0f }, { "release", 0.05f } }));
+
+	connect(const_c, 0, osc_c, 0);
+	connect(osc_c, 0, filt_c, 0);
+	connect(filt_c, 0, gain_c, 0);
+	connect(gain_c, 0, adsr_c, 0);
+
+	// LFO -> OnePole -> Voice A filter cutoff modulation: nodes 15-17
+	int32_t lfo_freq = add_node("Constant", make_params({ { "value", 2000.0f } })); // Cutoff center
+	int32_t lfo = add_node("LFO", make_params({ { "rate", 3.0f }, { "waveform", 0.0f } }));
+	int32_t lfo_smooth = add_node("OnePole", make_params({ { "cutoff", 10.0f } }));
+
+	connect(lfo, 0, lfo_smooth, 0); // LFO FLOAT -> OnePole (Float->Audio promotion)
+	connect(lfo_smooth, 0, filt_a, 1); // Smoothed LFO -> filter A cutoff
+	connect(lfo_freq, 0, filt_b, 1); // Constant cutoff -> filter B cutoff
+
+	// Mix chain: nodes 18-19
+	int32_t mix_ab = add_node("MathAdd");
+	int32_t mix_abc = add_node("MathAdd");
+
+	connect(adsr_a, 0, mix_ab, 0);
+	connect(adsr_b, 0, mix_ab, 1);
+	connect(mix_ab, 0, mix_abc, 0);
+	connect(adsr_c, 0, mix_abc, 1);
+
+	// Master chain: nodes 20-26
+	int32_t master_gain = add_node("Gain", make_params({ { "gain", 0.5f } }));
+	int32_t comp = add_node("Compressor", make_params({ { "threshold", -12.0f }, { "ratio", 4.0f }, { "attack", 0.01f }, { "release", 0.1f } }));
+	int32_t dc_block = add_node("DCBlocker");
+	int32_t sat = add_node("Saturator", make_params({ { "drive", 1.5f } }));
+	int32_t post_gain = add_node("Gain", make_params({ { "gain", 0.3f } }));
+	int32_t post_filt = add_node("BiquadFilter", make_params({ { "mode", 0.0f }, { "cutoff", 16000.0f }, { "resonance", 0.707f } }));
+	int32_t output = add_node("GraphOutput");
+
+	connect(mix_abc, 0, master_gain, 0);
+	connect(master_gain, 0, comp, 0);
+	connect(comp, 0, dc_block, 0);
+	connect(dc_block, 0, sat, 0);
+	connect(sat, 0, post_gain, 0);
+	connect(post_gain, 0, post_filt, 0);
+
+	// Extra padding nodes to reach 30: noise + filter + gain (silent but processed)
+	int32_t noise = add_node("Noise");
+	int32_t noise_filt = add_node("BiquadFilter", make_params({ { "mode", 0.0f }, { "cutoff", 500.0f }, { "resonance", 1.0f } }));
+	int32_t noise_gain = add_node("Gain", make_params({ { "gain", 0.0f } })); // Silent
+
+	connect(noise, 0, noise_filt, 0);
+	connect(noise_filt, 0, noise_gain, 0);
+
+	// Mix post_filt + silent noise -> output
+	int32_t final_mix = add_node("MathAdd");
+	connect(post_filt, 0, final_mix, 0);
+	connect(noise_gain, 0, final_mix, 1);
+	connect(final_mix, 0, output, 0);
+
+	return desc;
+}
+
+GraphDescription AudioStreamSymphony::build_test_graph_50_nodes() {
+	// 50-node graph: 5 oscillator voices with individual filter chains,
+	// mixed in a tree, through a multi-stage master chain.
+
+	GraphDescription desc;
+	int32_t id = 0;
+
+	auto add_node = [&](const char *type, const HashMap<StringName, Variant> &params = {}) -> int32_t {
+		NodeDesc n;
+		n.id = id;
+		n.type_name = type;
+		n.params = params;
+		desc.nodes.push_back(n);
+		return id++;
+	};
+
+	auto connect = [&](int32_t from, int32_t from_pin, int32_t to, int32_t to_pin) {
+		desc.connections.push_back({ from, from_pin, to, to_pin });
+	};
+
+	auto make_params = [](std::initializer_list<std::pair<const char *, float>> list) {
+		HashMap<StringName, Variant> p;
+		for (auto &kv : list) {
+			p[StringName(kv.first)] = kv.second;
+		}
+		return p;
+	};
+
+	// 5 voices, each: Constant -> Oscillator -> BiquadFilter -> Gain -> ADSR -> OnePole (8 nodes each = 40)
+	float freqs[5] = { 110.0f, 220.0f, 330.0f, 440.0f, 660.0f };
+	float cutoffs[5] = { 1000.0f, 2000.0f, 1500.0f, 3000.0f, 4000.0f };
+	int32_t voice_outputs[5];
+
+	for (int v = 0; v < 5; v++) {
+		int32_t freq_const = add_node("Constant", make_params({ { "value", freqs[v] } }));
+		int32_t osc = add_node("Oscillator");
+		int32_t filt = add_node("BiquadFilter", make_params({ { "mode", 0.0f }, { "cutoff", cutoffs[v] }, { "resonance", 1.2f } }));
+		int32_t gain = add_node("Gain", make_params({ { "gain", 0.2f } }));
+		int32_t adsr = add_node("ADSR", make_params({ { "attack", 0.001f }, { "decay", 0.02f }, { "sustain", 1.0f }, { "release", 0.05f } }));
+		int32_t smooth = add_node("OnePole", make_params({ { "cutoff", 8000.0f } }));
+		// Extra: second filter stage for more processing
+		int32_t filt2 = add_node("BiquadFilter", make_params({ { "mode", 0.0f }, { "cutoff", cutoffs[v] * 1.5f }, { "resonance", 0.707f } }));
+		int32_t gain2 = add_node("Gain", make_params({ { "gain", 0.8f } }));
+
+		connect(freq_const, 0, osc, 0);
+		connect(osc, 0, filt, 0);
+		connect(filt, 0, gain, 0);
+		connect(gain, 0, adsr, 0);
+		connect(adsr, 0, smooth, 0);
+		connect(smooth, 0, filt2, 0);
+		connect(filt2, 0, gain2, 0);
+
+		voice_outputs[v] = gain2;
+	}
+
+	// Mix tree: 4 MathAdd nodes to combine 5 voices (nodes 40-43)
+	int32_t mix01 = add_node("MathAdd");
+	int32_t mix23 = add_node("MathAdd");
+	int32_t mix0123 = add_node("MathAdd");
+	int32_t mix_all = add_node("MathAdd");
+
+	connect(voice_outputs[0], 0, mix01, 0);
+	connect(voice_outputs[1], 0, mix01, 1);
+	connect(voice_outputs[2], 0, mix23, 0);
+	connect(voice_outputs[3], 0, mix23, 1);
+	connect(mix01, 0, mix0123, 0);
+	connect(mix23, 0, mix0123, 1);
+	connect(mix0123, 0, mix_all, 0);
+	connect(voice_outputs[4], 0, mix_all, 1);
+
+	// Master chain: Gain -> Compressor -> DCBlocker -> Saturator -> BiquadLP -> Gain -> GraphOutput (nodes 44-50)
+	int32_t master_gain = add_node("Gain", make_params({ { "gain", 0.4f } }));
+	int32_t comp = add_node("Compressor", make_params({ { "threshold", -10.0f }, { "ratio", 3.0f }, { "attack", 0.005f }, { "release", 0.08f } }));
+	int32_t dc = add_node("DCBlocker");
+	int32_t sat = add_node("Saturator", make_params({ { "drive", 1.2f } }));
+	int32_t master_filt = add_node("BiquadFilter", make_params({ { "mode", 0.0f }, { "cutoff", 18000.0f }, { "resonance", 0.707f } }));
+	int32_t final_gain = add_node("Gain", make_params({ { "gain", 0.25f } }));
+	int32_t output = add_node("GraphOutput");
+
+	connect(mix_all, 0, master_gain, 0);
+	connect(master_gain, 0, comp, 0);
+	connect(comp, 0, dc, 0);
+	connect(dc, 0, sat, 0);
+	connect(sat, 0, master_filt, 0);
+	connect(master_filt, 0, final_gain, 0);
+	connect(final_gain, 0, output, 0);
+
+	return desc;
 }
 
 Ref<AudioStreamPlayback> AudioStreamSymphony::instantiate_playback() {

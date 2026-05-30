@@ -10,7 +10,7 @@
 // sort_order + display_name control how this appears as a pin on a SubGraph node.
 class SymphonyGraphOutput : public SymphonyOperator {
 private:
-	const float *input = nullptr;
+	const float *__restrict__ input = nullptr;
 	AudioFrame *output_frames = nullptr;
 	int32_t output_offset = 0;
 
@@ -30,6 +30,7 @@ public:
 		if (!output_frames || !input) {
 			return;
 		}
+		SYMPHONY_ASSUME_FRAMES(p_num_frames);
 		for (int32_t i = 0; i < p_num_frames; i++) {
 			float sample = input[i];
 			output_frames[output_offset + i] = AudioFrame(sample, sample);

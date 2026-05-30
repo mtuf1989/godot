@@ -37,8 +37,9 @@ struct CompiledGraph {
 		// Fill promotion buffers (Float→Audio).
 		for (int32_t i = 0; i < promotion_count; i++) {
 			float val = promotions[i].src[0];
+			float *__restrict__ dst = promotions[i].dst;
 			for (int32_t s = 0; s < p_num_frames; s++) {
-				promotions[i].dst[s] = val;
+				dst[s] = val;
 			}
 		}
 		// Clear all trigger buffers at the start of each micro-block

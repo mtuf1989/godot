@@ -3,6 +3,7 @@
 #include "stream/audio_stream_symphony.h"
 #include "stream/audio_stream_playback_symphony.h"
 #include "core/symphony_operator_registry.h"
+#include "core/symphony_voice_manager.h"
 
 #include "nodes/generators/symphony_oscillator.h"
 #include "nodes/generators/symphony_constant.h"
@@ -27,6 +28,7 @@
 #include "nodes/io/symphony_subgraph.h"
 
 #include "core/object/class_db.h"
+#include "core/config/engine.h"
 
 #ifdef TOOLS_ENABLED
 #include "editor/symphony_editor_plugin.h"
@@ -73,6 +75,11 @@ void initialize_symphony_module(ModuleInitializationLevel p_level) {
 		// Register Godot classes
 		GDREGISTER_CLASS(AudioStreamSymphony);
 		GDREGISTER_CLASS(AudioStreamPlaybackSymphony);
+		GDREGISTER_CLASS(SymphonyVoiceManager);
+
+		// Create voice manager singleton
+		memnew(SymphonyVoiceManager);
+		Engine::get_singleton()->add_singleton(Engine::Singleton("SymphonyVoiceManager", SymphonyVoiceManager::get_singleton()));
 #ifdef TOOLS_ENABLED
 	} else if (p_level == MODULE_INITIALIZATION_LEVEL_EDITOR) {
 		GDREGISTER_CLASS(SymphonyNodeInspectorProxy);
@@ -84,6 +91,10 @@ void initialize_symphony_module(ModuleInitializationLevel p_level) {
 
 void uninitialize_symphony_module(ModuleInitializationLevel p_level) {
 	if (p_level == MODULE_INITIALIZATION_LEVEL_SCENE) {
+		Engine::get_singleton()->remove_singleton("SymphonyVoiceManager");
+		if (SymphonyVoiceManager::get_singleton()) {
+			memdelete(SymphonyVoiceManager::get_singleton());
+		}
 		OperatorRegistry::destroy_singleton();
 	}
 }

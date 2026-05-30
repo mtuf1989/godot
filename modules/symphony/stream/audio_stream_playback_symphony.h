@@ -13,6 +13,7 @@
 class AudioStreamPlaybackSymphony : public AudioStreamPlayback {
 	GDCLASS(AudioStreamPlaybackSymphony, AudioStreamPlayback)
 	friend class AudioStreamSymphony;
+	friend class SymphonyVoiceManager;
 
 private:
 	Ref<AudioStreamSymphony> stream;
@@ -33,6 +34,12 @@ private:
 	// Parameter/trigger routing tables (rebuilt on graph swap).
 	HashMap<StringName, SymphonyGraphInput *> parameter_map;
 	HashMap<StringName, SymphonyTriggerInput *> trigger_map;
+
+	// --- Profiling ---
+	float last_mix_time_us = 0.0f;   // Total mix() time in microseconds
+	float last_rms = 0.0f;           // RMS of last mix() output
+	int32_t last_frame_count = 0;    // Frame count of last mix() call
+	float mix_rate_cached = 44100.0f;
 
 	void cleanup_graveyard();
 	void find_graph_output();
@@ -56,6 +63,12 @@ public:
 	// GDScript API — overrides AudioStreamPlayback virtuals.
 	virtual void set_parameter(const StringName &p_name, const Variant &p_value) override;
 	void trigger(const StringName &p_name, float p_value = 1.0f);
+
+	// Profiling API
+	float get_voice_cpu_microseconds() const;
+	float get_budget_percent() const;
+	float get_last_rms() const;
+	int get_effective_priority() const;
 
 	~AudioStreamPlaybackSymphony();
 };

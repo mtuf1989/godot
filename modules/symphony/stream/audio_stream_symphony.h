@@ -12,6 +12,7 @@ class AudioStreamSymphony : public AudioStream {
 private:
 	friend class AudioStreamPlaybackSymphony;
 	float mix_rate = 44100.0f;
+	int voice_priority = 50; // 0-100, higher = harder to steal
 	GraphDescription graph_desc;
 
 protected:
@@ -26,13 +27,20 @@ public:
 	void set_mix_rate(float p_mix_rate);
 	float get_mix_rate() const;
 
+	void set_voice_priority(int p_priority);
+	int get_voice_priority() const;
+
 	void set_graph_description(const GraphDescription &p_desc);
 	const GraphDescription &get_graph_description() const;
 
 	CompiledGraph *compile_graph() const;
 
 	static GraphDescription build_test_graph_10_nodes();
+	static GraphDescription build_test_graph_30_nodes();
+	static GraphDescription build_test_graph_50_nodes();
 	void load_test_graph();
+	void load_test_graph_30();
+	void load_test_graph_50();
 
 	virtual Ref<AudioStreamPlayback> instantiate_playback() override;
 	virtual String get_stream_name() const override;

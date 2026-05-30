@@ -1,12 +1,31 @@
 #include "audio_stream_playback_symphony.h"
+#include "../core/symphony_voice_manager.h"
 #include "core/object/class_db.h"
+
+#include <mach/mach_time.h>
+
+static double s_timebase_us = 0.0;
+
+static void ensure_timebase() {
+	if (s_timebase_us == 0.0) {
+		mach_timebase_info_data_t info;
+		mach_timebase_info(&info);
+		s_timebase_us = (double)info.numer / (double)info.denom / 1000.0;
+	}
+}
 
 void AudioStreamPlaybackSymphony::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("trigger", "name", "value"), &AudioStreamPlaybackSymphony::trigger, DEFVAL(1.0f));
+	ClassDB::bind_method(D_METHOD("get_voice_cpu_microseconds"), &AudioStreamPlaybackSymphony::get_voice_cpu_microseconds);
+	ClassDB::bind_method(D_METHOD("get_budget_percent"), &AudioStreamPlaybackSymphony::get_budget_percent);
+	ClassDB::bind_method(D_METHOD("get_last_rms"), &AudioStreamPlaybackSymphony::get_last_rms);
 }
 
 void AudioStreamPlaybackSymphony::start(double p_from_pos) {
 	active = true;
+	if (stream.is_valid()) {
+		mix_rate_cached = stream->get_mix_rate();
+	}
 	CompiledGraph *pending = pending_graph.exchange(nullptr, std::memory_order_acquire);
 	if (pending) {
 		if (current_graph) {
@@ -17,10 +36,21 @@ void AudioStreamPlaybackSymphony::start(double p_from_pos) {
 		find_graph_output();
 		rebuild_routing_tables();
 	}
+
+	SymphonyVoiceManager *mgr = SymphonyVoiceManager::get_singleton();
+	if (mgr) {
+		mgr->register_voice(this);
+	}
 }
 
 void AudioStreamPlaybackSymphony::stop() {
 	active = false;
+
+	SymphonyVoiceManager *mgr = SymphonyVoiceManager::get_singleton();
+	if (mgr) {
+		mgr->unregister_voice(this);
+	}
+
 	cleanup_graveyard();
 	if (current_graph) {
 		memdelete(current_graph);
@@ -51,6 +81,9 @@ int AudioStreamPlaybackSymphony::mix(AudioFrame *p_buffer, float p_rate_scale, i
 		return 0;
 	}
 
+	ensure_timebase();
+	uint64_t t_start = mach_absolute_time();
+
 	// Hot-swap check: pick up new graph if available.
 	CompiledGraph *pending = pending_graph.exchange(nullptr, std::memory_order_acquire);
 	if (pending) {
@@ -65,26 +98,38 @@ int AudioStreamPlaybackSymphony::mix(AudioFrame *p_buffer, float p_rate_scale, i
 		for (int i = 0; i < p_frames; i++) {
 			p_buffer[i] = AudioFrame(0, 0);
 		}
+		last_mix_time_us = 0.0f;
+		last_rms = 0.0f;
 		return p_frames;
 	}
 
 	int frames_processed = 0;
 	while (frames_processed < p_frames) {
 		int chunk = MIN(SYMPHONY_MICRO_BLOCK_SIZE, p_frames - frames_processed);
-
 		graph_output_node->set_output(p_buffer, frames_processed);
 		current_graph->execute(chunk);
-
 		frames_processed += chunk;
 	}
+
+	// Timing
+	uint64_t t_end = mach_absolute_time();
+	last_mix_time_us = (float)((t_end - t_start) * s_timebase_us);
+	last_frame_count = p_frames;
+
+	// RMS computation (cheap: sum of squares from output buffer)
+	float sum_sq = 0.0f;
+	for (int i = 0; i < p_frames; i++) {
+		float s = p_buffer[i].left;
+		sum_sq += s * s;
+	}
+	last_rms = sqrtf(sum_sq / (float)p_frames);
 
 	return p_frames;
 }
 
 void AudioStreamPlaybackSymphony::swap_graph(CompiledGraph *p_graph) {
-	// State migration: export from current graph, import into new graph by matching node IDs.
 	if (current_graph && p_graph) {
-		uint8_t state_buf[256]; // Sufficient for all current operators' state.
+		uint8_t state_buf[256];
 		for (int32_t old_i = 0; old_i < current_graph->operator_count; old_i++) {
 			size_t state_size = current_graph->operators[old_i]->export_state(nullptr, 0);
 			if (state_size == 0 || state_size > sizeof(state_buf)) {
@@ -92,7 +137,6 @@ void AudioStreamPlaybackSymphony::swap_graph(CompiledGraph *p_graph) {
 			}
 			current_graph->operators[old_i]->export_state(state_buf, sizeof(state_buf));
 			int32_t old_id = current_graph->node_ids[old_i];
-			// Find matching node in new graph.
 			for (int32_t new_i = 0; new_i < p_graph->operator_count; new_i++) {
 				if (p_graph->node_ids[new_i] == old_id) {
 					p_graph->operators[new_i]->import_state(state_buf, state_size);
@@ -121,6 +165,33 @@ void AudioStreamPlaybackSymphony::trigger(const StringName &p_name, float p_valu
 		(*ptr)->fire(p_value);
 	}
 }
+
+// --- Profiling API ---
+
+float AudioStreamPlaybackSymphony::get_voice_cpu_microseconds() const {
+	return last_mix_time_us;
+}
+
+float AudioStreamPlaybackSymphony::get_budget_percent() const {
+	if (last_frame_count == 0 || mix_rate_cached == 0.0f) {
+		return 0.0f;
+	}
+	float deadline_us = (float)last_frame_count / mix_rate_cached * 1e6f;
+	return (last_mix_time_us / deadline_us) * 100.0f;
+}
+
+float AudioStreamPlaybackSymphony::get_last_rms() const {
+	return last_rms;
+}
+
+int AudioStreamPlaybackSymphony::get_effective_priority() const {
+	if (stream.is_valid()) {
+		return stream->get_voice_priority();
+	}
+	return 50;
+}
+
+// --- Internal ---
 
 void AudioStreamPlaybackSymphony::cleanup_graveyard() {
 	if (graveyard) {
@@ -163,6 +234,12 @@ void AudioStreamPlaybackSymphony::rebuild_routing_tables() {
 }
 
 AudioStreamPlaybackSymphony::~AudioStreamPlaybackSymphony() {
+	if (active) {
+		SymphonyVoiceManager *mgr = SymphonyVoiceManager::get_singleton();
+		if (mgr) {
+			mgr->unregister_voice(this);
+		}
+	}
 	cleanup_graveyard();
 	if (current_graph) {
 		memdelete(current_graph);

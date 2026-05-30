@@ -8,8 +8,8 @@
 // Sine wave oscillator. Input: frequency (audio-rate). Output: audio.
 class SymphonyOscillator : public SymphonyOperator {
 private:
-	const float *freq_input = nullptr; // Audio-rate frequency input
-	float *output = nullptr;
+	const float *__restrict__ freq_input = nullptr; // Audio-rate frequency input
+	float *__restrict__ output = nullptr;
 	float phase = 0.0f;
 	float mix_rate = 44100.0f;
 	float default_freq = 440.0f;
@@ -24,6 +24,7 @@ public:
 	}
 
 	virtual void execute(int32_t p_num_frames) override {
+		SYMPHONY_ASSUME_FRAMES(p_num_frames);
 		for (int32_t i = 0; i < p_num_frames; i++) {
 			output[i] = Math::sin(phase * Math::TAU);
 			float freq = freq_input ? freq_input[i] : default_freq;

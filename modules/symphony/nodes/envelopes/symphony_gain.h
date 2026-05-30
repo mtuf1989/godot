@@ -7,8 +7,8 @@
 // Multiplies input audio by a gain value. Output: audio.
 class SymphonyGain : public SymphonyOperator {
 private:
-	const float *input = nullptr;
-	float *output = nullptr;
+	const float *__restrict__ input = nullptr;
+	float *__restrict__ output = nullptr;
 	float gain = 0.5f;
 
 public:
@@ -20,6 +20,7 @@ public:
 	}
 
 	virtual void execute(int32_t p_num_frames) override {
+		SYMPHONY_ASSUME_FRAMES(p_num_frames);
 		for (int32_t i = 0; i < p_num_frames; i++) {
 			output[i] = input[i] * gain;
 		}
