@@ -9,6 +9,8 @@ The following skills MUST always be activated for this project:
 
 ## Project Context
 
-This project (Symphony) is a C++ module for Godot Engine implementing a real-time node-based DSP flow graph. It requires both native C++ development (the module itself) and GDScript knowledge (for the API surface, test scenes, and integration).
+This project (CIP) is a C++ module for Godot Engine implementing a data-driven input. It requires both native C++ development (the module itself) and GDScript knowledge (for the API surface, test scenes, and integration).
+
+Here the document: CIP_IMPLEMENTATION_GUIDE.md
 
 Always apply both skills when working on any task in this repository.
