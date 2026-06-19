@@ -28,7 +28,7 @@ description: |
   Do NOT use for GPU compute physics simulation (boids, SPH, spatial hashing) — use godot-compute.
   Do NOT use for navigation/pathfinding — that's a separate system.
   Do NOT use for animation-driven root motion or procedural animation — use godot-animation.
-  Do NOT use for Tween-based VFX or visual juice — use godot-feel or godot-vfx-2d.
+  Do NOT use for Tween-based VFX or visual juice — use godot-vfx-2d.
 ---
 
 # Godot Physics
@@ -54,7 +54,6 @@ Read `../../foundation/Godot Nuanced Development Practices.md` when implementati
 - GPU-driven physics simulation (boids, SPH, compute shaders) → `godot-compute`
 - Navigation and pathfinding → separate system
 - Animation-driven root motion, procedural animation → `godot-animation`
-- Game feel/juice feedback sequences → `godot-feel`
 - Architecture decisions unrelated to physics → `godot-architect`
 - General GDScript without physics context → `godot-gdscript`
 - Camera rigs, follow modules, shake → `godot-camera`

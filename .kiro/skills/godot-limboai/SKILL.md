@@ -36,6 +36,7 @@ Read `references/limboai-core.md` first. Read `references/examples-and-validatio
 ## Do Not Use When
 
 - The AI design decision (pure BT vs HSM vs hybrid) is still undecided — route to `godot-architect`.
+- The task is implementing the ability/effect that the BT action triggers (creating GameplayEffectResource, CustomExecutionCalculation, attribute setup) — route to `godot-ggas`. This skill owns the BT action node that *calls* the ability; `godot-ggas` owns the ability itself.
 - The task is general GDScript implementation unrelated to LimboAI.
 - The task is animation state machines (AnimationTree, StateMachinePlayback), sprite animation, or procedural animation rather than AI behavior — route to `godot-animation`.
 - The main issue is scene/resource ownership of `.tres` BehaviorTree files — route to `godot-scene-resource`.

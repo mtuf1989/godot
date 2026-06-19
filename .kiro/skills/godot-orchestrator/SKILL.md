@@ -62,7 +62,6 @@ Read `references/task-template.md` first. Read `references/examples-and-validati
    - persistence work -> `godot-persistence`
    - dialogue files, balloon scenes, DialogueManager wiring -> `godot-dialogue`
    - audio playback, music crossfade, ambient sounds, SoundManager wiring -> `godot-sound`
-   - game feel, juice, feedback sequences, screen shake, hit pause -> `godot-feel`
    - Control layout, anchors, containers, theme styling with zero navigation component -> `godot-ui-core`
    - procedural UI shapes (SDF, ProceduralPanel2D, style libraries) -> `godot-procedural-ui`
    - 2D canvas_item shader effects (hit flash, dissolve, outline, palette swap) -> `godot-shader-canvasitem-fx`
@@ -71,6 +70,7 @@ Read `references/task-template.md` first. Read `references/examples-and-validati
    - 3D VFX (GPUParticles3D, volumetric fog, spatial VFX shaders, sub-emitters, stylized/anime VFX) -> `godot-vfx`
    - raw RenderingDevice compute shaders (boids, SPH fluid, spatial hashing, GPU-driven culling, procedural mesh generation, terrain generation/erosion, indirect dispatch, compute→render bridges) -> `godot-compute`
    - behavior trees, HSM, NPC/enemy AI with LimboAI -> `godot-limboai`
+   - gameplay abilities, effects, attributes, tags, GGAS wiring -> `godot-ggas`
    - GdUnit4 tests -> `godot-gdunit4`
    - placeholder 2D prototype art -> `godot-prototype-assets-2d`
    - 3D blockout / greybox level geometry -> `godot-blockout-3d`

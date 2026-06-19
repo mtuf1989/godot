@@ -60,7 +60,7 @@ Read `references/blockout-rules.md` first. Read `references/csg-limitations.md` 
    - `scene://current/tree` to inspect the existing hierarchy before mutating it, or `find_nodes` for targeted lookups (e.g., find all `CollisionShape3D` or `Area3D` nodes)
    - `add_node` for `Node3D`, `MeshInstance3D`, `StaticBody3D`, `CollisionShape3D`, and `Area3D` structure
    - `duplicate_node` to clone existing geometry modules (wall segments, room templates, trigger volumes) instead of rebuilding them
-   - `update_property` for transforms, mesh references, collision shapes, layer or mask settings, materials, and script references
+   - `update_property` for transforms, layer or mask settings, and primitive properties (visibility, collision flags, numeric values)
    - `move_node` when reparenting is required
 6. Build the smallest coherent layout that satisfies the task:
    - default to `MeshInstance3D` plus primitive meshes for most geometry

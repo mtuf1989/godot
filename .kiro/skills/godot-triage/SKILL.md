@@ -75,8 +75,8 @@ Skip orchestrator — the task list is trivially obvious.
 When the task clearly belongs to an addon-specific skill, route directly to that skill (with a quick architect check if the pattern choice is non-obvious):
 - ANY UI screen, popup, menu, HUD, dialog, loading screen, level/world transition, screen flow, or navigation wiring → **godot-common-ui** (this is the default UI workflow; only use godot-ui-core for pure layout/anchors/containers/styling with zero navigation)
 - Behavior trees / HSM / NPC AI → **godot-limboai**
+- Gameplay abilities, effects, attributes, buffs/debuffs, damage calculations, GGAS → **godot-ggas**
 - Camera follow, dead zones, rig setup, screen shake via camera modules → **godot-camera**
-- Game juice, hit pause, scale pops, feedback sequences → **godot-feel**
 - Sound effects, music, crossfade, ambient audio → **godot-sound**
 - Dialogue trees, NPC conversations, balloon scenes → **godot-dialogue**
 - 2D particles, trails, screen-space VFX → **godot-vfx-2d**

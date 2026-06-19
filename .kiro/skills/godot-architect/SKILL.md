@@ -65,10 +65,10 @@ Read `references/decision-lenses.md` first. Read `references/examples-and-valida
 5. Call out when `godot-scene-resource` or `godot-persistence` must be consulted.
    Also call out addon-specialist skills when the design touches their domain:
    - AI behavior trees or state machines -> `godot-limboai`
+   - gameplay abilities, effects, attributes, tags (GGAS) -> `godot-ggas`
    - animation systems (AnimationPlayer, AnimationTree, sprite animation, procedural animation, IK, retargeting) -> `godot-animation`
    - dialogue, branching narrative -> `godot-dialogue`
    - audio playback, music, SFX -> `godot-sound`
-   - game feel, juice, feedback sequences -> `godot-feel`
    - UI navigation, screen flow, transitions -> `godot-common-ui`
    - camera rigs, follow, shake -> `godot-camera`
    - structured logging -> `godot-logger`

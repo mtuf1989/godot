@@ -86,7 +86,7 @@ Read `references/ui-decision-table.md` first. Read `references/examples-and-vali
    - `scene://current/tree` to inspect the existing hierarchy before mutating it, or `find_nodes` for targeted lookups by name, type, or group when the full tree is not needed
    - `add_node` for new `CanvasLayer`, `Control`, `Container`, or interactive child nodes
    - `duplicate_node` to clone existing UI structures (buttons, panels) instead of recreating them manually
-   - `update_property` for names, size flags, `mouse_filter`, `focus_mode`, `process_mode`, scripts, theme references, and other Control properties
+   - `update_property` for names, size flags, `mouse_filter`, `focus_mode`, `process_mode`, and other primitive Control properties
    - `set_anchor_preset` for full-rect or pinned layout roots
    - `connect_signal` or `disconnect_signal` when the task includes button wiring or flow changes
    - `move_node` only when reparenting is required

@@ -21,9 +21,9 @@ Before designing a subsystem, check what the project's addons already provide. S
 | Domain | Addon | Autoload / Entry Point | Specialist Skill |
 |--------|-------|-----------------------|-----------------|
 | AI / Behavior | LimboAI | BTPlayer nodes | `godot-limboai` |
+| Abilities / Combat | GGAS | AbilitySystemComponent nodes | `godot-ggas` |
 | Dialogue / Narrative | Dialogue Manager | DialogueManager autoload | `godot-dialogue` |
 | Audio | Sound Manager | SoundManager autoload | `godot-sound` |
-| Game Feel / Juice | GodotFeel | FeedbackPlayer nodes | `godot-feel` |
 | UI Navigation | CommonUI | UIRouter, UIInputRouter, TransitionManager autoloads | `godot-common-ui` |
 | Camera | camera_system | CameraDirector2D/3D nodes | `godot-camera` |
 | Logging | GLog | GLog autoload | `godot-logger` |
@@ -61,6 +61,18 @@ Choose between:
 - registry/service object when cross-system lookup would otherwise become path-coupled
 
 If mutable `Resource` state is involved, consult `godot-scene-resource`.
+
+When the feature requires runtime access to a **collection** of typed data (enemy definitions, item catalogs, ability databases, loot tables), choose the simplest access layer that meets testability needs:
+
+| Complexity | Pattern | When to use |
+|---|---|---|
+| Simple | `Dictionary` keyed by ID with typed getter methods on the owning node/autoload | < 50 items, single consumer, no test isolation needed |
+| Medium | Dedicated `RefCounted` catalog class with lazy-init + filter methods, injected via `@export` | Multiple consumers, or unit tests must substitute fake data |
+| Complex | Repository with swappable Source abstraction | Multiple data backends (resource files + JSON modding), or extensive test isolation across many systems |
+
+Default to Simple. Escalate only when you can name the concrete consumer or test that requires the abstraction. For collections under ~1000 items, the access pattern has zero measurable performance impact (Dictionary lookup is O(1); `Array.filter()` on 100 Resources costs ~25µs).
+
+**Filesystem scanning warning:** Do not use `DirAccess` scanning to discover `res://` project Resources at runtime. This breaks Godot's UID tracking, makes content invisible to the export pipeline, and produces non-deterministic ordering. Reserve filesystem scanning exclusively for `user://` content (modding, UGC) where resources do not exist at build time. For project assets, use preloaded dictionaries, `@export` arrays populated in the editor, or UID-based lookups.
 
 ## Lens 2.5: Asset Availability
 
@@ -215,9 +227,9 @@ Consult another specialist skill when:
 - persistence or restoration is involved -> `godot-persistence`
 - the scoped slice is still too broad -> `godot-scope`
 - AI behavior trees or HSMs are involved -> `godot-limboai`
+- gameplay abilities, effects, attributes, or tags (GGAS) are involved -> `godot-ggas`
 - dialogue or branching narrative is involved -> `godot-dialogue`
 - audio playback, music, or SFX is involved -> `godot-sound`
-- game feel, juice, or feedback sequences are involved -> `godot-feel`
 - UI navigation, screen flow, or transitions are involved -> `godot-common-ui`
 - camera rigs, follow, or shake are involved -> `godot-camera`
 - structured logging is involved -> `godot-logger`

@@ -2,8 +2,8 @@
 name: godot-shader-canvasitem-fx
 description: |
   Create or update bounded Godot 4 `canvas_item` shader effects for gameplay sprites and UI surfaces using production-safe material ownership, atlas-aware UV handling, and honest validation.
-  Use when a real project needs hit flash, dissolve, outline or glow, palette swap, gradient background, full-screen transition, or simple UV distortion on `Sprite2D`, `AnimatedSprite2D`, `TextureRect`, `ColorRect`, `Polygon2D`, `CanvasGroup`, or related `CanvasItem` nodes.
-  Also use when someone asks about `canvas_item` shaders, `ShaderMaterial` setup for 2D nodes, `instance uniform`, `group_uniforms`, `AtlasTexture` or `REGION_RECT` issues, palette LUT filtering, outline clipping, premultiplied alpha, gradient banding or dithering, `SCREEN_PIXEL_SIZE` aspect correction, or why a 2D shader breaks batching or stretches on atlases.
+  Use when a real project needs hit flash, dissolve, outline or glow, palette swap, gradient background, full-screen transition, simple UV distortion, SDF-based shape masks, blend mode compositing, or procedural noise effects on `Sprite2D`, `AnimatedSprite2D`, `TextureRect`, `ColorRect`, `Polygon2D`, `CanvasGroup`, or related `CanvasItem` nodes.
+  Also use when someone asks about `canvas_item` shaders, `ShaderMaterial` setup for 2D nodes, `instance uniform`, `group_uniforms`, `AtlasTexture` or `REGION_RECT` issues, palette LUT filtering, outline clipping, premultiplied alpha, gradient banding or dithering, `SCREEN_PIXEL_SIZE` aspect correction, SDF shape masks for 2D transitions, blend mode compositing in shaders, procedural noise without textures, or why a 2D shader breaks batching or stretches on atlases.
   If the task is to build, fix, or integrate a reusable 2D CanvasItem shader effect in Godot, this skill should fire.
 ---
 
@@ -73,7 +73,7 @@ Read `references/pattern-catalog.md` first. Read `references/integration-checkli
    - `open_scene` for the target scene
    - `scene://current/tree` to inspect the hierarchy before mutation, or `find_nodes` to locate target `CanvasItem` nodes by type or group
    - `add_node` for a `CanvasLayer`, `ColorRect`, or other required host nodes
-   - `update_property` for material references, layer ordering, `texture_filter`, scripts, or other node properties
+   - `update_property` for layer ordering, `texture_filter`, or other primitive/struct node properties
    - `connect_signal` only when the task includes effect triggering through buttons, state changes, or scene flow
 5. Implement the smallest coherent shader and glue change:
    - create or update the `.gdshader` with `shader_type canvas_item;`
@@ -99,6 +99,7 @@ Read `references/pattern-catalog.md` first. Read `references/integration-checkli
    - renderer or architecture decisions are still open -> `godot-architect`
    - shader/material ownership or scene instancing is risky -> `godot-scene-resource`
    - the real fix is source-asset padding, placeholder textures, or atlas prep -> `godot-prototype-assets-2d`
+   - the task is building UI shapes from SDF primitives without writing shader code (rounded buttons, pill tags, cards) -> `godot-procedural-ui`
    - the task is mainly ordinary gameplay glue after the shader choice is already made -> `godot-gdscript`
    - reusable skill-process failure was discovered -> `godot-retro`
 
@@ -143,4 +144,5 @@ Read only as needed:
 - `references/pattern-catalog.md`
 - `references/integration-checklist.md`
 - `references/examples-and-validation.md`
+- `../../foundation/procedural-noise-and-sdf-library.md` — shared GLSL building blocks: hash, noise, FBM, SDF primitives, blend modes, color utilities
 - `../../foundation/Godot Nuanced Development Practices.md`

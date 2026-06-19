@@ -23,7 +23,6 @@ description: |
   communication — that belongs to godot-vfx. Do NOT use for spatial shader authoring
   (water, terrain rendering, character shaders) — that belongs to godot-shader-spatial.
   Do NOT use for 2D canvas_item shader effects — that belongs to godot-shader-canvasitem-fx.
-  Do NOT use for game feel/juice — that belongs to godot-feel.
 ---
 
 # Godot Compute
@@ -76,7 +75,6 @@ Read `references/rd-compute-fundamentals.md` first. Read the appropriate referen
 - Standard GPUParticles3D with ParticleProcessMaterial or custom particle shaders is sufficient — route to `godot-vfx`. The boundary is inter-particle communication: if particles only need attractors, collision, and sub-emitters, `godot-vfx` handles it.
 - The task is spatial shader authoring for rendering surfaces (water, terrain materials, character shaders) — route to `godot-shader-spatial`. Note: this skill handles compute-side terrain *generation*; the rendering material is a separate concern.
 - The task is 2D canvas_item shader effects — route to `godot-shader-canvasitem-fx`.
-- The task is game feel/juice feedback — route to `godot-feel`.
 - The task is general Compositor Effects architecture not driven by compute — route to `godot-shader-spatial`.
 - Architecture or scope is still undecided — route to `godot-architect` or `godot-scope`.
 
@@ -125,7 +123,6 @@ Read `references/rd-compute-fundamentals.md` first. Read the appropriate referen
    - standard particle effects without inter-particle communication → `godot-vfx`
    - terrain rendering material (splatting, triplanar, water) → `godot-shader-spatial`
    - 2D shader effects → `godot-shader-canvasitem-fx`
-   - game feel feedback wiring → `godot-feel`
    - general GDScript glue after compute system is built → `godot-gdscript`
    - reusable skill-process failure discovered → `godot-retro`
 
@@ -181,5 +178,6 @@ Read only as needed:
 - `references/simulation-patterns.md` — boids/flocking, SPH fluid (2D and 3D), force accumulation, integration
 - `references/rendering-integration.md` — MultiMesh indirect, Texture2DRD, compute→particle, compute→spatial, procedural mesh, indirect dispatch
 - `references/terrain-generation.md` — heightmap synthesis, erosion, real-time modification, Texture2DRD terrain bridge
+- `../../foundation/procedural-noise-and-sdf-library.md` — noise functions (value/Perlin/voronoi/cellular/FBM), SDF primitives, smooth boolean ops — directly usable in compute `.glsl` for terrain generation, procedural mesh, and simulation force fields
 - `../../foundation/Godot Nuanced Development Practices.md`
 - `../../foundation/benchmark_driven_performance_methodology.md`

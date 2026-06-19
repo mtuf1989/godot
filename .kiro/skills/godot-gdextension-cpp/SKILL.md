@@ -127,6 +127,9 @@ Leave behind bounded native work with:
 - Do not trust stale editor or script state if `.gdextension` or `.gd` files changed on disk and `refresh_filesystem` never ran.
 - Do not promise hot-reload safety when class bindings changed or Windows file locks make the rebuild loop unsafe.
 - Do not claim runtime or editor validation when only source review was performed.
+- Do not use `ClassDB::instantiate()` for GDScript `class_name` classes from C++ — it fails with "Cannot get class" even though `can_instantiate()` returns true. Instead: use `ProjectSettings::get_global_class_list()` to find the script path, load via `ResourceLoader`, and call `script->call("new")`.
+- Do not call C++ virtual methods directly on GDScript-extended objects expecting GDScript overrides to run. Use `obj->call("method_name", args)` for proper GDScript virtual dispatch.
+- Do not `memdelete()` objects that extend `Resource` or `RefCounted` — they are reference-counted. Hold them in a `Variant` or `Ref<T>` and let the reference drop naturally.
 
 ## References
 
@@ -136,5 +139,4 @@ Read only as needed:
 - `references/ownership-and-lifetime.md`
 - `references/boundary-design-checklist.md`
 - `references/examples-and-validation.md`
-- `references/editor-plugin-patterns.md`
 - `../../foundation/Godot Language Strategy Guide.md`

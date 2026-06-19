@@ -14,7 +14,7 @@ description: |
   "make this button click," or "set up audio."
   Even if the user just says "add sound to this game" or "I need music" or "play a sound
   when the player gets hit" in a Godot project, this skill applies.
-  Do NOT use for game feel/juice feedback sequences (use godot-feel), dialogue audio cues
+  Do NOT use for dialogue audio cues
   (use godot-dialogue), or general GDScript unrelated to audio (use godot-gdscript).
 ---
 
@@ -47,7 +47,6 @@ Read `references/api-reference.md` before writing any SoundManager calls. Read `
 
 ## Do Not Use When
 
-- The task is game feel/juice feedback sequences that happen to include sound (use `godot-feel`; it handles FBSound feedbacks).
 - The task is dialogue audio cues managed by Dialogue Manager (use `godot-dialogue`).
 - Architecture decisions about audio design are still open (escalate to `godot-architect`).
 - The task is general GDScript unrelated to audio (use `godot-gdscript`).
@@ -134,7 +133,6 @@ Key distinctions between subsystems:
 
 10. Escalate if needed:
     - Audio design decisions (what sounds where, volume balancing strategy) -> `godot-architect`
-    - Game feel feedback sequences that include sound -> `godot-feel`
     - Save/load of volume settings -> `godot-persistence`
     - General GDScript outside audio -> `godot-gdscript`
 

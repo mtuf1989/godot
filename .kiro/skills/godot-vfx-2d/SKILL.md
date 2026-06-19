@@ -24,9 +24,6 @@ description: |
   Do NOT use for 3D particle effects (GPUParticles3D) — those belong to godot-vfx.
   Do NOT use for 2D canvas_item shader effects on existing nodes (hit flash, dissolve, outline,
   palette swap) — those belong to godot-shader-canvasitem-fx.
-  Do NOT use for game feel/juice feedback sequences (screen shake, hit pause, scale pops as
-  feedback wiring) — those belong to godot-feel. This skill builds the visual content;
-  godot-feel wires the timing and feedback sequences.
 ---
 
 # Godot VFX 2D
@@ -81,7 +78,6 @@ Read `references/particle-systems-2d.md` first. Read the appropriate reference f
 
 - The task is 3D particle effects (GPUParticles3D, volumetric fog, spatial VFX shaders) — route to `godot-vfx`.
 - The task is 2D canvas_item shader effects on existing nodes (hit flash, dissolve, outline, palette swap) — route to `godot-shader-canvasitem-fx`.
-- The task is game feel/juice feedback wiring (screen shake timing, hit pause, feedback sequences) — route to `godot-feel`. This skill builds the visual content; `godot-feel` handles the trigger timing.
 - The task requires raw RenderingDevice compute shaders for inter-particle communication — route to `godot-compute`.
 - Architecture or scope is still undecided — route to `godot-architect` or `godot-scope`.
 - The task is character/entity animation (AnimationPlayer, AnimationTree, sprite animation, procedural creature animation, walk cycles, attack combos) — route to `godot-animation`. This skill handles VFX animation (particles, trails, Tween-based effects); `godot-animation` handles entity animation.
@@ -151,7 +147,7 @@ Before reaching for particles, consider whether a simpler tool fits the effect.
    - target platform and any known performance constraints
    In editor-connected mode, use `find_nodes` with type "GPUParticles2D" or "CanvasGroup" for targeted lookups.
 
-2. Confirm the effect stays inside the skill boundary. If the task needs 3D particles, raw compute shaders, or material-level canvas_item effects on existing sprites, escalate. If the task needs game-feel feedback wiring, note that `godot-feel` handles the trigger timing while this skill handles the visual content.
+2. Confirm the effect stays inside the skill boundary. If the task needs 3D particles, raw compute shaders, or material-level canvas_item effects on existing sprites, escalate.
 
 3. Select the right tool for the effect (see Tool Selection Guide above). Then design the effect structure:
    - for particle effects: choose GPUParticles2D vs CPUParticles2D, ParticleProcessMaterial vs custom shader, flipbook vs procedural
@@ -199,7 +195,6 @@ Before reaching for particles, consider whether a simpler tool fits the effect.
     - scene/resource ownership of VFX nodes is risky → `godot-scene-resource`
     - inter-particle compute (boids, SPH) needed → `godot-compute`
     - 3D VFX needed → `godot-vfx`
-    - game feel feedback wiring → `godot-feel`
     - 2D canvas_item shader effects on existing nodes → `godot-shader-canvasitem-fx`
     - general GDScript glue after VFX is built → `godot-gdscript`
     - reusable skill-process failure discovered → `godot-retro`
@@ -280,6 +275,7 @@ Read only as needed:
 - `references/screen-space-and-compositing.md` — hint_screen_texture, BackBufferCopy, CanvasGroup, SubViewport, full-screen post-processing, multi-pass stacking, HDR 2D
 - `references/trails-and-procedural.md` — Line2D trails, GPUParticles2D trails, custom _draw() trails, Tween-based procedural VFX, composition choreography, AnimationPlayer thresholds
 - `references/optimization-2d.md` — overdraw, batching, blend modes, pixel-art constraints, particle budgets, trail performance, 60fps checklist
+- `../../foundation/procedural-noise-and-sdf-library.md` — shared GLSL building blocks: hash, noise (value/Perlin/voronoi/cellular/wavelet), FBM, SDF 2D primitives, blend modes, domain warp utilities — use for texture-free procedural VFX shaders and screen-space effects
 - `../../foundation/Godot Nuanced Development Practices.md`
 - `../../foundation/benchmark_driven_performance_methodology.md`
 iven_performance_methodology.md`

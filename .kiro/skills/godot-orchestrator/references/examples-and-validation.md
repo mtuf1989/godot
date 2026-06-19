@@ -100,7 +100,7 @@ Approved architecture:
 - mcp_tools:
   - open_scene on scenes/main/Game.tscn
   - add_node for the UI root and child controls
-  - update_property for names, mouse filters, focus, pause mode, and theme/script references
+  - update_property for names, mouse filters, focus, and pause mode
   - set_anchor_preset for full-rect and centered layout nodes
   - connect_signal for button actions if the task includes them
   - save_scene

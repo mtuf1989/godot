@@ -336,8 +336,240 @@ Validation:
 - then test on any atlas-backed target separately
 - document the exact atlas limit honestly if the effect is unsafe there
 
+### SDF Shape Mask
+
+Use when:
+
+- a transition, reveal, or clip needs a procedural geometric shape (circle wipe, rounded-rect reveal, star mask) without importing a texture
+- UI elements need soft-edged procedural masks driven by shader math
+- a sprite needs a shaped vignette, spotlight, or shaped fade
+
+Typical host:
+
+- `ColorRect` for full-screen transitions
+- `Sprite2D` or `TextureRect` for shaped reveals
+- any `CanvasItem` needing a procedural clip
+
+Core uniforms:
+
+- `instance uniform float progress : hint_range(0.0, 1.0)`
+- `uniform float edge_softness : hint_range(0.001, 0.2)`
+- `uniform vec4 mask_color : source_color`
+
+Core SDF utilities (include in shader):
+
+```glsl
+float sd_circle(vec2 p, float r) {
+    return length(p) - r;
+}
+
+float sd_box(vec2 p, vec2 b) {
+    vec2 d = abs(p) - b;
+    return length(max(d, vec2(0.0))) + min(max(d.x, d.y), 0.0);
+}
+
+float sd_rounded_box(vec2 p, vec2 b, float r) {
+    vec2 d = abs(p) - b + vec2(r);
+    return length(max(d, vec2(0.0))) + min(max(d.x, d.y), 0.0) - r;
+}
+
+float sd_polygon(vec2 p, float sides, float r) {
+    float angle = atan(p.x, p.y) + 3.14159265359;
+    float slice = 6.28318530718 / sides;
+    return cos(floor(0.5 + angle / slice) * slice - angle) * length(p) - r;
+}
+```
+
+Core fragment strategy (circle wipe example):
+
+```glsl
+vec2 center_uv = UV * 2.0 - 1.0; // remap to [-1, 1]
+// Aspect correction for non-square nodes
+center_uv.x *= TEXTURE_PIXEL_SIZE.y / TEXTURE_PIXEL_SIZE.x;
+
+float dist = sd_circle(center_uv, progress * 1.5);
+float mask = smoothstep(0.0, edge_softness, -dist);
+
+vec4 base = texture(TEXTURE, UV);
+COLOR = mix(mask_color, base, mask);
+```
+
+Rounded-rect reveal variant:
+
+```glsl
+vec2 center_uv = UV * 2.0 - 1.0;
+float dist = sd_rounded_box(center_uv, vec2(progress), 0.1);
+float mask = smoothstep(0.0, edge_softness, -dist);
+COLOR = vec4(base.rgb, base.a * mask);
+```
+
+Watch for:
+
+- aspect ratio distortion on non-square nodes — correct UV.x by the pixel size ratio
+- SDF shapes expanding beyond the node bounds — clamp or scale the progress range
+- hard aliased edges when `edge_softness` is too small — keep it at least `0.005`
+
+Validation:
+
+- animate `progress` from 0 to 1
+- test on both square and non-square nodes
+- confirm the shape stays proportional at different aspect ratios
+
+### Blend Mode Effect
+
+Use when:
+
+- two layers or textures need compositing with Photoshop-style blend modes inside a shader
+- a dissolve, transition, or overlay effect needs multiply, screen, overlay, or other non-standard blending
+- a sprite needs a procedural color adjustment (burn, dodge, soft light) driven by a mask or noise
+
+Typical host:
+
+- `Sprite2D` with a secondary texture input
+- `ColorRect` for full-screen color grading overlays
+- `CanvasGroup` for compositing child sprites
+
+Core uniforms:
+
+- `uniform sampler2D blend_texture : hint_default_white`
+- `instance uniform float blend_opacity : hint_range(0.0, 1.0)`
+- `uniform int blend_mode : hint_range(0, 5)` (or use separate shaders per mode)
+
+Core blend functions:
+
+```glsl
+vec3 blend_multiply(vec3 base, vec3 blend, float opacity) {
+    return opacity * base * blend + (1.0 - opacity) * base;
+}
+
+vec3 blend_screen(vec3 base, vec3 blend, float opacity) {
+    return opacity * (1.0 - (1.0 - base) * (1.0 - blend)) + (1.0 - opacity) * base;
+}
+
+vec3 blend_overlay(vec3 base, vec3 blend, float opacity) {
+    vec3 r = vec3(
+        base.x < 0.5 ? 2.0 * base.x * blend.x : 1.0 - 2.0 * (1.0 - base.x) * (1.0 - blend.x),
+        base.y < 0.5 ? 2.0 * base.y * blend.y : 1.0 - 2.0 * (1.0 - base.y) * (1.0 - blend.y),
+        base.z < 0.5 ? 2.0 * base.z * blend.z : 1.0 - 2.0 * (1.0 - base.z) * (1.0 - blend.z));
+    return opacity * r + (1.0 - opacity) * base;
+}
+
+vec3 blend_soft_light(vec3 base, vec3 blend, float opacity) {
+    vec3 r = vec3(
+        blend.x < 0.5 ? 2.0*base.x*blend.x + base.x*base.x*(1.0-2.0*blend.x) : 2.0*base.x*(1.0-blend.x) + sqrt(base.x)*(2.0*blend.x-1.0),
+        blend.y < 0.5 ? 2.0*base.y*blend.y + base.y*base.y*(1.0-2.0*blend.y) : 2.0*base.y*(1.0-blend.y) + sqrt(base.y)*(2.0*blend.y-1.0),
+        blend.z < 0.5 ? 2.0*base.z*blend.z + base.z*base.z*(1.0-2.0*blend.z) : 2.0*base.z*(1.0-blend.z) + sqrt(base.z)*(2.0*blend.z-1.0));
+    return opacity * r + (1.0 - opacity) * base;
+}
+
+vec3 blend_additive(vec3 base, vec3 blend, float opacity) {
+    return base + blend * opacity;
+}
+
+vec3 blend_difference(vec3 base, vec3 blend, float opacity) {
+    return opacity * abs(base - blend) + (1.0 - opacity) * base;
+}
+```
+
+Core fragment strategy:
+
+```glsl
+vec4 base = texture(TEXTURE, UV);
+vec3 blend_col = texture(blend_texture, UV).rgb;
+COLOR.rgb = blend_overlay(base.rgb, blend_col, blend_opacity);
+COLOR.a = base.a;
+```
+
+Watch for:
+
+- alpha channel corruption — blend modes operate on RGB only, preserve original alpha
+- HDR overflow on additive blends — clamp output if the project doesn't use HDR 2D
+- performance of branching blend mode selection — prefer separate shaders per mode over runtime `if` chains
+
+Validation:
+
+- compare output against a reference (Photoshop/GIMP with same blend mode)
+- confirm alpha is unchanged
+- test with `blend_opacity` at 0.0 (should be identity) and 1.0 (full effect)
+
+### Procedural Noise Pattern
+
+Use when:
+
+- a dissolve, fire, smoke, or energy effect needs runtime noise without a baked texture
+- the effect needs to animate smoothly via `TIME` without scrolling a texture
+- memory budget is tight and a noise texture would be wasteful
+
+Typical host:
+
+- `Sprite2D` for entity effects (fire aura, energy shield shimmer)
+- `ColorRect` for background effects or transitions
+- any `CanvasItem` needing animated procedural variation
+
+Core noise functions (include in shader):
+
+```glsl
+float rand(vec2 x) {
+    return fract(cos(mod(dot(x, vec2(13.9898, 8.141)), 3.14)) * 43758.5);
+}
+
+float value_noise(vec2 uv, vec2 size) {
+    vec2 o = floor(uv * size);
+    vec2 f = fract(uv * size);
+    float p00 = rand(mod(o, size));
+    float p10 = rand(mod(o + vec2(1.0, 0.0), size));
+    float p01 = rand(mod(o + vec2(0.0, 1.0), size));
+    float p11 = rand(mod(o + vec2(1.0, 1.0), size));
+    vec2 t = f * f * (3.0 - 2.0 * f);
+    return mix(mix(p00, p10, t.x), mix(p01, p11, t.x), t.y);
+}
+
+float fbm(vec2 uv, vec2 size, int octaves, float persistence) {
+    float value = 0.0, scale = 1.0, total = 0.0;
+    for (int i = 0; i < octaves; i++) {
+        value += value_noise(uv, size) * scale;
+        total += scale;
+        size *= 2.0;
+        scale *= persistence;
+    }
+    return value / total;
+}
+```
+
+Core fragment strategy (animated dissolve without texture):
+
+```glsl
+uniform float noise_scale : hint_range(1.0, 32.0) = 8.0;
+instance uniform float dissolve_amount : hint_range(0.0, 1.0) = 0.0;
+uniform float edge_width : hint_range(0.0, 0.2) = 0.05;
+uniform vec4 edge_color : source_color = vec4(1.0, 0.5, 0.0, 1.0);
+
+void fragment() {
+    vec4 base = texture(TEXTURE, UV);
+    float noise = fbm(UV + vec2(TIME * 0.1, 0.0), vec2(noise_scale), 4, 0.5);
+    float edge = smoothstep(dissolve_amount, dissolve_amount + edge_width, noise);
+    float visible = step(dissolve_amount, noise);
+    COLOR.rgb = mix(edge_color.rgb, base.rgb, edge);
+    COLOR.a = base.a * visible;
+}
+```
+
+Watch for:
+
+- performance on low-end devices — 4 octaves of FBM is ~40 ALU ops per pixel; reduce to 2-3 for mobile
+- visible tiling at low `noise_scale` — increase scale or add a small TIME-based offset
+- loop unrolling — use a fixed `const int` for octave count when possible for better GPU optimization
+
+Validation:
+
+- confirm noise animates smoothly without jumps
+- test at multiple noise scales for visible repetition
+- profile on target hardware if the effect covers large screen area
+
 ## Pattern Boundaries
 
 - If the effect must read or rewrite the whole screen as a renderer-level post-process, escalate to `godot-architect`.
 - If the main issue is asset padding, grayscale authoring, or LUT preparation, involve `godot-prototype-assets-2d`.
 - If the work is mostly UI layout and only lightly uses a shader, let `godot-ui-core` own the layout and use this skill only for the shader slice.
+- If the task is building UI shapes from SDF primitives without writing shader code (rounded buttons, pill tags, cards with cutouts), route to `godot-procedural-ui` — it uses an addon-driven resource system, not hand-written shaders.
+- For the full procedural noise, SDF, and blend mode function library (all variants, 3D versions, cellular/voronoi), see `../../foundation/procedural-noise-and-sdf-library.md`.

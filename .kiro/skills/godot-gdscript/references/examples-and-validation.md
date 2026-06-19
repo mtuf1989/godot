@@ -36,6 +36,45 @@ Task:
   - do not move dash timing to `_process()` if gameplay depends on physics behavior
 ```
 
+---
+
+## Example Input 2
+
+Task:
+
+- create a WaveDefinition resource script and a WaveManager that loads definitions by index
+- targets: `scripts/data/wave_definition.gd`, `scripts/managers/wave_manager.gd`
+- acceptance criteria: WaveManager exposes `start_wave(index)`, emits `wave_started` with the definition
+
+## Good Output Shape 2
+
+```md
+- files or nodes changed:
+  - `scripts/data/wave_definition.gd` (new Resource script)
+  - `scripts/managers/wave_manager.gd` (new Node script)
+- integration points inspected:
+  - `data/waves/` directory for existing .tres files
+  - parent scene where WaveManager will live
+- MCP sync or inspection:
+  - `refresh_filesystem` after each new .gd file
+  - `get_diagnostics` on both scripts
+- callbacks:
+  - none (`start_wave` is called externally, not per-frame)
+- signals or groups:
+  - `signal wave_started(definition: WaveDefinition)`
+- critical conventions:
+  - WaveDefinition is a pure data Resource (no scene tree dependency)
+  - WaveManager uses `load()` (dynamic path by index), not `preload()` (path not constant)
+  - typed return values for testability
+  - fail-fast if wave index is out of range (Category A)
+- validation performed:
+  - `get_diagnostics` clean on both files
+  - `run_scene` to verify WaveManager._ready() doesn't crash
+- pitfalls:
+  - do not use Array[WaveDefinition] in .tres files — use Array[Resource] (typed array footgun)
+  - do not add architecture (spawner logic, enemy selection) beyond what the task specifies
+```
+
 ## Validation Checklist
 
 - guidance stays within the task

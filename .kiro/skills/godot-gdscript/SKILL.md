@@ -34,6 +34,7 @@ Read `references/executor-checklist.md` first. Read `references/examples-and-val
 - Core architecture is undecided.
 - The main issue is save/load design, scene/resource ownership, or language strategy.
 - The task is primarily about animation systems (AnimationPlayer, AnimationTree, state machines, sprite animation, procedural animation, IK, combos) — route to `godot-animation`.
+- The task is primarily about gameplay abilities, attributes, or effects using the GGAS framework — route to `godot-ggas`.
 
 ## Workflow
 

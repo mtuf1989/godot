@@ -28,7 +28,7 @@ Task:
   - `open_scene` on `res://scenes/main/Game.tscn`
   - `scene://current/tree` read before mutation
   - `add_node` for the pause root, dimmer, and button stack
-  - `update_property` for `mouse_filter`, `process_mode`, focus setup, and theme or script references
+  - `update_property` for `mouse_filter`, `process_mode`, and focus setup
   - `set_anchor_preset` for full-rect and centered layout nodes
   - `connect_signal` for button actions
   - `save_scene`

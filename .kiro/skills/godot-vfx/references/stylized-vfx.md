@@ -167,14 +167,13 @@ At the moment of impact, hold the current frame for 2–4 frames to force the vi
 
 ```gdscript
 ## Brief time scale freeze for impact emphasis.
-## Use godot-feel's FBTimeScale for production implementation.
 func apply_hitstop(duration: float = 0.05) -> void:
     Engine.time_scale = 0.0
     await get_tree().create_timer(duration, true, false, true).timeout
     Engine.time_scale = 1.0
 ```
 
-Note: for production hitstop, use `godot-feel`'s FBTimeScale feedback which handles unscaled timing correctly. This skill handles the visual VFX content; `godot-feel` handles the timing/juice wiring.
+Note: for production hitstop, ensure any visual effects that must continue during the freeze use `process_mode = PROCESS_MODE_ALWAYS` or unscaled timers.
 
 ---
 
@@ -239,8 +238,8 @@ void fragment() {
 ### Layering with Other Effects
 
 Impact frames are most effective when combined with:
-- Hitstop (via `godot-feel`) — freeze the frame during the flash
-- Screen shake (via `godot-feel`) — physical camera displacement
+- Hitstop — freeze the frame during the flash (time scale manipulation)
+- Screen shake (via `godot-camera`) — physical camera displacement
 - Particle burst (this skill) — sparks, debris, energy lines spawned at the impact point
 - Speed lines (see below) — radial streaks converging on the impact
 
@@ -456,9 +455,9 @@ Sub-emitters handle particle-to-particle choreography on the GPU. Script trigger
 
 ### Timing Coordination
 
-For the script-driven screen-space effects, use `godot-feel`'s FeedbackPlayer to orchestrate timing:
-- FBTimeScale for hitstop
-- FBCameraShake for screen shake
-- Custom feedbacks or Tween for impact frame, speed lines, and color correction intensity
+For the script-driven screen-space effects, use Tweens and timers to orchestrate timing:
+- Time scale manipulation for hitstop
+- Camera shake via `godot-camera` ShakeModule
+- Tweens for impact frame, speed lines, and color correction intensity
 
-This skill builds the visual content (particles, shaders, screen effects). `godot-feel` wires the timing and feedback sequences.
+This skill builds the visual content (particles, shaders, screen effects). Use Tweens and the camera skill for timing and feedback coordination.

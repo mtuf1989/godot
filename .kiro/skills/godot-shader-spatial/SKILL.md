@@ -5,7 +5,7 @@ description: |
   Use when a real project needs water shaders, terrain splatting, character materials (skin SSS, hair anisotropy, eye parallax), foliage translucency and wind, glass refraction, hologram or sci-fi surfaces, or any non-VFX 3D spatial shader material.
   Also use when someone asks about Compositor Effects architecture, custom bloom, depth of field, motion blur, global outlines, or other viewport-level post-processing built as CompositorEffect.
   Also use when the task involves parallax occlusion mapping, triplanar mapping, stencil buffer effects (outline, X-ray), custom DEPTH writes, multi-pass rendering (Material Overlay, Next Pass), render priority, transparency sorting, or Forward+ vs Mobile renderer constraints for spatial shaders.
-  Also use when someone mentions `shader_type spatial`, `ShaderMaterial` on MeshInstance3D, `StandardMaterial3D` conversion to shader code, `hint_screen_texture`, `hint_depth_texture`, `hint_normal_roughness_texture`, `CompositorEffect`, `RenderSceneBuffersRD`, `RenderSceneData`, `SSS_STRENGTH`, `ANISOTROPY`, `ANISOTROPY_FLOW`, `BACKLIGHT`, `DEPTH` output, `render_priority`, `Material Overlay`, `Next Pass`, or asks to "make a water shader," "add terrain blending," "create a skin material," "add post-processing," "implement bloom," "add depth of field," or "make a glass material" in a Godot project.
+  Also use when someone mentions `shader_type spatial`, `ShaderMaterial` on MeshInstance3D, `StandardMaterial3D` conversion to shader code, `hint_screen_texture`, `hint_depth_texture`, `hint_normal_roughness_texture`, `CompositorEffect`, `RenderSceneBuffersRD`, `RenderSceneData`, `SSS_STRENGTH`, `ANISOTROPY`, `ANISOTROPY_FLOW`, `BACKLIGHT`, `DEPTH` output, `render_priority`, `Material Overlay`, `Next Pass`, or asks to "make a water shader," "add terrain blending," "create a skin material," "add post-processing," "implement bloom," "add depth of field," "make a glass material," "create a procedural material," "add raymarching," or "make a brick/stone/tile pattern" in a Godot project.
   Do NOT use for VFX-motivated spatial shaders (energy shields, distortion planes, particle mesh shaders) or VFX-motivated screen-space effects — those belong to godot-vfx.
   Do NOT use for 2D canvas_item shader effects — those belong to godot-shader-canvasitem-fx.
   Do NOT use for raw RenderingDevice compute shaders (boids, SPH, spatial hashing) — those belong to godot-compute.
@@ -16,7 +16,7 @@ description: |
 
 Build bounded 3D `spatial` shader materials and Compositor-based post-processing effects that survive real project integration, Forward+ renderer constraints, and transparency pipeline pressure.
 
-Read `references/material-catalog.md` first for material tasks. Read `references/compositor-effects.md` first for post-processing tasks. Read `references/advanced-techniques.md` when the task involves POM, triplanar, stencil, or multi-pass. Read `references/integration-checklist.md` before wiring the effect into scenes or scripts.
+Read `references/material-catalog.md` first for material tasks. Read `references/compositor-effects.md` first for post-processing tasks. Read `references/advanced-techniques.md` when the task involves POM, triplanar, stencil, multi-pass, or raymarching. Read `references/procedural-library.md` when the task involves runtime-generated patterns (noise, tiling, warp, procedural normals). Read `references/integration-checklist.md` before wiring the effect into scenes or scripts.
 
 ## Responsibility
 
@@ -56,7 +56,6 @@ Read `references/material-catalog.md` first for material tasks. Read `references
 - The task is 2D `canvas_item` shader effects — route to `godot-shader-canvasitem-fx`.
 - The task is raw RenderingDevice compute shaders for inter-particle communication or general-purpose GPU computation — route to `godot-compute`.
 - The task is WorldEnvironment/Environment configuration (tonemap preset, SSAO, SSR, SDFGI settings) without a custom shader or compositor need — route to `godot-architect`.
-- The task is game feel/juice feedback (screen shake, hit pause, scale pops) — route to `godot-feel`.
 - Architecture, resource ownership, or the decision to use a shader at all is still unresolved — route to `godot-architect` or `godot-scope`.
 
 ## Task Router
@@ -67,6 +66,8 @@ Before implementation, classify the task into one of two domains. This determine
 Surface shaders applied to `MeshInstance3D` nodes. Read `references/material-catalog.md` first.
 - Water, terrain, foliage, skin, hair, eyes, glass, hologram, sci-fi
 - POM, triplanar, stencil, custom depth, multi-pass (also read `references/advanced-techniques.md`)
+- Procedural patterns: noise, tiling, warp, runtime-generated materials (also read `references/procedural-library.md`)
+- Raymarching: SDF-defined geometry rendered as spatial material (also read `references/advanced-techniques.md#raymarching`)
 
 ### Compositor Tasks
 Viewport-level post-processing via `CompositorEffect`. Read `references/compositor-effects.md` first.
@@ -174,8 +175,10 @@ Leave behind bounded shader work with:
 Read only as needed:
 
 - `references/material-catalog.md` — material authoring patterns for water, terrain, foliage, skin, hair, eyes, glass, hologram
+- `references/procedural-library.md` — procedural tiling, warp, normal generation, material composition, and performance guidelines for runtime-generated patterns
 - `references/compositor-effects.md` — compositor post-processing patterns for bloom, DOF, motion blur, outlines, tonemap
-- `references/advanced-techniques.md` — POM, triplanar, stencil, custom depth, multi-pass, render priority
+- `references/advanced-techniques.md` — POM, triplanar, stencil, custom depth, multi-pass, render priority, raymarching
 - `references/integration-checklist.md` — integration and validation checklist for spatial shaders and compositor effects
+- `../../foundation/procedural-noise-and-sdf-library.md` — shared GLSL building blocks: hash, noise, FBM, SDF primitives, boolean ops, blend modes, color utilities
 - `../../foundation/Godot Nuanced Development Practices.md`
 - `../../foundation/benchmark_driven_performance_methodology.md`

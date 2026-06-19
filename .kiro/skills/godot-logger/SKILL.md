@@ -14,8 +14,8 @@ description: |
   "debug log," "export logs for LLM," "set up logging," or "log state transitions."
   Even if the user just says "add logging to this system" or "I need to track what happens
   when the player takes damage" or "log game events" in a Godot project, this skill applies.
-  Do NOT use for general GDScript unrelated to logging (use godot-gdscript), audio playback
-  (use godot-sound), or game feel/juice (use godot-feel).
+  Do NOT use for general GDScript unrelated to logging (use godot-gdscript), or audio playback
+  (use godot-sound).
 ---
 
 # Godot Logger (GLog)

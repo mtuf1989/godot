@@ -27,8 +27,7 @@ description: |
   or "make a magic attack effect" or "add a shield effect" in a Godot project, this skill applies.
   Do NOT use for 2D particle effects (GPUParticles2D/CPUParticles2D) — those belong to
   godot-vfx-2d. Do NOT use for 2D canvas_item shader effects (hit flash, dissolve, outline) —
-  those belong to godot-shader-canvasitem-fx. Do NOT use for game feel/juice feedback sequences
-  (screen shake, hit pause, scale pops) — those belong to godot-feel.
+  those belong to godot-shader-canvasitem-fx.
 ---
 
 # Godot VFX
@@ -79,7 +78,6 @@ Read `references/particle-systems.md` first. Read the appropriate reference for 
 
 - The task is 2D particle effects (GPUParticles2D, CPUParticles2D) — route to `godot-vfx-2d`.
 - The task is 2D canvas_item shader effects (hit flash, dissolve, outline, palette swap) — route to `godot-shader-canvasitem-fx`.
-- The task is game feel/juice feedback (screen shake, hit pause, scale pops) — route to `godot-feel`.
 - The task requires raw RenderingDevice compute shaders for inter-particle communication (boids, SPH fluid, spatial hashing) — route to `godot-compute`. Note: standard GPUParticles3D with attractors and collision is within scope; only escalate when true inter-particle querying is needed.
 - The task is general 3D spatial shader authoring for non-VFX surfaces (water, terrain, character shaders) — route to `godot-shader-spatial`.
 - The task is general Compositor Effects architecture not motivated by a specific VFX need — route to `godot-shader-spatial`.
@@ -123,7 +121,7 @@ Before building any effect, identify the project's art direction. This determine
    - target platform and any known performance constraints
    In editor-connected mode, use `find_nodes` with type "GPUParticles3D" or "FogVolume" for targeted lookups. Use `search_symbols`, `get_definition`, or `get_hover_info` to resolve Godot API questions.
 
-2. Confirm the effect stays inside the skill boundary. If the task needs raw compute shaders, general spatial shaders, or 2D particles, escalate. If the task needs game-feel feedback wiring, note that `godot-feel` handles the trigger timing while this skill handles the visual content.
+2. Confirm the effect stays inside the skill boundary. If the task needs raw compute shaders, general spatial shaders, or 2D particles, escalate.
 
 3. Design the effect structure:
    - identify the stages: primary burst, secondary trails/smoke, tertiary debris/sparks
@@ -172,7 +170,6 @@ Before building any effect, identify the project's art direction. This determine
     - inter-particle compute (boids, SPH) needed → `godot-compute`
     - general spatial shader work unrelated to VFX → `godot-shader-spatial`
     - 2D VFX needed → `godot-vfx-2d`
-    - game feel feedback wiring → `godot-feel`
     - 2D canvas_item shader effects → `godot-shader-canvasitem-fx`
     - general GDScript glue after VFX is built → `godot-gdscript`
     - reusable skill-process failure discovered → `godot-retro`
@@ -226,5 +223,6 @@ Read only as needed:
 - `references/volumetric-and-fog.md` — volumetric fog, FogVolume, fog shaders, Texture3D, offline simulation data import
 - `references/stylized-vfx.md` — anime/NPR pipeline, flipbooks, Texture2DArray, stepped animation, impact frames, speed lines, smears, color correction
 - `references/optimization-guide.md` — overdraw, alpha scissor, alpha hash, alpha-to-coverage, premultiplied alpha, mesh trimming, draw calls, visibility ranges, Compositor Effects API patterns, VRAM compression, shader warm-up
+- `../../foundation/procedural-noise-and-sdf-library.md` — shared GLSL building blocks: hash, noise (value/Perlin/voronoi/cellular/wavelet), FBM, SDF primitives, smooth boolean (smin/smax), blend modes, domain warp utilities — use for texture-free procedural VFX shaders
 - `../../foundation/Godot Nuanced Development Practices.md`
 - `../../foundation/benchmark_driven_performance_methodology.md`

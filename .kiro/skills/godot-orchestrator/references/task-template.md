@@ -76,7 +76,6 @@ Common optional tasks: property-based tests, integration tests, performance benc
 - 2D canvas_item shader effects (hit flash, dissolve, outline, palette swap) -> `godot-shader-canvasitem-fx`
 - dialogue files, balloon scenes, DialogueManager wiring -> `godot-dialogue`
 - audio playback, music, ambient sounds, SoundManager wiring -> `godot-sound`
-- game feel, juice, feedback sequences, screen shake, hit pause -> `godot-feel`
 - behavior trees, HSM, NPC/enemy AI with LimboAI -> `godot-limboai`
 - GdUnit4 tests -> `godot-gdunit4`
 - placeholder 2D prototype art -> `godot-prototype-assets-2d`

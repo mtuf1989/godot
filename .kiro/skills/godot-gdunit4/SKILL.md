@@ -158,6 +158,7 @@ assert_str(player.name) \
 - Test file organization mirrors source structure.
 - `refresh_filesystem` called after disk writes.
 - Typed GDScript throughout.
+- For balance/tuning tests, encode expected curves as assertions (DPS thresholds, TTK ranges, economy affordability) — these prevent balance regressions automatically.
 - No false claims about test results.
 
 ## Failure Modes
@@ -170,12 +171,15 @@ assert_str(player.name) \
 - Do not assert signals without calling `monitor_signals()` first.
 - Do not use `assert_that()` when a type-specific assertion exists.
 - Do not forget `auto_free()` on created objects.
+- Do not use `:=` type inference with `auto_free()` — it returns `Variant`, not the typed class. In projects with warnings-as-errors this causes compile failures. Always use explicit type: `var x: MyClass = auto_free(MyClass.new())`.
 - Do not mock instances (`mock(Node.new())` fails) — pass the class.
 - Do not spy on classes (`spy(Node)` returns null) — pass an instance.
 - Do not confuse `simulate_key_press` (hold, sync) with `simulate_key_pressed` (tap, async).
 - Do not assume `push_error()` fails tests — it doesn't by default.
 - Do not claim tests passed if they were not actually executed.
 - Do not write tests that depend on execution order.
+- Do not instantiate scripts with `@onready` vars or autoload references via `set_script()` or `load().new()` without their full scene tree. The `@onready` resolution or `_ready()` autoload calls will crash (SIGSEGV or "Nonexistent function 'new'"). For scripts that extend CanvasLayer/Control/Node with scene-dependent `_ready()`: either use `scene_runner("res://path.tscn")` for integration, or inline the pure logic being tested directly in the test class for unit testing.
+- Do not use lambda signal connections on `auto_free()` objects to verify signal emission — the lambda never fires. Instead, verify the signal's side effects via state changes (e.g., assert the gold value increased rather than asserting the `gold_changed` signal emitted). If you must test signal emission directly, use `scene_runner()` integration tests with `await_signal()`.
 
 ## References
 

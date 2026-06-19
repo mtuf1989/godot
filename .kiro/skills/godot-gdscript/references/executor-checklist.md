@@ -21,7 +21,10 @@ If any item is missing, stop and escalate instead of improvising.
 - prefer typed variables and return types
 - use `_physics_process()` for movement and deterministic mechanics
 - use `_process()` for visual-only updates
-- choose `preload()`, `load()`, or threaded loading based on actual usage and hitch tolerance
+- choose `preload()`, `load()`, or threaded loading based on actual usage and hitch tolerance:
+  - `preload()`: constant resources always needed when this script runs (effects, shared scenes, enums)
+  - `load()`: dynamic paths computed at runtime or conditional resources loaded by index/key
+  - `ResourceLoader.load_threaded_request()`: large scenes loaded during gameplay without blocking
 - use Godot 4 signal syntax and lifecycle callbacks
 
 ## Validation Ladder
@@ -45,6 +48,7 @@ State explicitly which level was reached.
 - old Godot 3 APIs or signal syntax
 - using `_process()` for mechanics that should live in physics
 - accessing nodes before they are ready
+- **`global_position` before tree membership.** `global_position` (2D and 3D) errors or returns zero if the node is not yet in the scene tree. Always `add_child()` first, then set `global_position`. This applies to spawning, placement logic, and test setup.
 - quietly changing architecture from inside the task
 - introducing non-GDScript runtime choices without approval
 - trusting stale editor diagnostics without `refresh_filesystem`
@@ -57,6 +61,8 @@ State explicitly which level was reached.
 - **`null as TypedClass` in dictionary/array literals.** `null as MeshInstance3D` (or any typed class) in a Dictionary or Array literal is an invalid cast in GDScript 4.6. The parser rejects casting `null` to a concrete type. Use plain `null` — dictionaries and arrays are Variant-valued and don't benefit from null casts. Cast when reading instead: `(dict.mesh as MeshInstance3D).queue_free()`.
 - **`queue_redraw()` every frame at scale.** Node2D transform properties (`position`, `rotation`, `scale`) are updated by the engine without triggering `_draw()`. Calling `queue_redraw()` forces a full `_draw()` dispatch per node per frame — at 3000 nodes this is 50x worse than using `rotation=`. Reserve `_draw()` + `queue_redraw()` for static or rarely-changing visuals (archetype change, type swap). For per-frame visual updates at scale, use `canvas_item_set_transform()`.
 - **Silent error recovery.** Do not write code that catches errors and silently continues with a default value. See the Error Handling section below.
+- **MCP `update_property` cannot assign Resource-typed properties.** Properties of type `Resource` (scripts, materials, textures, meshes, themes, shapes, fonts) are `TYPE_OBJECT` which the MCP variant converter does not support. It only handles primitives and math structs (int, float, bool, String, NodePath, Vector2/3, Color, Rect2, Transform2D/3D, AABB). To assign resource properties, edit the `.tscn` file directly (add/modify `ExtResource` or `SubResource` references) then call `refresh_filesystem` + `open_scene` with `force_reload`.
+- **Hard-coded autoload references block testability.** Scripts that call autoloads directly (`SoundManager.play()`, `GLog.info()`) cannot be tested in isolation — gdUnit4 loads all autoloads and any missing one crashes the test runner. For systems that must be testable, inject the dependency via `@export` or constructor param. For fire-and-forget utilities (logging, analytics), accept the coupling but keep it at leaf calls, not deep in logic methods.
 
 ## Error Handling Defaults
 
@@ -121,6 +127,36 @@ These apply to all new code. See `GODOT-CODING-RULES.md` Rule 12 (Writing Testab
 - add `push_warning()` at unexpected-but-recoverable decision points for traceability
 - prefer `@export` injection over hard-coded `preload()` for dependencies that tests need to substitute
 - keep methods focused and single-purpose so unit tests can target them individually
+
+**Data injection for testable collections:**
+
+When a system consumes a collection of data (enemy catalog, item database), inject the data source rather than hard-coding `preload()` or filesystem access. This lets tests substitute minimal fake data without touching disk.
+
+```gdscript
+# Production code — spawner.gd
+class_name EnemySpawner extends Node
+
+@export var enemy_catalog: EnemyCatalog  # injected via editor or test
+
+func pick_enemy(wave: int) -> EnemyDef:
+    var pool := enemy_catalog.get_for_wave(wave)
+    return pool[randi() % pool.size()]
+```
+
+```gdscript
+# Test — test/spawner_test.gd
+func test_pick_enemy_filters_by_wave() -> void:
+    var catalog := EnemyCatalog.new()
+    catalog.register(EnemyDef.new("slime", 1))
+    catalog.register(EnemyDef.new("boss", 5))
+    var spawner := auto_free(EnemySpawner.new())
+    spawner.enemy_catalog = catalog
+
+    var picked := spawner.pick_enemy(1)
+    assert_str(picked.id).is_equal("slime")
+```
+
+The catalog is a `RefCounted` with a `Dictionary` and typed getters — no scene tree, no disk I/O, no autoload dependency. Tests run in isolation.
 
 ## Performance Profiling Protocol
 

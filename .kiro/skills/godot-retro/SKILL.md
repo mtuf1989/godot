@@ -60,7 +60,6 @@ Read `references/retro-template.md` first. Read `references/examples-and-validat
    - `godot-common-ui`
    - `godot-dialogue`
    - `godot-sound`
-   - `godot-feel`
    - `godot-limboai`
    - `godot-gdunit4`
    - `godot-shader-canvasitem-fx`

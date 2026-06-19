@@ -23,8 +23,8 @@ description: |
   Even if the user just says "make the character animate" or "the attack needs a hitbox
   tied to the animation" or "add a tail that follows the body" in a Godot project,
   this skill applies.
-  Do NOT use for Tween-based VFX (use godot-vfx-2d), FeedbackPlayer sequences
-  (use godot-feel), shader-driven visual effects (use godot-shader-canvasitem-fx),
+  Do NOT use for Tween-based VFX (use godot-vfx-2d),
+  shader-driven visual effects (use godot-shader-canvasitem-fx),
   camera transitions (use godot-camera), UI screen transitions (use godot-common-ui),
   dialogue text animation (use godot-dialogue), or AI state machines (use godot-limboai).
 ---
@@ -62,7 +62,6 @@ Read `references/animation-core.md` for any AnimationPlayer or AnimationTree wor
 ## Do Not Use When
 
 - Tween-based property animation for VFX (one-shot particles, trails, flashes) → `godot-vfx-2d`.
-- FeedbackPlayer sequences (scale pops, hit pause, screen shake timing) → `godot-feel`.
 - Shader-driven visual effects on existing nodes (dissolve, outline, palette swap) → `godot-shader-canvasitem-fx`.
 - Camera blend transitions or camera rig setup → `godot-camera`.
 - UI screen transitions or menu animation → `godot-common-ui`.
@@ -121,7 +120,7 @@ Read `animation-core.md` for most tasks — it covers the shared AnimationPlayer
 
 2. **Read references** — read `animation-core.md` for AnimationPlayer/AnimationTree work. Add `animation-2d.md` or `animation-3d.md` based on the domain router above.
 
-3. **Confirm boundary** — verify the task belongs to this skill. Tween VFX → `godot-vfx-2d`. Feedback sequences → `godot-feel`. Shader effects → `godot-shader-canvasitem-fx`. If unclear, check the Do Not Use When list.
+3. **Confirm boundary** — verify the task belongs to this skill. Tween VFX → `godot-vfx-2d`. Shader effects → `godot-shader-canvasitem-fx`. If unclear, check the Do Not Use When list.
 
 4. **Choose architecture** — decide the animation approach:
    - Simple sprite animation → AnimatedSprite2D + SpriteFrames.
@@ -155,7 +154,6 @@ Read `animation-core.md` for most tasks — it covers the shared AnimationPlayer
     - GDScript performance ceiling for procedural animation → `godot-gdextension-cpp`.
     - GPU compute for massive entity counts → `godot-compute`.
     - General GDScript outside animation → `godot-gdscript`.
-    - Feel/juice timing and feedback wiring → `godot-feel`.
 
 ## Testing Animation Systems
 

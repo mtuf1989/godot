@@ -277,3 +277,160 @@ Use when: transparent materials overlap and need controlled draw order.
 - Do not rely on `render_priority` as a substitute for correct depth/transparency design.
 - `depth_draw_always` on transparent materials can help with some sorting issues but has its own artifacts.
 - For complex transparent layering (multiple overlapping glass panes), consider SubViewport-based compositing.
+
+## Raymarching
+
+Use when: the project needs procedural 3D shapes rendered as spatial materials — organic blobs, crystal formations, terrain previews, or any SDF-defined geometry that would be impractical to model as mesh.
+
+### Architecture
+
+A raymarching material replaces the mesh's visible surface with a ray-marched SDF. The mesh acts as a bounding volume — rays are cast from the camera through each fragment, stepping along until they hit the SDF surface or exit the volume.
+
+Key components:
+- **Vertex shader**: passes object-space camera position and vertex position to fragment
+- **Fragment shader**: marches rays, finds surface, computes normal, outputs PBR properties
+- **Discard**: fragments where the ray misses the SDF are discarded
+
+### Core Template (Godot 4 Spatial)
+
+```glsl
+shader_type spatial;
+render_mode cull_front; // render back faces so camera inside volume still works
+
+group_uniforms raymarching;
+uniform int max_steps : hint_range(16, 256) = 100;
+uniform float max_dist : hint_range(1.0, 100.0) = 10.0;
+uniform float surf_dist : hint_range(0.0001, 0.01) = 0.001;
+uniform float seed_variation : hint_range(0.0, 100.0) = 0.0;
+
+varying vec3 world_camera;
+varying vec3 world_position;
+
+void vertex() {
+    world_position = VERTEX;
+    world_camera = (inverse(MODELVIEW_MATRIX) * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+}
+
+// Replace with your SDF
+float get_dist(vec3 p) {
+    return length(p) - 0.4; // sphere example
+}
+
+vec2 ray_march(vec3 ro, vec3 rd) {
+    float d_total = 0.0;
+    for (int i = 0; i < max_steps; i++) {
+        vec3 p = ro + rd * d_total;
+        float d = get_dist(p);
+        d_total += d;
+        if (d < surf_dist) return vec2(d_total, 1.0);
+        if (d_total > max_dist) break;
+    }
+    return vec2(d_total, 0.0);
+}
+
+vec3 get_normal(vec3 p) {
+    float e = 0.001;
+    float d = get_dist(p);
+    vec3 n = d - vec3(
+        get_dist(p - vec3(e, 0.0, 0.0)),
+        get_dist(p - vec3(0.0, e, 0.0)),
+        get_dist(p - vec3(0.0, 0.0, e)));
+    return normalize(n);
+}
+
+void fragment() {
+    vec3 ro = world_camera;
+    vec3 rd = normalize(world_position - ro);
+
+    vec2 rm = ray_march(ro, rd);
+    if (rm.y < 0.5) {
+        discard;
+    }
+
+    vec3 p = ro + rd * rm.x;
+    vec3 n = get_normal(p);
+
+    ALBEDO = vec3(0.8);
+    ROUGHNESS = 0.5;
+    METALLIC = 0.0;
+    // Transform normal from object space to view space for Godot's lighting
+    NORMAL = (INV_VIEW_MATRIX * MODEL_MATRIX * vec4(n, 0.0)).xyz;
+}
+```
+
+### Depth Correction
+
+Without depth correction, raymarched surfaces don't interact correctly with other scene geometry (they appear at the mesh surface depth, not the SDF surface depth).
+
+```glsl
+// After finding hit point p:
+vec3 hit_view = (MODELVIEW_MATRIX * vec4(p, 1.0)).xyz;
+vec4 hit_clip = PROJECTION_MATRIX * vec4(hit_view, 1.0);
+DEPTH = hit_clip.z / hit_clip.w;
+```
+
+**Cost**: Writing `DEPTH` disables early-Z. Only use when depth interaction with other objects matters.
+
+### Combining Multiple SDFs
+
+Use boolean operations from the foundation library:
+
+```glsl
+float get_dist(vec3 p) {
+    float sphere = length(p) - 0.3;
+    float box = sd_box_3d(p - vec3(0.2, 0.0, 0.0), vec3(0.2));
+    return smin(sphere, box, 0.1); // smooth union
+}
+```
+
+### Adding Procedural Detail
+
+Use SDF FBM to add organic noise to surfaces:
+
+```glsl
+float get_dist(vec3 p) {
+    float base = length(p) - 0.35;
+    // Add noise displacement
+    float noise = fbm_3d(p * 4.0, vec3(4.0), 3, 0.5, seed_variation);
+    return base + (noise - 0.5) * 0.05;
+}
+```
+
+### Color by Region
+
+Pass a color index alongside distance for multi-material raymarched objects:
+
+```glsl
+vec2 get_dist_colored(vec3 p) {
+    float d1 = length(p) - 0.3;
+    float d2 = sd_box_3d(p - vec3(0.3, 0.0, 0.0), vec3(0.15));
+    // vec2(distance, color_index)
+    return d1 < d2 ? vec2(d1, 0.0) : vec2(d2, 1.0);
+}
+
+// In fragment(), use color_index to select material properties:
+// float idx = rm.y; // from ray_march
+// ALBEDO = mix(color_a, color_b, idx);
+```
+
+### Performance Considerations
+
+- **Step count**: 64-100 for most cases. 200+ only for complex nested SDFs.
+- **Bounding volume**: Use the tightest mesh possible. Rays that miss early save all subsequent steps.
+- **LOD**: Reduce step count or increase `surf_dist` for distant objects.
+- **Overdraw**: `cull_front` means every visible fragment runs the full march. Avoid large screen-filling raymarched objects.
+- **SDF complexity**: Each step evaluates the full SDF. Keep `get_dist()` lean — avoid deep FBM inside the march loop.
+
+### When NOT to Raymarch
+
+- Static shapes that could be modeled as mesh (use mesh + standard material)
+- Large environments (cost scales with screen coverage)
+- Mobile targets (too many ALU ops per fragment)
+- When depth interaction with particles/transparent objects is critical (depth write cost)
+
+### Mesh Choice
+
+- **Cube**: good default bounding volume for contained shapes
+- **Sphere**: tighter fit for spherical SDFs, fewer wasted fragments
+- **Custom convex hull**: optimal for known SDF bounds
+- Always use `cull_front` or `cull_disabled` so the camera can enter the volume

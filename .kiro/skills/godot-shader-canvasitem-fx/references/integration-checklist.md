@@ -57,7 +57,7 @@ Use this file before wiring a `canvas_item` shader into scenes, scripts, or UI f
   - `open_scene`
   - `scene://current/tree`
   - `add_node` when a new host such as `CanvasLayer` or `ColorRect` is needed
-  - `update_property` for material references, layer, filter, and script assignments
+  - `update_property` for layer and filter settings
   - `save_scene` after scene mutation
 - Disk-backed asset changes:
   - create or edit `.gdshader`, `.tres`, `.gd`, or starter `.tscn` files directly
