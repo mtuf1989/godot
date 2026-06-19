@@ -1,0 +1,13 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://test_phase2.gd" id="1"]
+
+[sub_resource type="AudioStreamSymphony" id="AudioStreamSymphony_1"]
+mix_rate = 44100.0
+
+[node name="Main" type="Node"]
+script = ExtResource("1")
+
+[node name="AudioStreamPlayer" type="AudioStreamPlayer" parent="."]
+stream = SubResource("AudioStreamSymphony_1")
+bus = &"Record"

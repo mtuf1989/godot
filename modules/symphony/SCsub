@@ -1,0 +1,24 @@
+#!/usr/bin/env python
+from misc.utility.scons_hints import *
+
+Import("env")
+Import("env_modules")
+
+env_symphony = env_modules.Clone()
+
+# Enable WebAssembly SIMD for auto-vectorization on web builds.
+if env["platform"] == "web":
+    env_symphony.Append(CCFLAGS=["-msimd128"])
+
+env_symphony.add_source_files(env.modules_sources, "*.cpp")
+env_symphony.add_source_files(env.modules_sources, "core/*.cpp")
+env_symphony.add_source_files(env.modules_sources, "stream/*.cpp")
+env_symphony.add_source_files(env.modules_sources, "nodes/generators/*.cpp")
+env_symphony.add_source_files(env.modules_sources, "nodes/filters/*.cpp")
+env_symphony.add_source_files(env.modules_sources, "nodes/envelopes/*.cpp")
+env_symphony.add_source_files(env.modules_sources, "nodes/math/*.cpp")
+env_symphony.add_source_files(env.modules_sources, "nodes/timing/*.cpp")
+env_symphony.add_source_files(env.modules_sources, "nodes/io/*.cpp")
+
+if env.editor_build:
+    env_symphony.add_source_files(env.modules_sources, "editor/*.cpp")
