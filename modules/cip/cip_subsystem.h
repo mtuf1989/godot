@@ -14,11 +14,13 @@ private:
 	struct ActionState {
 		CIPTrigger::TriggerState last_state = CIPTrigger::STATE_NONE;
 		Variant last_value;
+		Ref<CIPActionMapping> active_mapping; // which mapping last fed this action
 	};
 	HashMap<Ref<CIPAction>, ActionState> action_states;
 
 	void _sort_contexts();
 	CIPAction::TriggerEvent _compute_trigger_event(CIPTrigger::TriggerState p_prev, CIPTrigger::TriggerState p_current);
+	void _evaluate_triggers(const Ref<CIPAction> &p_action, ActionState &p_state, double p_delta);
 
 protected:
 	static void _bind_methods();
