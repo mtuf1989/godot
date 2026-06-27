@@ -696,9 +696,7 @@ Ref<AudioStreamPlayback> AudioStreamSymphony::instantiate_playback() {
 	return playback;
 }
 
-String AudioStreamSymphony::get_stream_name() const {
-	return "Symphony";
-}
+
 
 double AudioStreamSymphony::get_length() const {
 	return 0.0;
