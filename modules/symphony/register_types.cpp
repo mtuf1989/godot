@@ -7,6 +7,8 @@
 #include "runtime/sound_event.h"
 #include "runtime/voice_manager.h"
 #include "runtime/event_dispatcher.h"
+#include "runtime/music_state_graph.h"
+#include "runtime/beat_clock.h"
 
 #include "nodes/generators/symphony_oscillator.h"
 #include "nodes/generators/symphony_constant.h"
@@ -98,20 +100,26 @@ void initialize_symphony_module(ModuleInitializationLevel p_level) {
 		GDREGISTER_CLASS(AudioStreamPlaybackSymphony);
 		GDREGISTER_CLASS(SymphonyVoiceManager);
 		GDREGISTER_CLASS(SoundEvent);
+		GDREGISTER_CLASS(MusicStateGraph);
+		GDREGISTER_CLASS(BeatClock);
 		GDREGISTER_CLASS(SymphonyVoicePool);
 		GDREGISTER_CLASS(SymphonyEventDispatcher);
 
 		// Create voice manager singleton (DSP graph tracking)
 		memnew(SymphonyVoiceManager);
-		Engine::get_singleton()->add_singleton(Engine::Singleton("SymphonyVoiceManager", SymphonyVoiceManager::get_singleton()));
+		Engine::get_singleton()->add_singleton(Engine::Singleton("SymphonyVoiceManager", SymphonyVoiceManager::get_singleton(), "SymphonyVoiceManager"));
 
 		// Create voice pool singleton (game-level voice management)
 		memnew(SymphonyVoicePool);
-		Engine::get_singleton()->add_singleton(Engine::Singleton("SymphonyVoicePool", SymphonyVoicePool::get_singleton()));
+		Engine::get_singleton()->add_singleton(Engine::Singleton("SymphonyVoicePool", SymphonyVoicePool::get_singleton(), "SymphonyVoicePool"));
 
 		// Create event dispatcher singleton
 		memnew(SymphonyEventDispatcher);
-		Engine::get_singleton()->add_singleton(Engine::Singleton("SymphonyEventDispatcher", SymphonyEventDispatcher::get_singleton()));
+		Engine::get_singleton()->add_singleton(Engine::Singleton("SymphonyEventDispatcher", SymphonyEventDispatcher::get_singleton(), "SymphonyEventDispatcher"));
+
+		// Create beat clock singleton
+		memnew(BeatClock);
+		Engine::get_singleton()->add_singleton(Engine::Singleton("BeatClock", BeatClock::get_singleton(), "BeatClock"));
 #ifdef TOOLS_ENABLED
 	} else if (p_level == MODULE_INITIALIZATION_LEVEL_EDITOR) {
 		GDREGISTER_CLASS(SymphonyNodeInspectorProxy);
@@ -123,6 +131,10 @@ void initialize_symphony_module(ModuleInitializationLevel p_level) {
 
 void uninitialize_symphony_module(ModuleInitializationLevel p_level) {
 	if (p_level == MODULE_INITIALIZATION_LEVEL_SCENE) {
+		Engine::get_singleton()->remove_singleton("BeatClock");
+		if (BeatClock::get_singleton()) {
+			memdelete(BeatClock::get_singleton());
+		}
 		Engine::get_singleton()->remove_singleton("SymphonyEventDispatcher");
 		if (SymphonyEventDispatcher::get_singleton()) {
 			memdelete(SymphonyEventDispatcher::get_singleton());

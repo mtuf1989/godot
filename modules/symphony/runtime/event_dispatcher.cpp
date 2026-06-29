@@ -16,6 +16,8 @@ SymphonyEventDispatcher::~SymphonyEventDispatcher() {
 
 void SymphonyEventDispatcher::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("play_event", "event"), &SymphonyEventDispatcher::play_event);
+	ClassDB::bind_method(D_METHOD("on_voice_started", "event_id"), &SymphonyEventDispatcher::on_voice_started);
+	ClassDB::bind_method(D_METHOD("on_voice_stopped", "event_id"), &SymphonyEventDispatcher::on_voice_stopped);
 
 	BIND_ENUM_CONSTANT(RESULT_PLAYED);
 	BIND_ENUM_CONSTANT(RESULT_STOLEN);

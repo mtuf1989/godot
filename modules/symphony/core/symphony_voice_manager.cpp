@@ -1,6 +1,7 @@
 #include "symphony_voice_manager.h"
 #include "../stream/audio_stream_playback_symphony.h"
 #include "core/object/class_db.h"
+#include "core/object/object.h"
 #include "servers/audio/audio_server.h"
 
 #include <cfloat>
@@ -115,20 +116,27 @@ float SymphonyVoiceManager::get_critical_threshold() const {
 }
 
 void SymphonyVoiceManager::enforce_voice_limits() {
-	Vector<AudioStreamPlaybackSymphony *> victims;
+	Vector<ObjectID> victim_ids;
 
 	{
 		std::lock_guard<std::mutex> lock(registry_mutex);
 
 		// Voice count limit
 		if (max_voices > 0 && active_voices.size() > max_voices) {
-			while (active_voices.size() - victims.size() > max_voices) {
+			while (active_voices.size() - victim_ids.size() > max_voices) {
 				int worst_idx = -1;
 				int worst_priority = INT32_MAX;
 				float worst_rms = FLT_MAX;
 
 				for (int i = 0; i < active_voices.size(); i++) {
-					if (victims.find(active_voices[i]) >= 0) {
+					bool is_victim = false;
+					for (int v = 0; v < victim_ids.size(); v++) {
+						if (active_voices[i]->get_instance_id() == victim_ids[v]) {
+							is_victim = true;
+							break;
+						}
+					}
+					if (is_victim) {
 						continue;
 					}
 					int pri = active_voices[i]->get_effective_priority();
@@ -141,17 +149,24 @@ void SymphonyVoiceManager::enforce_voice_limits() {
 				}
 
 				if (worst_idx >= 0) {
-					victims.push_back(active_voices[worst_idx]);
+					victim_ids.push_back(active_voices[worst_idx]->get_instance_id());
 				} else {
 					break;
 				}
 			}
 		}
 
-		// Budget critical threshold — collect more victims until under warning threshold
+		// Budget critical threshold
 		float total_budget = 0.0f;
 		for (const AudioStreamPlaybackSymphony *v : active_voices) {
-			if (victims.find(const_cast<AudioStreamPlaybackSymphony *>(v)) >= 0) {
+			bool is_victim = false;
+			for (int vi = 0; vi < victim_ids.size(); vi++) {
+				if (v->get_instance_id() == victim_ids[vi]) {
+					is_victim = true;
+					break;
+				}
+			}
+			if (is_victim) {
 				continue;
 			}
 			total_budget += v->get_budget_percent();
@@ -164,7 +179,14 @@ void SymphonyVoiceManager::enforce_voice_limits() {
 				float worst_rms = FLT_MAX;
 
 				for (int i = 0; i < active_voices.size(); i++) {
-					if (victims.find(active_voices[i]) >= 0) {
+					bool is_victim = false;
+					for (int vi = 0; vi < victim_ids.size(); vi++) {
+						if (active_voices[i]->get_instance_id() == victim_ids[vi]) {
+							is_victim = true;
+							break;
+						}
+					}
+					if (is_victim) {
 						continue;
 					}
 					int pri = active_voices[i]->get_effective_priority();
@@ -178,7 +200,7 @@ void SymphonyVoiceManager::enforce_voice_limits() {
 
 				if (worst_idx >= 0) {
 					total_budget -= active_voices[worst_idx]->get_budget_percent();
-					victims.push_back(active_voices[worst_idx]);
+					victim_ids.push_back(active_voices[worst_idx]->get_instance_id());
 				} else {
 					break;
 				}
@@ -188,8 +210,14 @@ void SymphonyVoiceManager::enforce_voice_limits() {
 		}
 	} // mutex released here
 
-	// Stop victims outside the lock (stop() calls unregister_voice() which takes the lock)
-	for (AudioStreamPlaybackSymphony *v : victims) {
-		v->stop();
+	// Stop victims outside the lock — use ObjectID for safe lookup
+	for (int i = 0; i < victim_ids.size(); i++) {
+		Object *obj = ObjectDB::get_instance(victim_ids[i]);
+		if (obj) {
+			AudioStreamPlaybackSymphony *v = Object::cast_to<AudioStreamPlaybackSymphony>(obj);
+			if (v) {
+				v->stop();
+			}
+		}
 	}
 }

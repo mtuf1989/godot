@@ -35,6 +35,7 @@ void SymphonyVoicePool::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("release_slot", "index", "immediate"), &SymphonyVoicePool::release_slot, DEFVAL(false));
 	ClassDB::bind_method(D_METHOD("virtualize", "index"), &SymphonyVoicePool::virtualize);
 	ClassDB::bind_method(D_METHOD("devirtualize", "index"), &SymphonyVoicePool::devirtualize);
+	ClassDB::bind_method(D_METHOD("process_frame"), &SymphonyVoicePool::process_frame);
 
 	BIND_ENUM_CONSTANT(VOICE_FREE);
 	BIND_ENUM_CONSTANT(VOICE_TO_PLAY);
