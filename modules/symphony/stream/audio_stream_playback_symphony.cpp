@@ -104,19 +104,12 @@ int AudioStreamPlaybackSymphony::mix(AudioFrame *p_buffer, float p_rate_scale, i
 	last_mix_time_us = (float)(t_end - t_start);
 	last_frame_count = p_frames;
 
-	// RMS computation (cheap: sum of squares from output buffer)
+	// RMS computation (both channels)
 	float sum_sq = 0.0f;
 	for (int i = 0; i < p_frames; i++) {
-		float s = p_buffer[i].left;
-		sum_sq += s * s;
+		sum_sq += p_buffer[i].left * p_buffer[i].left + p_buffer[i].right * p_buffer[i].right;
 	}
-	last_rms = sqrtf(sum_sq / (float)p_frames);
-
-	// Enforce voice limits (stealing) after metrics are updated.
-	SymphonyVoiceManager *mgr = SymphonyVoiceManager::get_singleton();
-	if (mgr) {
-		mgr->enforce_voice_limits();
-	}
+	last_rms = sqrtf(sum_sq / (2.0f * (float)p_frames));
 
 	return p_frames;
 }

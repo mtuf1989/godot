@@ -20,6 +20,7 @@ struct ConnectionDesc {
 	int32_t from_pin = 0;   // Output pin index on source node
 	int32_t to_node = -1;   // Destination node ID
 	int32_t to_pin = 0;     // Input pin index on destination node
+	bool is_feedback = false; // If true, compiler inserts 1-block delay (breaks cycle)
 };
 
 // Describes a comment frame in the editor.

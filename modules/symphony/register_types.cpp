@@ -17,6 +17,7 @@
 #include "nodes/filters/symphony_one_pole.h"
 #include "nodes/filters/symphony_dc_blocker.h"
 #include "nodes/filters/symphony_saturator.h"
+#include "nodes/filters/symphony_sv_filter.h"
 #include "nodes/envelopes/symphony_gain.h"
 #include "nodes/envelopes/symphony_adsr.h"
 #include "nodes/envelopes/symphony_compressor.h"
@@ -26,6 +27,10 @@
 #include "nodes/math/symphony_sample_hold.h"
 #include "nodes/timing/symphony_clock.h"
 #include "nodes/timing/symphony_trigger_delay.h"
+#include "nodes/timing/symphony_stochastic_trigger.h"
+#include "nodes/delay/symphony_delay_line.h"
+#include "nodes/delay/symphony_feedback_path.h"
+#include "nodes/utility/symphony_parameter_smoother.h"
 #include "nodes/io/symphony_graph_input.h"
 #include "nodes/io/symphony_graph_input_audio.h"
 #include "nodes/io/symphony_graph_output.h"
@@ -56,6 +61,7 @@ void initialize_symphony_module(ModuleInitializationLevel p_level) {
 		SymphonyOnePole::register_operator();
 		SymphonyDCBlocker::register_operator();
 		SymphonySaturator::register_operator();
+		SymphonySVFilter::register_operator();
 
 		// Envelopes & Dynamics
 		SymphonyGain::register_operator();
@@ -71,6 +77,14 @@ void initialize_symphony_module(ModuleInitializationLevel p_level) {
 		// Timing
 		SymphonyClock::register_operator();
 		SymphonyTriggerDelay::register_operator();
+		SymphonyStochasticTrigger::register_operator();
+
+		// Delay
+		SymphonyDelayLine::register_operator();
+		SymphonyFeedbackPath::register_operator();
+
+		// Utility
+		SymphonyParameterSmoother::register_operator();
 
 		// I/O
 		SymphonyGraphOutput::register_operator();

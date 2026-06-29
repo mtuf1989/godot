@@ -19,6 +19,8 @@ env_symphony.add_source_files(env.modules_sources, "nodes/envelopes/*.cpp")
 env_symphony.add_source_files(env.modules_sources, "nodes/math/*.cpp")
 env_symphony.add_source_files(env.modules_sources, "nodes/timing/*.cpp")
 env_symphony.add_source_files(env.modules_sources, "nodes/io/*.cpp")
+env_symphony.add_source_files(env.modules_sources, "nodes/delay/*.cpp")
+env_symphony.add_source_files(env.modules_sources, "nodes/utility/*.cpp")
 env_symphony.add_source_files(env.modules_sources, "runtime/*.cpp")
 
 if env.editor_build:

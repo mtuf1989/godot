@@ -1,6 +1,7 @@
 #include "symphony_voice_manager.h"
 #include "../stream/audio_stream_playback_symphony.h"
 #include "core/object/class_db.h"
+#include "servers/audio/audio_server.h"
 
 #include <cfloat>
 
@@ -25,10 +26,17 @@ void SymphonyVoiceManager::_bind_methods() {
 
 SymphonyVoiceManager::SymphonyVoiceManager() {
 	singleton = this;
+	AudioServer::get_singleton()->add_mix_callback(_mix_callback, this);
 }
 
 SymphonyVoiceManager::~SymphonyVoiceManager() {
+	AudioServer::get_singleton()->remove_mix_callback(_mix_callback, this);
 	singleton = nullptr;
+}
+
+void SymphonyVoiceManager::_mix_callback(void *p_userdata) {
+	SymphonyVoiceManager *mgr = static_cast<SymphonyVoiceManager *>(p_userdata);
+	mgr->enforce_voice_limits();
 }
 
 void SymphonyVoiceManager::register_voice(AudioStreamPlaybackSymphony *p_voice) {

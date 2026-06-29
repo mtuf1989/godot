@@ -19,6 +19,9 @@ class SymphonyVoiceManager : public Object {
 	float warning_threshold = 0.70f;
 	float critical_threshold = 0.90f;
 
+	// Mix callback — called once per audio callback cycle.
+	static void _mix_callback(void *p_userdata);
+
 protected:
 	static void _bind_methods();
 
@@ -40,7 +43,7 @@ public:
 	void set_critical_threshold(float p_threshold);
 	float get_critical_threshold() const;
 
-	// Called from audio thread after mix() to enforce voice limits.
+	// Called once per audio callback cycle via mix callback.
 	void enforce_voice_limits();
 
 	SymphonyVoiceManager();

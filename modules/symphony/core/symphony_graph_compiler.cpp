@@ -124,9 +124,11 @@ GraphCompiler::CompileResult GraphCompiler::compile(const GraphDescription &p_de
 		bool promotion = (out_type == SymphonyPinType::FLOAT && in_type == SymphonyPinType::AUDIO);
 		input_sources.write[to_idx].write[conn.to_pin] = { from_idx, conn.from_pin, promotion };
 
-		// Build adjacency for topological sort
-		adjacency.write[from_idx].push_back(to_idx);
-		in_degree.write[to_idx]++;
+		// Build adjacency for topological sort — skip feedback edges (they don't create dependencies)
+		if (!conn.is_feedback) {
+			adjacency.write[from_idx].push_back(to_idx);
+			in_degree.write[to_idx]++;
+		}
 	}
 
 	// --- Phase 3: Check required inputs ---
@@ -169,7 +171,7 @@ GraphCompiler::CompileResult GraphCompiler::compile(const GraphDescription &p_de
 	}
 
 	if (sorted_count != node_count) {
-		result.errors.push_back("Graph contains a cycle.");
+		result.errors.push_back("Graph contains a cycle. Mark the feedback edge with is_feedback=true.");
 		return result;
 	}
 
