@@ -4,6 +4,9 @@
 #include "stream/audio_stream_playback_symphony.h"
 #include "core/symphony_operator_registry.h"
 #include "core/symphony_voice_manager.h"
+#include "runtime/sound_event.h"
+#include "runtime/voice_manager.h"
+#include "runtime/event_dispatcher.h"
 
 #include "nodes/generators/symphony_oscillator.h"
 #include "nodes/generators/symphony_constant.h"
@@ -80,10 +83,21 @@ void initialize_symphony_module(ModuleInitializationLevel p_level) {
 		GDREGISTER_CLASS(AudioStreamSymphony);
 		GDREGISTER_CLASS(AudioStreamPlaybackSymphony);
 		GDREGISTER_CLASS(SymphonyVoiceManager);
+		GDREGISTER_CLASS(SoundEvent);
+		GDREGISTER_CLASS(SymphonyVoicePool);
+		GDREGISTER_CLASS(SymphonyEventDispatcher);
 
-		// Create voice manager singleton
+		// Create voice manager singleton (DSP graph tracking)
 		memnew(SymphonyVoiceManager);
 		Engine::get_singleton()->add_singleton(Engine::Singleton("SymphonyVoiceManager", SymphonyVoiceManager::get_singleton()));
+
+		// Create voice pool singleton (game-level voice management)
+		memnew(SymphonyVoicePool);
+		Engine::get_singleton()->add_singleton(Engine::Singleton("SymphonyVoicePool", SymphonyVoicePool::get_singleton()));
+
+		// Create event dispatcher singleton
+		memnew(SymphonyEventDispatcher);
+		Engine::get_singleton()->add_singleton(Engine::Singleton("SymphonyEventDispatcher", SymphonyEventDispatcher::get_singleton()));
 #ifdef TOOLS_ENABLED
 	} else if (p_level == MODULE_INITIALIZATION_LEVEL_EDITOR) {
 		GDREGISTER_CLASS(SymphonyNodeInspectorProxy);
@@ -95,6 +109,14 @@ void initialize_symphony_module(ModuleInitializationLevel p_level) {
 
 void uninitialize_symphony_module(ModuleInitializationLevel p_level) {
 	if (p_level == MODULE_INITIALIZATION_LEVEL_SCENE) {
+		Engine::get_singleton()->remove_singleton("SymphonyEventDispatcher");
+		if (SymphonyEventDispatcher::get_singleton()) {
+			memdelete(SymphonyEventDispatcher::get_singleton());
+		}
+		Engine::get_singleton()->remove_singleton("SymphonyVoicePool");
+		if (SymphonyVoicePool::get_singleton()) {
+			memdelete(SymphonyVoicePool::get_singleton());
+		}
 		Engine::get_singleton()->remove_singleton("SymphonyVoiceManager");
 		if (SymphonyVoiceManager::get_singleton()) {
 			memdelete(SymphonyVoiceManager::get_singleton());
