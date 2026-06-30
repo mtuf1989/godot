@@ -1,5 +1,78 @@
 # Dev Log — Symphony Audio System
 
+## 2026-06-30 — S2 Synthesis Toolkit
+
+### Completed
+
+| Task | Status | Files |
+|------|--------|-------|
+| S2.4 — Waveshaper | ✅ Done | `nodes/filters/symphony_waveshaper.h` |
+| S2.5 — RingMod | ✅ Done | `nodes/math/symphony_ring_mod.h` |
+| S2.6 — FM/PM Oscillator | ✅ Done | `nodes/generators/symphony_fm_oscillator.h` |
+| S2.7 — CrossFade | ✅ Done | `nodes/math/symphony_crossfade.h` |
+| S2.8 — EnvelopeFollower | ✅ Done | `nodes/utility/symphony_envelope_follower.h` |
+| S2.1 — ModalBank | ✅ Done | `nodes/synthesis/symphony_modal_bank.h` |
+| S2.3 — PitchShifter | ✅ Done | `nodes/delay/symphony_pitch_shifter.h` |
+| S2.2 — GrainCloud | ✅ Done | `nodes/synthesis/symphony_grain_cloud.h` |
+| S2.9 — Preset Graphs | ✅ Done | `game-template/addons/symphony_audio/presets/graphs/` (6 files) |
+| register_types.cpp | ✅ Done | All 8 operators registered |
+
+### Architecture Decisions
+
+1. **Approach D for ModalBank data**: Modal data (frequency/t60/gain arrays) lives entirely on the resource via `PackedFloat32Array` params. No hardcoded C++ presets. The `.tres` preset files in `game-template/addons/symphony_audio/presets/graphs/` provide "batteries included" experience. ModalBank operator is generic — just takes arrays.
+
+2. **All S2 operators are header-only**: Matches S1 convention. Even GrainCloud (317 lines) stays manageable in a single header. All operators follow the same structure: class → bind_pins → execute → export/import state → register_operator → create.
+
+3. **GrainCloud dual-mode**: Supports both live input granulation (fills circular capture buffer from `audio_in`) and buffer-scanning (position parameter 0-1 controls where in the 4-second capture buffer grains are read from). Position=1 reads newest, position=0 reads oldest.
+
+4. **PitchShifter dual-pointer approach**: Two read pointers 180° apart in a ~85ms buffer. Raised-cosine crossfade zone = 25% of buffer. When a pointer approaches the write head, it fades out while the other fades in. Normalization prevents volume bumps. Clean for ±12 semitones.
+
+5. **ModalBank coefficient computation**: Uses `compute_coefficients()` which derives biquad bandpass coefficients from frequency/t60/gain data. Formula: `bandwidth = 6.908 / (π * t60)`, `R = exp(-π * bw / sr)`, `a1 = -2R*cos(θ)`, `a2 = R²`, `b0 = 1-R`. Max 64 modes (hard cap for arena allocation).
+
+6. **Preset graph conventions**: All preset .tres files in `game-template/addons/symphony_audio/presets/graphs/`. Impact presets use TriggerInput "strike" for excitation. Weather/ambient presets use GraphInput "intensity" (0-1) for dynamic control. Fire uses 3 parallel layers mixed into GraphOutput.
+
+### Gotchas / Notes for Future Sessions
+
+1. **`Math_PI` does not exist in Godot**: Use `Math::PI` (from `core/math/math_defs.h` namespace). `Math::TAU` for 2π. Both are `double` — cast to `float` with `(float)Math::PI` to avoid implicit double→float warnings in some build configs.
+
+2. **FLOAT pins are single values, not arrays**: When an input is `SymphonyPinType::FLOAT`, the pointer points to ONE float. Dereference with `*ptr`, NOT `ptr[i]`. Only `AUDIO` pins are arrays of `p_num_frames` samples. FMOscillator initially had this bug (reading FLOAT pins as arrays).
+
+3. **ModalBank with zero data is silent**: If `frequencies`/`decay_times`/`gains` params are not provided, `num_modes` = 0 and the operator produces silence. This is intentional — the data comes from the `.tres` resource.
+
+4. **GrainCloud RNG seed**: xorshift32 state must never be 0 (produces zeros forever). The create() function guards against this. Different seeds produce different grain patterns — use the `seed` param to vary per-voice.
+
+5. **GrainCloud arena allocation is large**: 4 seconds × 48000 Hz × 4 bytes = 768KB per capture buffer, plus 4KB Hanning LUT. Total ~772KB per GrainCloud voice. At 48 voice slots, that's 37MB if ALL voices used GrainCloud (unlikely). But be aware of arena size limits for web.
+
+6. **PitchShifter latency**: Default 85ms buffer = ~42ms effective latency (read pointer starts buffer_size/4 behind write). Acceptable for effects but NOT for real-time pitch correction on voice. For tighter latency, reduce `buffer_ms` param (minimum 20ms = ~10ms latency, but more artifacts).
+
+7. **Waveshaper custom table via `table_data` param**: Can pass a `PackedFloat32Array` as param to override the preset table. The array should be the same length as `table_size`. If shorter, remainder is zero-filled. If the param is not present, the `preset` param selects from 6 built-in curves.
+
+8. **EnvelopeFollower output is FLOAT (control-rate)**: It outputs a single float per micro-block representing the tracked envelope level. This connects to other operators' FLOAT inputs (e.g., driving a Gain or MapRange). Not an audio buffer — cannot be connected to audio inputs directly.
+
+9. **CrossFade vs Mix**: CrossFade uses equal-power curve (cos/sin), Mix uses linear. CrossFade prevents the -3dB dip at the midpoint. Use CrossFade for morphing between two sources, Mix for simple blending where the dip is acceptable.
+
+10. **Preset graph validation**: The .tres files reference operator type names by StringName (e.g., `&"ModalBank"`). If an operator is renamed in C++, these graphs will fail to compile at runtime. The graph compiler already handles unknown operators gracefully (logs error, produces silence).
+
+11. **Fire preset uses 3 Mix inputs on GraphOutput**: This relies on GraphOutput accepting multiple audio connections and summing them. Verify this behavior in the compiled graph — if GraphOutput only takes one input pin, need a Mix node to combine the 3 layers first.
+
+### New Operator Registry (Post-S2)
+
+After S2, the full operator set is:
+
+**Generators**: Oscillator, Constant, Noise, LFO, WavePlayer, FMOscillator
+**Filters**: BiquadFilter, OnePole, DCBlocker, Saturator, SVFilter, Waveshaper
+**Envelopes**: Gain, ADSR, Compressor
+**Math**: MathAdd, Mix, MapRange, SampleHold, RingMod, CrossFade
+**Timing**: Clock, TriggerDelay, StochasticTrigger
+**Delay**: DelayLine, FeedbackPath, PitchShifter
+**Utility**: ParameterSmoother, EnvelopeFollower
+**Synthesis**: ModalBank, GrainCloud
+**I/O**: GraphInput, GraphInputAudio, GraphOutput, TriggerInput, SubGraph
+
+Total: 32 operators (up from 24 after S1).
+
+---
+
 ## 2026-06-30 — G5 Ambient & Spatial Foundation
 
 ### Completed

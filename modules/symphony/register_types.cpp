@@ -34,7 +34,15 @@
 #include "nodes/timing/symphony_stochastic_trigger.h"
 #include "nodes/delay/symphony_delay_line.h"
 #include "nodes/delay/symphony_feedback_path.h"
+#include "nodes/delay/symphony_pitch_shifter.h"
 #include "nodes/utility/symphony_parameter_smoother.h"
+#include "nodes/utility/symphony_envelope_follower.h"
+#include "nodes/synthesis/symphony_modal_bank.h"
+#include "nodes/synthesis/symphony_grain_cloud.h"
+#include "nodes/math/symphony_ring_mod.h"
+#include "nodes/math/symphony_crossfade.h"
+#include "nodes/generators/symphony_fm_oscillator.h"
+#include "nodes/filters/symphony_waveshaper.h"
 #include "nodes/io/symphony_graph_input.h"
 #include "nodes/io/symphony_graph_input_audio.h"
 #include "nodes/io/symphony_graph_output.h"
@@ -86,9 +94,25 @@ void initialize_symphony_module(ModuleInitializationLevel p_level) {
 		// Delay
 		SymphonyDelayLine::register_operator();
 		SymphonyFeedbackPath::register_operator();
+		SymphonyPitchShifter::register_operator();
 
 		// Utility
 		SymphonyParameterSmoother::register_operator();
+		SymphonyEnvelopeFollower::register_operator();
+
+		// Synthesis
+		SymphonyModalBank::register_operator();
+		SymphonyGrainCloud::register_operator();
+
+		// S2 Math
+		SymphonyRingMod::register_operator();
+		SymphonyCrossFade::register_operator();
+
+		// S2 Generators
+		SymphonyFMOscillator::register_operator();
+
+		// S2 Filters
+		SymphonyWaveshaper::register_operator();
 
 		// I/O
 		SymphonyGraphOutput::register_operator();
