@@ -16,6 +16,11 @@ public:
 	// Called every micro-block on the audio thread.
 	virtual void execute(int32_t p_num_frames) = 0;
 
+	// Called before arena is freed to release non-arena resources (e.g., heap-allocated
+	// objects that couldn't be arena-allocated). Default is no-op.
+	// This is NOT called on the audio thread — it runs during graph destruction on main thread.
+	virtual void cleanup() {}
+
 	// State migration for hot-swap. Override in stateful operators.
 	// Returns the number of bytes written to p_buffer. If p_buffer is nullptr, returns required size.
 	virtual size_t export_state(uint8_t *p_buffer, size_t p_max_size) const { return 0; }

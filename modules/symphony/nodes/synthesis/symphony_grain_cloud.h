@@ -25,6 +25,7 @@
 // - scan_speed: automatically advances position through the buffer (0=manual, 1=normal)
 // - amp_randomness: per-grain amplitude variation in dB
 // - position_randomness: configurable jitter (was hardcoded at 10%)
+// - pitch_tracking: YIN-based pitch detection for pitch-following grain playback
 //
 // Pan randomization: Not implemented here (mono output architecture).
 // Use a downstream Panner node driven by GrainCloud's position for stereo spread.
@@ -53,6 +54,7 @@ private:
 	const float *__restrict__ pitch_rand_input = nullptr;    // Float: 0-0.5 semitone deviation
 	const float *__restrict__ scan_speed_input = nullptr;    // Float: 0-4 scan speed (S4.3)
 	const float *__restrict__ amp_rand_input = nullptr;      // Float: 0-6 dB variation (S4.3)
+	const float *__restrict__ pitch_tracking_input = nullptr; // Float: 0-1 pitch following (S4.3)
 	float *__restrict__ audio_out = nullptr;
 
 	// Capture buffer (circular, holds source audio)
@@ -86,6 +88,14 @@ private:
 	float default_scan_speed = 0.0f;         // S4.3: 0 = manual position control
 	float default_amp_randomness = 0.0f;     // S4.3: 0 = no amplitude variation
 	float default_position_randomness = 0.1f; // S4.3: configurable (was hardcoded 10%)
+	float default_pitch_tracking = 0.0f;     // S4.3: 0 = no pitch following
+
+	// Pitch detection state (S4.3: YIN-based)
+	float detected_pitch_hz = 0.0f;          // Cached pitch from last detection
+	int32_t pitch_update_counter = 0;        // Counts samples until next pitch update
+	static constexpr int32_t PITCH_UPDATE_INTERVAL = 2048; // ~42ms at 48kHz
+	static constexpr int32_t PITCH_WINDOW_SIZE = 1024;     // Analysis window
+	static constexpr float PITCH_REFERENCE_HZ = 440.0f;    // Reference pitch (A4)
 
 	// Fast PRNG (xorshift32)
 	uint32_t rng_state = 1;
@@ -130,6 +140,34 @@ private:
 		return capture_buffer[idx] + frac * (capture_buffer[next] - capture_buffer[idx]);
 	}
 
+	// S4.3: YIN pitch detection — lightweight, runs periodically
+	// Computes CMND (cumulative mean normalized difference) and finds first
+	// valley below threshold to determine fundamental frequency.
+	float detect_pitch(int32_t center_pos, int32_t window_size) const {
+		const int32_t max_lag = window_size / 2;
+		const int32_t min_lag = (int32_t)(mix_rate / 2000.0f); // 2kHz max pitch
+		const int32_t max_lag_clamped = MIN(max_lag, (int32_t)(mix_rate / 50.0f)); // 50Hz min pitch
+		const float threshold = 0.15f;
+
+		float running_sum = 0.0f;
+
+		for (int32_t tau = 1; tau <= max_lag_clamped; tau++) {
+			float diff = 0.0f;
+			for (int32_t j = 0; j < window_size - max_lag_clamped; j++) {
+				float d = read_capture((float)(center_pos + j)) - read_capture((float)(center_pos + j + tau));
+				diff += d * d;
+			}
+			running_sum += diff;
+			float cmnd = (running_sum > 0.0f) ? (diff * (float)tau / running_sum) : 1.0f;
+
+			if (tau >= min_lag && cmnd < threshold) {
+				// Found the pitch period
+				return mix_rate / (float)tau;
+			}
+		}
+		return 0.0f; // No pitch detected
+	}
+
 public:
 	SymphonyGrainCloud() {}
 
@@ -141,6 +179,7 @@ public:
 		pitch_rand_input = (const float *)p_input_ptrs[4];
 		scan_speed_input = (const float *)p_input_ptrs[5];
 		amp_rand_input = (const float *)p_input_ptrs[6];
+		pitch_tracking_input = (const float *)p_input_ptrs[7];
 		audio_out = (float *)p_output_ptrs[0];
 	}
 
@@ -154,6 +193,7 @@ public:
 		float pitch_rand = pitch_rand_input ? *pitch_rand_input : default_pitch_randomness;
 		float scan_speed = scan_speed_input ? *scan_speed_input : default_scan_speed;
 		float amp_rand = amp_rand_input ? *amp_rand_input : default_amp_randomness;
+		float pitch_tracking = pitch_tracking_input ? *pitch_tracking_input : default_pitch_tracking;
 
 		grain_size_ms = CLAMP(grain_size_ms, 10.0f, 200.0f);
 		density = CLAMP(density, 0.0f, 50.0f);
@@ -161,6 +201,7 @@ public:
 		pitch_rand = CLAMP(pitch_rand, 0.0f, 0.5f);
 		scan_speed = CLAMP(scan_speed, 0.0f, 4.0f);
 		amp_rand = CLAMP(amp_rand, 0.0f, 6.0f);
+		pitch_tracking = CLAMP(pitch_tracking, 0.0f, 1.0f);
 
 		int32_t grain_length = (int32_t)(grain_size_ms * mix_rate * 0.001f);
 		if (grain_length < 1) {
@@ -201,11 +242,23 @@ public:
 				effective_position -= 1.0f;
 			}
 
+			// S4.3: Periodic pitch detection (YIN)
+			if (pitch_tracking > 0.001f) {
+				pitch_update_counter++;
+				if (pitch_update_counter >= PITCH_UPDATE_INTERVAL) {
+					pitch_update_counter = 0;
+					int32_t analyze_pos = source_pcm_loaded
+						? (int32_t)(effective_position * (float)source_pcm_length)
+						: (capture_write - PITCH_WINDOW_SIZE + capture_size) % capture_size;
+					detected_pitch_hz = detect_pitch(analyze_pos, PITCH_WINDOW_SIZE);
+				}
+			}
+
 			// --- Grain scheduling (Poisson-like) ---
 			schedule_counter -= 1.0f;
 			if (schedule_counter <= 0.0f) {
 				// Spawn a new grain
-				spawn_grain(grain_length, effective_position, pitch_rand, amp_rand);
+				spawn_grain(grain_length, effective_position, pitch_rand, amp_rand, pitch_tracking);
 
 				// Next grain interval with exponential randomization (Poisson process)
 				float u = random_float();
@@ -249,7 +302,7 @@ public:
 		}
 	}
 
-	void spawn_grain(int32_t length_samples, float position, float pitch_rand, float amp_rand) {
+	void spawn_grain(int32_t length_samples, float position, float pitch_rand, float amp_rand, float pitch_tracking) {
 		// Find a free grain slot
 		int32_t slot = -1;
 		for (int32_t g = 0; g < MAX_GRAINS; g++) {
@@ -286,6 +339,14 @@ public:
 		float pitch_deviation = (random_float() - 0.5f) * 2.0f * pitch_rand;
 		grain.playback_rate = Math::pow(2.0f, pitch_deviation / 12.0f);
 
+		// S4.3: Pitch tracking — adjust grain rate to follow detected pitch
+		if (pitch_tracking > 0.001f && detected_pitch_hz > 50.0f) {
+			float pitch_ratio = detected_pitch_hz / PITCH_REFERENCE_HZ;
+			// Blend between original rate and pitch-following rate
+			grain.playback_rate = grain.playback_rate * (1.0f - pitch_tracking) +
+								  grain.playback_rate * pitch_ratio * pitch_tracking;
+		}
+
 		// S4.3: Amplitude randomization (± dB)
 		if (amp_rand > 0.001f) {
 			float amp_deviation_db = (random_float() - 0.5f) * 2.0f * amp_rand;
@@ -296,7 +357,8 @@ public:
 	}
 
 	virtual size_t export_state(uint8_t *p_buffer, size_t p_max_size) const override {
-		size_t needed = sizeof(int32_t) + sizeof(float) * 2 + sizeof(uint32_t) + sizeof(Grain) * MAX_GRAINS;
+		size_t needed = sizeof(int32_t) + sizeof(float) * 2 + sizeof(uint32_t) + sizeof(Grain) * MAX_GRAINS
+			+ sizeof(float) + sizeof(int32_t); // detected_pitch_hz + pitch_update_counter
 		if (!p_buffer) {
 			return needed;
 		}
@@ -314,11 +376,17 @@ public:
 		memcpy(p_buffer + offset, &rng_state, sizeof(uint32_t));
 		offset += sizeof(uint32_t);
 		memcpy(p_buffer + offset, grains, sizeof(Grain) * MAX_GRAINS);
-		return offset + sizeof(Grain) * MAX_GRAINS;
+		offset += sizeof(Grain) * MAX_GRAINS;
+		memcpy(p_buffer + offset, &detected_pitch_hz, sizeof(float));
+		offset += sizeof(float);
+		memcpy(p_buffer + offset, &pitch_update_counter, sizeof(int32_t));
+		offset += sizeof(int32_t);
+		return offset;
 	}
 
 	virtual void import_state(const uint8_t *p_buffer, size_t p_size) override {
-		size_t needed = sizeof(int32_t) + sizeof(float) * 2 + sizeof(uint32_t) + sizeof(Grain) * MAX_GRAINS;
+		size_t needed = sizeof(int32_t) + sizeof(float) * 2 + sizeof(uint32_t) + sizeof(Grain) * MAX_GRAINS
+			+ sizeof(float) + sizeof(int32_t); // detected_pitch_hz + pitch_update_counter
 		if (p_size < needed) {
 			return;
 		}
@@ -333,6 +401,11 @@ public:
 		memcpy(&rng_state, p_buffer + offset, sizeof(uint32_t));
 		offset += sizeof(uint32_t);
 		memcpy(grains, p_buffer + offset, sizeof(Grain) * MAX_GRAINS);
+		offset += sizeof(Grain) * MAX_GRAINS;
+		memcpy(&detected_pitch_hz, p_buffer + offset, sizeof(float));
+		offset += sizeof(float);
+		memcpy(&pitch_update_counter, p_buffer + offset, sizeof(int32_t));
+		offset += sizeof(int32_t);
 	}
 
 	static void register_operator() {
@@ -346,6 +419,7 @@ public:
 		desc.inputs.push_back({ "pitch_randomness", SymphonyPinType::FLOAT, false });
 		desc.inputs.push_back({ "scan_speed", SymphonyPinType::FLOAT, false });
 		desc.inputs.push_back({ "amp_randomness", SymphonyPinType::FLOAT, false });
+		desc.inputs.push_back({ "pitch_tracking", SymphonyPinType::FLOAT, false });
 		desc.outputs.push_back({ "audio_out", SymphonyPinType::AUDIO, false });
 		desc.params.push_back({ "grain_size_ms", 50.0f, 10.0f, 200.0f, 1.0f });
 		desc.params.push_back({ "density", 8.0f, 0.0f, 50.0f, 0.1f });
@@ -354,6 +428,7 @@ public:
 		desc.params.push_back({ "scan_speed", 0.0f, 0.0f, 4.0f, 0.01f });
 		desc.params.push_back({ "amp_randomness", 0.0f, 0.0f, 6.0f, 0.1f });
 		desc.params.push_back({ "position_randomness", 0.1f, 0.0f, 1.0f, 0.01f });
+		desc.params.push_back({ "pitch_tracking", 0.0f, 0.0f, 1.0f, 0.01f });
 		desc.params.push_back({ "seed", 1.0f, 1.0f, 999999.0f, 1.0f });
 		desc.params.push_back({ "capture_seconds", 4.0f, 1.0f, 10.0f, 1.0f });
 		desc.state_size = sizeof(SymphonyGrainCloud);
@@ -377,6 +452,7 @@ public:
 		gc->default_scan_speed = p_params.has("scan_speed") ? (float)p_params["scan_speed"] : 0.0f;
 		gc->default_amp_randomness = p_params.has("amp_randomness") ? (float)p_params["amp_randomness"] : 0.0f;
 		gc->default_position_randomness = p_params.has("position_randomness") ? (float)p_params["position_randomness"] : 0.1f;
+		gc->default_pitch_tracking = p_params.has("pitch_tracking") ? (float)p_params["pitch_tracking"] : 0.0f;
 
 		// RNG seed (different per voice for variety)
 		gc->rng_state = p_params.has("seed") ? (uint32_t)(float)p_params["seed"] : 1;
@@ -432,6 +508,10 @@ public:
 
 		// Auto-scan position starts at 0
 		gc->auto_position = 0.0f;
+
+		// Pitch detection state initialized
+		gc->detected_pitch_hz = 0.0f;
+		gc->pitch_update_counter = 0;
 
 		// Schedule first grain quickly
 		gc->schedule_counter = gc->random_float() * (p_mix_rate / gc->default_density);

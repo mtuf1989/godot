@@ -53,6 +53,10 @@ struct CompiledGraph {
 	}
 
 	void destroy() {
+		// Call cleanup() first to release non-arena heap resources (e.g., PFFFT_Setup).
+		for (int32_t i = 0; i < operator_count; i++) {
+			operators[i]->cleanup();
+		}
 		// Operators were placement-new'd in the arena; call destructors manually.
 		for (int32_t i = 0; i < operator_count; i++) {
 			operators[i]->~SymphonyOperator();

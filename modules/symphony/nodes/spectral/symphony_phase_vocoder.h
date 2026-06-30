@@ -223,6 +223,13 @@ public:
 		audio_out = (float *)p_output_ptrs[0];
 	}
 
+	virtual void cleanup() override {
+		if (pffft_setup) {
+			pffft_destroy_setup(pffft_setup);
+			pffft_setup = nullptr;
+		}
+	}
+
 	virtual void execute(int32_t p_num_frames) override {
 		SYMPHONY_ASSUME_FRAMES(p_num_frames);
 
