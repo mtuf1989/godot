@@ -14,6 +14,9 @@ class SymphonyVoicePool : public Object {
 	GDCLASS(SymphonyVoicePool, Object);
 
 public:
+	static constexpr int ANTI_CLICK_SAMPLES = 64;
+	static constexpr int MAX_LOCAL_PARAMS = 8;
+
 	enum VoiceState {
 		VOICE_FREE = 0,
 		VOICE_TO_PLAY,
@@ -35,6 +38,11 @@ public:
 		float fade_progress = 0.0f;
 		float fade_speed = 0.0f;
 		uint64_t start_time = 0;
+
+		// Per-voice local RTPC parameters (override global)
+		StringName local_param_names[MAX_LOCAL_PARAMS];
+		float local_param_values[MAX_LOCAL_PARAMS];
+		int local_param_count = 0;
 	};
 
 	struct VoiceMetrics {
@@ -43,8 +51,6 @@ public:
 		int stolen_this_frame = 0;
 		float budget_percent = 0.0f;
 	};
-
-	static constexpr int ANTI_CLICK_SAMPLES = 64;
 
 private:
 	static SymphonyVoicePool *singleton;
@@ -75,6 +81,12 @@ public:
 	int get_virtual_voice_count() const;
 	int get_stolen_this_frame() const;
 	float get_budget_percent() const;
+
+	// Per-voice local parameters
+	void set_local_parameter(int p_slot, const StringName &p_name, float p_value);
+	float get_local_parameter(int p_slot, const StringName &p_name) const;
+	bool has_local_parameter(int p_slot, const StringName &p_name) const;
+	void clear_local_parameters(int p_slot);
 
 	void process_frame();
 

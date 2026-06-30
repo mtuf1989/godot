@@ -31,6 +31,10 @@ void SoundEvent::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_virtualize_when_inaudible", "virtualize"), &SoundEvent::set_virtualize_when_inaudible);
 	ClassDB::bind_method(D_METHOD("get_virtualize_when_inaudible"), &SoundEvent::get_virtualize_when_inaudible);
 
+	ClassDB::bind_method(D_METHOD("set_rtpc_bindings", "bindings"), &SoundEvent::set_rtpc_bindings);
+	ClassDB::bind_method(D_METHOD("get_rtpc_bindings"), &SoundEvent::get_rtpc_bindings);
+	ClassDB::bind_method(D_METHOD("get_rtpc_binding_count"), &SoundEvent::get_rtpc_binding_count);
+
 	ADD_GROUP("Streams", "");
 	ADD_PROPERTY(PropertyInfo(Variant::ARRAY, "streams", PROPERTY_HINT_TYPE_STRING, String::num(Variant::OBJECT) + "/" + String::num(PROPERTY_HINT_RESOURCE_TYPE) + ":AudioStream"), "set_streams", "get_streams");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "variation_mode", PROPERTY_HINT_ENUM, "Random,Sequence,Shuffle"), "set_variation_mode", "get_variation_mode");
@@ -55,6 +59,9 @@ void SoundEvent::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "spatial_mode", PROPERTY_HINT_ENUM, "Non-Positional,2D,3D"), "set_spatial_mode", "get_spatial_mode");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "max_distance", PROPERTY_HINT_RANGE, "0,10000,1"), "set_max_distance", "get_max_distance");
 
+	ADD_GROUP("RTPC", "");
+	ADD_PROPERTY(PropertyInfo(Variant::ARRAY, "rtpc_bindings", PROPERTY_HINT_TYPE_STRING, String::num(Variant::DICTIONARY) + ":"), "set_rtpc_bindings", "get_rtpc_bindings");
+
 	BIND_ENUM_CONSTANT(VARIATION_RANDOM);
 	BIND_ENUM_CONSTANT(VARIATION_SEQUENCE);
 	BIND_ENUM_CONSTANT(VARIATION_SHUFFLE);
@@ -69,4 +76,10 @@ void SoundEvent::_bind_methods() {
 	BIND_ENUM_CONSTANT(SPATIAL_NON_POSITIONAL);
 	BIND_ENUM_CONSTANT(SPATIAL_2D);
 	BIND_ENUM_CONSTANT(SPATIAL_3D);
+
+	BIND_ENUM_CONSTANT(RTPC_PITCH);
+	BIND_ENUM_CONSTANT(RTPC_VOLUME);
+	BIND_ENUM_CONSTANT(RTPC_FILTER_CUTOFF);
+	BIND_ENUM_CONSTANT(RTPC_GRAPH_INPUT);
+	BIND_ENUM_CONSTANT(RTPC_PLAYBACK_SPEED);
 }

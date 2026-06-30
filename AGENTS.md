@@ -61,13 +61,14 @@ The following skills MUST always be activated:
 
 ## Workflow for Picking Up Tasks
 
-1. Search **audio-plan** KB for the task breakdown and acceptance criteria.
-2. Search **audio-research** KB for algorithms, patterns, and Godot engine internals.
-3. Search **audio-books** KB for DSP theory (Puckette, Perry Cook, GAP 1-5).
-4. Search **godot-doc** KB for Godot class API references.
-5. Read existing code in the referenced files before writing.
-6. Implement following the acceptance criteria exactly.
-7. One task = one commit.
+1. Read **`modules/symphony/dev-log.md`** for gotchas and pitfalls from prior sessions.
+2. Search **audio-plan** KB for the task breakdown and acceptance criteria.
+3. Search **audio-research** KB for algorithms, patterns, and Godot engine internals.
+4. Search **audio-books** KB for DSP theory (Puckette, Perry Cook, GAP 1-5).
+5. Search **godot-doc** KB for Godot class API references.
+6. Read existing code in the referenced files before writing.
+7. Implement following the acceptance criteria exactly.
+8. One task = one commit.
 
 ## Knowledge Base Quick Reference
 

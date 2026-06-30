@@ -3,6 +3,7 @@
 
 #include "core/io/resource.h"
 #include "servers/audio/audio_stream.h"
+#include "scene/resources/curve.h"
 
 class SoundEvent : public Resource {
 	GDCLASS(SoundEvent, Resource);
@@ -12,6 +13,7 @@ public:
 	enum StealMode { STEAL_OLDEST = 0, STEAL_QUIETEST, STEAL_FARTHEST };
 	enum Category { CATEGORY_SFX = 0, CATEGORY_MUSIC, CATEGORY_UI, CATEGORY_AMBIENT, CATEGORY_VOICE };
 	enum SpatialMode { SPATIAL_NON_POSITIONAL = 0, SPATIAL_2D, SPATIAL_3D };
+	enum RTPCTarget { RTPC_PITCH = 0, RTPC_VOLUME, RTPC_FILTER_CUTOFF, RTPC_GRAPH_INPUT, RTPC_PLAYBACK_SPEED };
 
 private:
 	TypedArray<AudioStream> streams;
@@ -28,6 +30,10 @@ private:
 	float max_distance = 2000.0;
 	bool loop = false;
 	bool virtualize_when_inaudible = true;
+
+	// RTPC bindings — serialized as Array of Dictionaries for .tres compatibility.
+	// Each dict: {parameter_name, target, curve, min_value, max_value, graph_input_name}
+	TypedArray<Dictionary> rtpc_bindings;
 
 protected:
 	static void _bind_methods();
@@ -74,11 +80,19 @@ public:
 
 	void set_virtualize_when_inaudible(bool p_virt) { virtualize_when_inaudible = p_virt; }
 	bool get_virtualize_when_inaudible() const { return virtualize_when_inaudible; }
+
+	// RTPC bindings
+	void set_rtpc_bindings(const TypedArray<Dictionary> &p_bindings) { rtpc_bindings = p_bindings; }
+	TypedArray<Dictionary> get_rtpc_bindings() const { return rtpc_bindings; }
+
+	// Convenience: get binding count
+	int get_rtpc_binding_count() const { return rtpc_bindings.size(); }
 };
 
 VARIANT_ENUM_CAST(SoundEvent::VariationMode);
 VARIANT_ENUM_CAST(SoundEvent::StealMode);
 VARIANT_ENUM_CAST(SoundEvent::Category);
 VARIANT_ENUM_CAST(SoundEvent::SpatialMode);
+VARIANT_ENUM_CAST(SoundEvent::RTPCTarget);
 
 #endif // SOUND_EVENT_H

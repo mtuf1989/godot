@@ -36,6 +36,10 @@ void SymphonyVoicePool::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("virtualize", "index"), &SymphonyVoicePool::virtualize);
 	ClassDB::bind_method(D_METHOD("devirtualize", "index"), &SymphonyVoicePool::devirtualize);
 	ClassDB::bind_method(D_METHOD("process_frame"), &SymphonyVoicePool::process_frame);
+	ClassDB::bind_method(D_METHOD("set_local_parameter", "slot", "name", "value"), &SymphonyVoicePool::set_local_parameter);
+	ClassDB::bind_method(D_METHOD("get_local_parameter", "slot", "name"), &SymphonyVoicePool::get_local_parameter);
+	ClassDB::bind_method(D_METHOD("has_local_parameter", "slot", "name"), &SymphonyVoicePool::has_local_parameter);
+	ClassDB::bind_method(D_METHOD("clear_local_parameters", "slot"), &SymphonyVoicePool::clear_local_parameters);
 
 	BIND_ENUM_CONSTANT(VOICE_FREE);
 	BIND_ENUM_CONSTANT(VOICE_TO_PLAY);
@@ -57,6 +61,7 @@ int SymphonyVoicePool::acquire_slot(int p_priority) {
 			slots[i].fade_progress = 0.0f;
 			slots[i].fade_speed = 1.0f / ANTI_CLICK_SAMPLES;
 			slots[i].start_time = OS::get_singleton()->get_ticks_usec();
+			slots[i].local_param_count = 0;
 			return i;
 		}
 	}
@@ -69,6 +74,7 @@ int SymphonyVoicePool::acquire_slot(int p_priority) {
 		slots[stolen].fade_progress = 0.0f;
 		slots[stolen].fade_speed = 1.0f / ANTI_CLICK_SAMPLES;
 		slots[stolen].start_time = OS::get_singleton()->get_ticks_usec();
+		slots[stolen].local_param_count = 0;
 	}
 	return stolen;
 }
@@ -155,6 +161,53 @@ int SymphonyVoicePool::get_stolen_this_frame() const {
 float SymphonyVoicePool::get_budget_percent() const {
 	VoiceMetrics m = metrics.load(std::memory_order_relaxed);
 	return m.budget_percent;
+}
+
+void SymphonyVoicePool::set_local_parameter(int p_slot, const StringName &p_name, float p_value) {
+	ERR_FAIL_INDEX(p_slot, pool_size);
+	VoiceSlot &slot = slots[p_slot];
+
+	// Check if param already exists
+	for (int i = 0; i < slot.local_param_count; i++) {
+		if (slot.local_param_names[i] == p_name) {
+			slot.local_param_values[i] = p_value;
+			return;
+		}
+	}
+
+	// Add new param
+	ERR_FAIL_COND_MSG(slot.local_param_count >= MAX_LOCAL_PARAMS,
+			"VoiceSlot: Maximum local parameter count reached.");
+	slot.local_param_names[slot.local_param_count] = p_name;
+	slot.local_param_values[slot.local_param_count] = p_value;
+	slot.local_param_count++;
+}
+
+float SymphonyVoicePool::get_local_parameter(int p_slot, const StringName &p_name) const {
+	ERR_FAIL_INDEX_V(p_slot, pool_size, 0.0f);
+	const VoiceSlot &slot = slots[p_slot];
+	for (int i = 0; i < slot.local_param_count; i++) {
+		if (slot.local_param_names[i] == p_name) {
+			return slot.local_param_values[i];
+		}
+	}
+	return 0.0f;
+}
+
+bool SymphonyVoicePool::has_local_parameter(int p_slot, const StringName &p_name) const {
+	ERR_FAIL_INDEX_V(p_slot, pool_size, false);
+	const VoiceSlot &slot = slots[p_slot];
+	for (int i = 0; i < slot.local_param_count; i++) {
+		if (slot.local_param_names[i] == p_name) {
+			return true;
+		}
+	}
+	return false;
+}
+
+void SymphonyVoicePool::clear_local_parameters(int p_slot) {
+	ERR_FAIL_INDEX(p_slot, pool_size);
+	slots[p_slot].local_param_count = 0;
 }
 
 void SymphonyVoicePool::process_frame() {
