@@ -41,6 +41,16 @@ void SymphonyVoicePool::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("has_local_parameter", "slot", "name"), &SymphonyVoicePool::has_local_parameter);
 	ClassDB::bind_method(D_METHOD("clear_local_parameters", "slot"), &SymphonyVoicePool::clear_local_parameters);
 
+	// Importance-based mixing
+	ClassDB::bind_method(D_METHOD("set_listener_position", "position"), &SymphonyVoicePool::set_listener_position);
+	ClassDB::bind_method(D_METHOD("get_listener_position"), &SymphonyVoicePool::get_listener_position);
+	ClassDB::bind_method(D_METHOD("set_reference_distance", "distance"), &SymphonyVoicePool::set_reference_distance);
+	ClassDB::bind_method(D_METHOD("get_reference_distance"), &SymphonyVoicePool::get_reference_distance);
+	ClassDB::bind_method(D_METHOD("set_slot_category", "slot", "category"), &SymphonyVoicePool::set_slot_category);
+	ClassDB::bind_method(D_METHOD("set_slot_importance_weight", "slot", "weight"), &SymphonyVoicePool::set_slot_importance_weight);
+	ClassDB::bind_method(D_METHOD("set_slot_position", "slot", "position"), &SymphonyVoicePool::set_slot_position);
+	ClassDB::bind_method(D_METHOD("get_slot_importance", "slot"), &SymphonyVoicePool::get_slot_importance);
+
 	BIND_ENUM_CONSTANT(VOICE_FREE);
 	BIND_ENUM_CONSTANT(VOICE_TO_PLAY);
 	BIND_ENUM_CONSTANT(VOICE_PLAYING);
@@ -210,6 +220,78 @@ void SymphonyVoicePool::clear_local_parameters(int p_slot) {
 	slots[p_slot].local_param_count = 0;
 }
 
+// --- Importance-Based Mixing ---
+
+constexpr float SymphonyVoicePool::CATEGORY_WEIGHTS[5];
+
+void SymphonyVoicePool::set_listener_position(const Vector3 &p_pos) {
+	listener_position = p_pos;
+}
+
+Vector3 SymphonyVoicePool::get_listener_position() const {
+	return listener_position;
+}
+
+void SymphonyVoicePool::set_reference_distance(float p_dist) {
+	ref_distance = MAX(p_dist, 1.0f);
+}
+
+float SymphonyVoicePool::get_reference_distance() const {
+	return ref_distance;
+}
+
+void SymphonyVoicePool::set_slot_category(int p_slot, int p_category) {
+	ERR_FAIL_INDEX(p_slot, pool_size);
+	slots[p_slot].category = CLAMP(p_category, 0, 4);
+}
+
+void SymphonyVoicePool::set_slot_importance_weight(int p_slot, float p_weight) {
+	ERR_FAIL_INDEX(p_slot, pool_size);
+	slots[p_slot].importance_weight = MAX(p_weight, 0.0f);
+}
+
+void SymphonyVoicePool::set_slot_position(int p_slot, const Vector3 &p_pos) {
+	ERR_FAIL_INDEX(p_slot, pool_size);
+	slots[p_slot].position = p_pos;
+}
+
+float SymphonyVoicePool::get_slot_importance(int p_slot) const {
+	ERR_FAIL_INDEX_V(p_slot, pool_size, 0.0f);
+	return slots[p_slot].importance;
+}
+
+void SymphonyVoicePool::update_importance() {
+	// Staggered update: process 1/4 of the pool each frame
+	int batch_size = (pool_size + IMPORTANCE_UPDATE_INTERVAL - 1) / IMPORTANCE_UPDATE_INTERVAL;
+	int start = (importance_update_frame % IMPORTANCE_UPDATE_INTERVAL) * batch_size;
+	int count = MIN(batch_size, pool_size - start);
+
+	_update_importance_batch(start, count);
+	importance_update_frame++;
+}
+
+void SymphonyVoicePool::_update_importance_batch(int p_start, int p_count) {
+	float ref_dist_sq = ref_distance * ref_distance;
+
+	for (int i = p_start; i < p_start + p_count && i < pool_size; i++) {
+		if (slots[i].state == VOICE_FREE || slots[i].state == VOICE_STOPPED) {
+			slots[i].importance = 0.0f;
+			continue;
+		}
+
+		// distance_factor = 1.0 / (1.0 + distance_sq / ref_distance²)
+		float distance_sq = slots[i].position.distance_squared_to(listener_position);
+		float distance_factor = 1.0f / (1.0f + distance_sq / ref_dist_sq);
+
+		// category_weight from lookup table
+		int cat = CLAMP(slots[i].category, 0, 4);
+		float category_weight = CATEGORY_WEIGHTS[cat];
+
+		// importance = priority × distance_factor × importance_weight × category_weight
+		slots[i].importance = (float)slots[i].priority * distance_factor * slots[i].importance_weight * category_weight;
+	}
+}
+
 void SymphonyVoicePool::process_frame() {
 	int active = 0;
 	int virtual_count = 0;
@@ -260,6 +342,9 @@ void SymphonyVoicePool::process_frame() {
 				break;
 		}
 	}
+
+	// Update importance (staggered — 1/4 of pool per frame)
+	update_importance();
 
 	VoiceMetrics m;
 	m.active = active;

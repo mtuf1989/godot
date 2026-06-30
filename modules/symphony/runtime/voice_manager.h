@@ -38,6 +38,8 @@ public:
 		float fade_progress = 0.0f;
 		float fade_speed = 0.0f;
 		uint64_t start_time = 0;
+		int category = 0; // SoundEvent::Category (0=SFX,1=Music,2=UI,3=Ambient,4=Voice)
+		float importance_weight = 1.0f; // Per-event weight from SoundEvent
 
 		// Per-voice local RTPC parameters (override global)
 		StringName local_param_names[MAX_LOCAL_PARAMS];
@@ -59,6 +61,15 @@ private:
 	int pool_size = 48;
 	std::atomic<VoiceMetrics> metrics;
 	int stolen_this_frame = 0;
+
+	// Importance computation state
+	Vector3 listener_position;
+	float ref_distance = 500.0f; // Reference distance for distance_factor calculation
+	int importance_update_frame = 0; // Frame counter for staggered updates
+	static constexpr int IMPORTANCE_UPDATE_INTERVAL = 4; // Update every N frames
+	static constexpr float CATEGORY_WEIGHTS[5] = {1.0f, 1.0f, 1.5f, 0.5f, 2.0f}; // SFX, Music, UI, Ambient, Voice
+
+	void _update_importance_batch(int p_start, int p_count);
 
 protected:
 	static void _bind_methods();
@@ -87,6 +98,17 @@ public:
 	float get_local_parameter(int p_slot, const StringName &p_name) const;
 	bool has_local_parameter(int p_slot, const StringName &p_name) const;
 	void clear_local_parameters(int p_slot);
+
+	// Importance-based mixing
+	void set_listener_position(const Vector3 &p_pos);
+	Vector3 get_listener_position() const;
+	void set_reference_distance(float p_dist);
+	float get_reference_distance() const;
+	void set_slot_category(int p_slot, int p_category);
+	void set_slot_importance_weight(int p_slot, float p_weight);
+	void set_slot_position(int p_slot, const Vector3 &p_pos);
+	float get_slot_importance(int p_slot) const;
+	void update_importance(); // Called each frame (internally handles staggering)
 
 	void process_frame();
 

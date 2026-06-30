@@ -10,6 +10,7 @@
 #include "runtime/music_state_graph.h"
 #include "runtime/beat_clock.h"
 #include "runtime/rtpc_engine.h"
+#include "runtime/bus_controller.h"
 
 #include "nodes/generators/symphony_oscillator.h"
 #include "nodes/generators/symphony_constant.h"
@@ -106,6 +107,7 @@ void initialize_symphony_module(ModuleInitializationLevel p_level) {
 		GDREGISTER_CLASS(SymphonyVoicePool);
 		GDREGISTER_CLASS(SymphonyEventDispatcher);
 		GDREGISTER_CLASS(RTPCEngine);
+		GDREGISTER_CLASS(BusController);
 
 		// Create voice manager singleton (DSP graph tracking)
 		memnew(SymphonyVoiceManager);
@@ -126,6 +128,10 @@ void initialize_symphony_module(ModuleInitializationLevel p_level) {
 		// Create RTPC engine singleton
 		memnew(RTPCEngine);
 		Engine::get_singleton()->add_singleton(Engine::Singleton("RTPCEngine", RTPCEngine::get_singleton(), "RTPCEngine"));
+
+		// Create bus controller singleton
+		memnew(BusController);
+		Engine::get_singleton()->add_singleton(Engine::Singleton("BusController", BusController::get_singleton(), "BusController"));
 #ifdef TOOLS_ENABLED
 	} else if (p_level == MODULE_INITIALIZATION_LEVEL_EDITOR) {
 		GDREGISTER_CLASS(SymphonyNodeInspectorProxy);
@@ -140,6 +146,10 @@ void uninitialize_symphony_module(ModuleInitializationLevel p_level) {
 		Engine::get_singleton()->remove_singleton("BeatClock");
 		if (BeatClock::get_singleton()) {
 			memdelete(BeatClock::get_singleton());
+		}
+		Engine::get_singleton()->remove_singleton("BusController");
+		if (BusController::get_singleton()) {
+			memdelete(BusController::get_singleton());
 		}
 		Engine::get_singleton()->remove_singleton("RTPCEngine");
 		if (RTPCEngine::get_singleton()) {

@@ -1,5 +1,47 @@
 # Dev Log — Symphony Audio System
 
+## 2026-06-30 — G4 Dialogue & Bus Control
+
+### Completed
+
+| Task | Status | Files |
+|------|--------|-------|
+| G4.3 — BusController C++ (Snapshots) | ✅ Done | `runtime/bus_controller.h/.cpp` |
+| G4.4 — Auto-Ducking System | ✅ Done | `runtime/bus_controller.cpp` (integrated) |
+| G4.1 — DialogueAudioPipeline Autoload | ✅ Done | `addons/symphony_audio/dialogue_audio_pipeline.gd` |
+| G4.2 — Dialogue Manager Integration | ✅ Done | `addons/symphony_audio/dialogue_audio_pipeline.gd` |
+| G4.5 — Importance-Based Mixing | ✅ Done | `runtime/voice_manager.h/.cpp` |
+
+### Architecture Decisions
+
+1. **Dual ducking approach**: Signal-based (DialogueAudioPipeline) for precision + poll-based (BusController) for safety net. Both duck Music bus. Clamped to -24dB total to prevent over-ducking when both active.
+
+2. **BusController is C++ singleton** — manages snapshots (save/restore bus volumes/mute/solo with interpolated transitions) and auto-ducking (polls `AudioServer.get_bus_peak_volume_left_db` on Voice bus). Processed via `BusController.process(delta)` called from AudioManager._process.
+
+3. **Snapshot interpolation** — linear in dB space. Mute/solo switches at 50% progress point. "Last apply wins" — calling apply_snapshot during an active transition blends from current interpolated position to new target.
+
+4. **DialogueAudioPipeline** — GDScript autoload with 4 interruption modes (Priority, Queue, Reject, DuckAndOverlay). Separate 4-player pool on Voice bus. Signal-based ducking via Tween. Integration with dialogue_manager via `play_from_dialogue_line(line, on_finished)`.
+
+5. **Importance formula**: `priority × distance_factor × importance_weight × category_weight`. distance_factor uses inverse-square with reference distance. Category weights: SFX=1.0, Music=1.0, UI=1.5, Ambient=0.5, Voice=2.0. Updated every 4 frames staggered (1/4 of pool per frame).
+
+6. **DialogueLine integration** — uses duck-typing (RefCounted with has_tag/get_tag_value/character) to avoid hard dependency on the dialogue_manager addon. Reads `#voice=path`, `#priority=N` tags. Handles concurrent_lines.
+
+### Gotchas / Notes for Future Sessions
+
+1. **AudioServer include path** is `servers/audio/audio_server.h` (NOT `servers/audio_server.h`). This is the Godot 4.8+ path. Already documented in S1 dev-log but worth repeating.
+
+2. **Ducking offset tracking**: BusController tracks cumulative ducking offset per bus in `applied_duck_offsets`. If you reset bus volumes externally (e.g., apply_snapshot), the offset tracking can drift. Consider resetting offsets when a snapshot is applied.
+
+3. **constexpr static member**: `CATEGORY_WEIGHTS[5]` needs out-of-class definition (`constexpr float SymphonyVoicePool::CATEGORY_WEIGHTS[5];`) for ODR-use in C++14/17. This is correct in current code.
+
+4. **DialogueAudioPipeline duck interaction with AudioManager.set_category_volume()**: Both modify the same bus volume. If game code sets Music to 50% via AudioManager AND dialogue ducks by -6dB, the effects stack. This is intentional (same as Wwise behavior) but could surprise users. Document it.
+
+5. **BusController "default" snapshot** is captured lazily on first `process()` call, not in constructor. This avoids issues with AudioServer not being fully initialized during module init.
+
+6. **Importance auto-updates inside process_frame()**: No need for GDScript to call `update_importance()` separately — it's baked into `process_frame()`. GDScript just needs to call `set_listener_position()` each frame for distance-based importance to work.
+
+---
+
 ## 2026-06-30 — G3 RTPC & Symphony Integration
 
 ### Completed
@@ -94,3 +136,66 @@ Phases G1, G2, G3, and S1 are all complete. The v1.0 milestone is ~75% done. Nex
 - **G6 — Debug Tools** — performance overlay, event log, test suite
 
 Recommended: G4 (completes the core runtime feature set) or S2 (enables rich procedural content).
+
+---
+
+## 2026-06-29 — S1 Core Completion + G2.1/G2.2 C++ Classes
+
+### Completed
+
+| Task | Status | Files |
+|------|--------|-------|
+| S1.1 — Fix O(N²) enforce_voice_limits | ✅ Done | `core/symphony_voice_manager.h/.cpp` |
+| S1.2 — Fix RMS (both channels) | ✅ Done | `stream/audio_stream_playback_symphony.cpp` |
+| S1.3 — PolyBLEP Oscillator | ✅ Done | `nodes/generators/symphony_oscillator.h` |
+| S1.4 — DelayLine Operator | ✅ Done | `nodes/delay/symphony_delay_line.h` |
+| S1.5 — FeedbackPath + Compiler Support | ✅ Done | `nodes/delay/symphony_feedback_path.h`, `core/symphony_graph_compiler.cpp`, `core/symphony_graph_description.h` |
+| S1.6 — ParameterSmoother | ✅ Done | `nodes/utility/symphony_parameter_smoother.h` |
+| S1.7 — StochasticTrigger | ✅ Done | `nodes/timing/symphony_stochastic_trigger.h` |
+| S1.8 — SVFilter | ✅ Done | `nodes/filters/symphony_sv_filter.h` |
+| S1.9 — Unit Tests | ✅ Written | `tests/modules/test_symphony_operators.cpp` (blocked by embree crash) |
+| G2.1 — MusicStateGraph Resource | ✅ Done | `runtime/music_state_graph.h/.cpp` |
+| G2.2 — BeatClock Singleton | ✅ Done | `runtime/beat_clock.h/.cpp` |
+
+### Post-Implementation Review — Bugs Found & Fixed
+
+| # | Severity | Issue | Fix |
+|---|----------|-------|-----|
+| 1 | CRITICAL | `on_voice_started`/`on_voice_stopped` not bound in `_bind_methods()` — voice limit permanently broken after N plays | Added bindings |
+| 2 | HIGH | Race condition: raw pointers in `victims` vector could dangle between lock release and `stop()` call | Changed to ObjectID + ObjectDB::get_instance() validation |
+| 3 | HIGH | `process_frame()` not bound — GDScript error "Static function not found" | Added binding |
+| 4 | HIGH | Singleton registration without class name — GDScript resolves type instead of instance | Added 3rd arg to Engine::Singleton |
+| 5 | MEDIUM | `std::mutex` on audio thread causes priority inversion | Noted — needs lock-free refactor (not yet done) |
+
+### Pitfalls & Gotchas (Reference for Future Sessions)
+
+**1. Every C++ method called from GDScript must be in `_bind_methods()` — no exceptions.**
+There is NO compile-time check for this. If you forget to bind a method, it silently doesn't exist from GDScript. The error only appears at runtime ("method not found"). Always verify: for every `ClassDB::bind_method` call, confirm the GDScript side actually uses it, and vice versa.
+
+**2. Singleton registration needs 3 arguments.**
+```cpp
+// WRONG — GDScript sees the class type, not the instance:
+Engine::get_singleton()->add_singleton(Engine::Singleton("BeatClock", ptr));
+
+// CORRECT — GDScript resolves to the singleton instance:
+Engine::get_singleton()->add_singleton(Engine::Singleton("BeatClock", ptr, "BeatClock"));
+```
+The error message ("Static function not found in base GDScriptNativeClass") is misleading — it doesn't mention singletons.
+
+**3. AudioServer include path is `servers/audio/audio_server.h`**
+NOT `servers/audio_server.h`. This is inconsistent with other server includes (e.g., `servers/rendering_server.h`).
+
+**4. `Dictionary::get_key_list()` returns `LocalVector<Variant>` in Godot 4.8+**
+Old pattern (`List<Variant> keys; dict.get_key_list(&keys)`) no longer works. New: `LocalVector<Variant> keys = dict.get_key_list();`
+
+**5. `Math_PI` does not exist. Use `Math::PI`.**
+Godot math constants are all in `Math::` namespace, not preprocessor macros.
+
+**6. Embree crash blocks ALL test execution on macOS.**
+The test runner crashes in `embree::TaskScheduler::removeScheduler` during shutdown. This is pre-existing (affects even stock Godot tests like `test_audio_stream_wav`). Workaround: build with `module_raycast_enabled=no` for test-only builds, or test on Linux CI.
+
+**7. Audio thread safety — never use `std::mutex` in mix callbacks.**
+`SymphonyVoiceManager::enforce_voice_limits()` runs on audio thread via mix callback. Any mutex there competes with main-thread GDScript queries (debug monitors call `get_active_voice_count()` every frame). Priority inversion = audio dropouts. Needs lock-free snapshot pattern (atomics + double buffer).
+
+**8. Race condition with raw pointers across lock boundaries.**
+When collecting "victim" pointers inside a lock and then using them outside the lock, another thread can invalidate them. Always use `ObjectID` + `ObjectDB::get_instance()` validation pattern for deferred operations on Godot objects.
