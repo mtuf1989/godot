@@ -3,6 +3,7 @@
 #include "core/object/object.h"
 #include "core/object/class_db.h"
 #include "core/config/project_settings.h"
+#include "scene/resources/curve.h"
 #include <atomic>
 
 class SoundEvent;
@@ -41,6 +42,13 @@ public:
 		int category = 0; // SoundEvent::Category (0=SFX,1=Music,2=UI,3=Ambient,4=Voice)
 		float importance_weight = 1.0f; // Per-event weight from SoundEvent
 
+		// Distance attenuation
+		int spatial_mode = 0; // SoundEvent::SpatialMode (0=NonPositional,1=2D,2=3D)
+		int attenuation_model = 0; // SoundEvent::AttenuationModel (0=Linear,1=Log,2=Custom)
+		float max_distance = 2000.0f;
+		float attenuation_volume = 1.0f; // 0.0 (silent) to 1.0 (full volume) — computed each update
+		bool virtualize_when_inaudible = true;
+
 		// Per-voice local RTPC parameters (override global)
 		StringName local_param_names[MAX_LOCAL_PARAMS];
 		float local_param_values[MAX_LOCAL_PARAMS];
@@ -61,6 +69,9 @@ private:
 	int pool_size = 48;
 	std::atomic<VoiceMetrics> metrics;
 	int stolen_this_frame = 0;
+
+	// Per-slot attenuation curves (separate from VoiceSlot for cache reasons)
+	Ref<Curve> *slot_attenuation_curves = nullptr;
 
 	// Importance computation state
 	Vector3 listener_position;
@@ -109,6 +120,15 @@ public:
 	void set_slot_position(int p_slot, const Vector3 &p_pos);
 	float get_slot_importance(int p_slot) const;
 	void update_importance(); // Called each frame (internally handles staggering)
+
+	// Distance attenuation
+	void set_slot_spatial_mode(int p_slot, int p_mode);
+	void set_slot_attenuation_model(int p_slot, int p_model);
+	void set_slot_max_distance(int p_slot, float p_distance);
+	void set_slot_virtualize_when_inaudible(int p_slot, bool p_virtualize);
+	float get_slot_attenuation_volume(int p_slot) const;
+	void set_slot_attenuation_curve(int p_slot, const Ref<Curve> &p_curve);
+	Ref<Curve> get_slot_attenuation_curve(int p_slot) const;
 
 	void process_frame();
 

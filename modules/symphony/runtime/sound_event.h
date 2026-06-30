@@ -13,6 +13,7 @@ public:
 	enum StealMode { STEAL_OLDEST = 0, STEAL_QUIETEST, STEAL_FARTHEST };
 	enum Category { CATEGORY_SFX = 0, CATEGORY_MUSIC, CATEGORY_UI, CATEGORY_AMBIENT, CATEGORY_VOICE };
 	enum SpatialMode { SPATIAL_NON_POSITIONAL = 0, SPATIAL_2D, SPATIAL_3D };
+	enum AttenuationModel { ATTENUATION_LINEAR = 0, ATTENUATION_LOGARITHMIC, ATTENUATION_CUSTOM };
 	enum RTPCTarget { RTPC_PITCH = 0, RTPC_VOLUME, RTPC_FILTER_CUTOFF, RTPC_GRAPH_INPUT, RTPC_PLAYBACK_SPEED };
 
 private:
@@ -27,6 +28,8 @@ private:
 	Category category = CATEGORY_SFX;
 	StringName bus_override;
 	SpatialMode spatial_mode = SPATIAL_NON_POSITIONAL;
+	AttenuationModel attenuation_model = ATTENUATION_LINEAR;
+	Ref<Curve> attenuation_curve; // Used only when attenuation_model == ATTENUATION_CUSTOM
 	float max_distance = 2000.0;
 	bool loop = false;
 	bool virtualize_when_inaudible = true;
@@ -72,6 +75,12 @@ public:
 	void set_spatial_mode(SpatialMode p_mode) { spatial_mode = p_mode; }
 	SpatialMode get_spatial_mode() const { return spatial_mode; }
 
+	void set_attenuation_model(AttenuationModel p_model) { attenuation_model = p_model; }
+	AttenuationModel get_attenuation_model() const { return attenuation_model; }
+
+	void set_attenuation_curve(const Ref<Curve> &p_curve) { attenuation_curve = p_curve; }
+	Ref<Curve> get_attenuation_curve() const { return attenuation_curve; }
+
 	void set_max_distance(float p_dist) { max_distance = p_dist; }
 	float get_max_distance() const { return max_distance; }
 
@@ -93,6 +102,7 @@ VARIANT_ENUM_CAST(SoundEvent::VariationMode);
 VARIANT_ENUM_CAST(SoundEvent::StealMode);
 VARIANT_ENUM_CAST(SoundEvent::Category);
 VARIANT_ENUM_CAST(SoundEvent::SpatialMode);
+VARIANT_ENUM_CAST(SoundEvent::AttenuationModel);
 VARIANT_ENUM_CAST(SoundEvent::RTPCTarget);
 
 #endif // SOUND_EVENT_H

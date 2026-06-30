@@ -24,6 +24,10 @@ void SoundEvent::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_bus_override"), &SoundEvent::get_bus_override);
 	ClassDB::bind_method(D_METHOD("set_spatial_mode", "mode"), &SoundEvent::set_spatial_mode);
 	ClassDB::bind_method(D_METHOD("get_spatial_mode"), &SoundEvent::get_spatial_mode);
+	ClassDB::bind_method(D_METHOD("set_attenuation_model", "model"), &SoundEvent::set_attenuation_model);
+	ClassDB::bind_method(D_METHOD("get_attenuation_model"), &SoundEvent::get_attenuation_model);
+	ClassDB::bind_method(D_METHOD("set_attenuation_curve", "curve"), &SoundEvent::set_attenuation_curve);
+	ClassDB::bind_method(D_METHOD("get_attenuation_curve"), &SoundEvent::get_attenuation_curve);
 	ClassDB::bind_method(D_METHOD("set_max_distance", "distance"), &SoundEvent::set_max_distance);
 	ClassDB::bind_method(D_METHOD("get_max_distance"), &SoundEvent::get_max_distance);
 	ClassDB::bind_method(D_METHOD("set_loop", "loop"), &SoundEvent::set_loop);
@@ -57,6 +61,8 @@ void SoundEvent::_bind_methods() {
 
 	ADD_GROUP("Spatial", "");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "spatial_mode", PROPERTY_HINT_ENUM, "Non-Positional,2D,3D"), "set_spatial_mode", "get_spatial_mode");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "attenuation_model", PROPERTY_HINT_ENUM, "Linear,Logarithmic,Custom"), "set_attenuation_model", "get_attenuation_model");
+	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "attenuation_curve", PROPERTY_HINT_RESOURCE_TYPE, "Curve"), "set_attenuation_curve", "get_attenuation_curve");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "max_distance", PROPERTY_HINT_RANGE, "0,10000,1"), "set_max_distance", "get_max_distance");
 
 	ADD_GROUP("RTPC", "");
@@ -76,6 +82,10 @@ void SoundEvent::_bind_methods() {
 	BIND_ENUM_CONSTANT(SPATIAL_NON_POSITIONAL);
 	BIND_ENUM_CONSTANT(SPATIAL_2D);
 	BIND_ENUM_CONSTANT(SPATIAL_3D);
+
+	BIND_ENUM_CONSTANT(ATTENUATION_LINEAR);
+	BIND_ENUM_CONSTANT(ATTENUATION_LOGARITHMIC);
+	BIND_ENUM_CONSTANT(ATTENUATION_CUSTOM);
 
 	BIND_ENUM_CONSTANT(RTPC_PITCH);
 	BIND_ENUM_CONSTANT(RTPC_VOLUME);
