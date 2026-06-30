@@ -26,7 +26,20 @@
 
 6. **LOD control model**: Both automatic (distance-based via VoicePool.update_lod_targets()) and manual (force_lod(slot, tier) / release_lod_force(slot)). GDScript AudioManager polls target_lod each frame and calls transition_to_lod() on the playback when target != current.
 
-7. **28 preset convention**: All presets in `game-template/addons/symphony_audio/presets/graphs/`. Categories: Impacts(5: metal, wood, glass, stone, soft), Physical Models(5: plucked_string, bowed_string, tube_resonance, bottle_blow, spring_twang), Creatures(5: creature_growl, creature_chirp, alien_warble, hiss_snarl, vocalization), Weather(5: wind, rain, fire, thunder, flowing_water), Mechanical(5: electric_hum, servo_motor, laser_zap, digital_glitch, alarm_siren), Environmental(3: reverb_room, drone_pad, bubble_drip).
+7. **92 preset library**: All presets in `game-template/addons/symphony_audio/presets/graphs/`. Categories:
+   - **Impacts & Contact** (11): metal, wood, glass, stone, soft, rolling, sliding_scraping, bouncing, crumbling, rope_chain, friction_squeak
+   - **Physical Models** (5): plucked_string, bowed_string, tube_resonance, bottle_blow, spring_twang
+   - **Creatures & Vocal** (7): creature_growl, creature_chirp, alien_warble, hiss_snarl, vocalization, breath_exhale, insect_buzz
+   - **Weather & Nature** (13): wind, wind_gust, wind_howl, rain, fire, thunder, flowing_water, ocean_waves, waterfall, cave_drip, lava_bubble, ambient_forest, underwater
+   - **Vehicle & Mechanical** (14): electric_hum, servo_motor, engine_idle, engine_rev, tire_surface, propeller_fan, electric_motor_large, mechanical_gear, hydraulic_press, steam_hiss, door_creak, chain_rattle, ice_crack, dust_debris
+   - **Movement & Air** (4): whoosh_swing, arrow_projectile, cloth_flap, footstep_dirt, footstep_stone
+   - **UI & Game Events** (7): ui_click, ui_sweep, ui_notification, alarm_siren, coin_collect, power_up, digital_glitch
+   - **Weapons & Combat** (7): explosion, sword_clash, shield_impact, impact_punch, laser_zap, laser_rifle, energy_beam
+   - **Magic & Fantasy** (4): magic_shimmer, magic_charge, spellcast_release, crystal_resonance
+   - **Musical & Tonal** (6): bell_chime, drum_kick, drum_snare, acid_bass, drone_pad, bubble_drip
+   - **Sci-Fi & Tech** (7): sci_fi_scanner, warp_drive, teleport, electricity_arc, warning_klaxon, portal_hum, radio_static
+   - **Environmental** (4): reverb_room, heartbeat, rumble_earthquake, torch_fire, sonar_ping
+   - **Other** (3): distortion_guitar, stone_impact variant
 
 ### Gotchas / Notes for Future Sessions
 

@@ -58,6 +58,7 @@ void SymphonyVoicePool::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_slot_importance_weight", "slot", "weight"), &SymphonyVoicePool::set_slot_importance_weight);
 	ClassDB::bind_method(D_METHOD("set_slot_position", "slot", "position"), &SymphonyVoicePool::set_slot_position);
 	ClassDB::bind_method(D_METHOD("get_slot_importance", "slot"), &SymphonyVoicePool::get_slot_importance);
+	ClassDB::bind_method(D_METHOD("update_importance"), &SymphonyVoicePool::update_importance);
 
 	// Distance attenuation
 	ClassDB::bind_method(D_METHOD("set_slot_spatial_mode", "slot", "mode"), &SymphonyVoicePool::set_slot_spatial_mode);
