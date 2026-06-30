@@ -17,6 +17,16 @@ void AudioStreamSymphony::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("load_test_graph_50"), &AudioStreamSymphony::load_test_graph_50);
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "mix_rate", PROPERTY_HINT_RANGE, "22050,96000,1"), "set_mix_rate", "get_mix_rate");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "voice_priority", PROPERTY_HINT_RANGE, "0,100,1"), "set_voice_priority", "get_voice_priority");
+
+	// LOD system
+	ClassDB::bind_method(D_METHOD("get_lod_count"), &AudioStreamSymphony::get_lod_count);
+	ClassDB::bind_method(D_METHOD("get_recommended_lod", "distance_ratio"), &AudioStreamSymphony::get_recommended_lod);
+	ClassDB::bind_method(D_METHOD("set_lod_threshold_1", "threshold"), &AudioStreamSymphony::set_lod_threshold_1);
+	ClassDB::bind_method(D_METHOD("get_lod_threshold_1"), &AudioStreamSymphony::get_lod_threshold_1);
+	ClassDB::bind_method(D_METHOD("set_lod_threshold_2", "threshold"), &AudioStreamSymphony::set_lod_threshold_2);
+	ClassDB::bind_method(D_METHOD("get_lod_threshold_2"), &AudioStreamSymphony::get_lod_threshold_2);
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "lod_threshold_1", PROPERTY_HINT_RANGE, "0.0,1.0,0.01"), "set_lod_threshold_1", "get_lod_threshold_1");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "lod_threshold_2", PROPERTY_HINT_RANGE, "0.0,1.0,0.01"), "set_lod_threshold_2", "get_lod_threshold_2");
 }
 
 // --- Resource serialization ---
@@ -704,4 +714,74 @@ double AudioStreamSymphony::get_length() const {
 
 bool AudioStreamSymphony::is_monophonic() const {
 	return false;
+}
+
+// --- LOD System ---
+
+CompiledGraph *AudioStreamSymphony::compile_lod_graph(int p_lod_tier) const {
+	if (p_lod_tier <= 0) {
+		return compile_graph(); // LOD 0 = main graph
+	}
+	int lod_index = p_lod_tier - 1; // lod_graphs[0] = LOD 1, lod_graphs[1] = LOD 2
+	if (lod_index >= lod_graphs.size()) {
+		// Requested LOD doesn't exist, fall back to highest available
+		if (lod_graphs.size() > 0) {
+			lod_index = lod_graphs.size() - 1;
+		} else {
+			return compile_graph(); // No LOD variants, use main graph
+		}
+	}
+	const GraphDescription &lod_desc = lod_graphs[lod_index];
+	if (lod_desc.nodes.size() == 0) {
+		return compile_graph(); // Empty LOD, fall back
+	}
+	String owner_path = get_path();
+	GraphFlattener::FlattenResult flat = GraphFlattener::flatten(lod_desc, owner_path);
+	if (!flat.success()) {
+		for (const String &err : flat.errors) {
+			ERR_PRINT(vformat("Symphony LOD flatten error (tier %d): %s", p_lod_tier, err));
+		}
+		return nullptr;
+	}
+	GraphCompiler::CompileResult result = GraphCompiler::compile(flat.graph, mix_rate);
+	if (!result.success()) {
+		for (const String &err : result.errors) {
+			ERR_PRINT(vformat("Symphony LOD compile error (tier %d): %s", p_lod_tier, err));
+		}
+		return nullptr;
+	}
+	return result.graph;
+}
+
+int AudioStreamSymphony::get_lod_count() const {
+	return 1 + lod_graphs.size(); // LOD 0 (main) + N LOD variants
+}
+
+void AudioStreamSymphony::set_lod_threshold_1(float p_threshold) {
+	lod_threshold_1 = CLAMP(p_threshold, 0.0f, 1.0f);
+}
+
+float AudioStreamSymphony::get_lod_threshold_1() const {
+	return lod_threshold_1;
+}
+
+void AudioStreamSymphony::set_lod_threshold_2(float p_threshold) {
+	lod_threshold_2 = CLAMP(p_threshold, 0.0f, 1.0f);
+}
+
+float AudioStreamSymphony::get_lod_threshold_2() const {
+	return lod_threshold_2;
+}
+
+int AudioStreamSymphony::get_recommended_lod(float p_distance_ratio) const {
+	if (lod_graphs.size() == 0) {
+		return 0; // No LOD variants available
+	}
+	if (p_distance_ratio >= lod_threshold_2 && lod_graphs.size() >= 2) {
+		return 2;
+	}
+	if (p_distance_ratio >= lod_threshold_1) {
+		return 1;
+	}
+	return 0;
 }

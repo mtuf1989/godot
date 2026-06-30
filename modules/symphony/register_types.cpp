@@ -43,6 +43,8 @@
 #include "nodes/math/symphony_crossfade.h"
 #include "nodes/generators/symphony_fm_oscillator.h"
 #include "nodes/filters/symphony_waveshaper.h"
+#include "nodes/generators/symphony_formant_osc.h"
+#include "nodes/delay/symphony_fdn_reverb.h"
 #include "nodes/io/symphony_graph_input.h"
 #include "nodes/io/symphony_graph_input_audio.h"
 #include "nodes/io/symphony_graph_output.h"
@@ -113,6 +115,12 @@ void initialize_symphony_module(ModuleInitializationLevel p_level) {
 
 		// S2 Filters
 		SymphonyWaveshaper::register_operator();
+
+		// S3 Generators
+		SymphonyFormantOsc::register_operator();
+
+		// S3 Delay
+		SymphonyFDNReverb::register_operator();
 
 		// I/O
 		SymphonyGraphOutput::register_operator();

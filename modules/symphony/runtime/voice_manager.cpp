@@ -83,6 +83,12 @@ void SymphonyVoicePool::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_event_log_count"), &SymphonyVoicePool::get_event_log_count);
 	ClassDB::bind_method(D_METHOD("get_category_voice_counts"), &SymphonyVoicePool::get_category_voice_counts);
 
+	// LOD control
+	ClassDB::bind_method(D_METHOD("force_lod", "slot", "lod_tier"), &SymphonyVoicePool::force_lod);
+	ClassDB::bind_method(D_METHOD("release_lod_force", "slot"), &SymphonyVoicePool::release_lod_force);
+	ClassDB::bind_method(D_METHOD("get_slot_current_lod", "slot"), &SymphonyVoicePool::get_slot_current_lod);
+	ClassDB::bind_method(D_METHOD("get_slot_target_lod", "slot"), &SymphonyVoicePool::get_slot_target_lod);
+
 	BIND_ENUM_CONSTANT(EVENT_PLAYED);
 	BIND_ENUM_CONSTANT(EVENT_STOLEN);
 	BIND_ENUM_CONSTANT(EVENT_REJECTED_COOLDOWN);
@@ -437,6 +443,85 @@ Dictionary SymphonyVoicePool::get_category_voice_counts() const {
 	return d;
 }
 
+// --- LOD Control ---
+
+void SymphonyVoicePool::force_lod(int p_slot, int p_lod_tier) {
+	if (p_slot < 0 || p_slot >= pool_size) {
+		return;
+	}
+	slots[p_slot].target_lod = CLAMP(p_lod_tier, 0, 2);
+	slots[p_slot].current_lod = slots[p_slot].target_lod;
+	slots[p_slot].lod_forced = true;
+}
+
+void SymphonyVoicePool::release_lod_force(int p_slot) {
+	if (p_slot < 0 || p_slot >= pool_size) {
+		return;
+	}
+	slots[p_slot].lod_forced = false;
+}
+
+int SymphonyVoicePool::get_slot_current_lod(int p_slot) const {
+	if (p_slot < 0 || p_slot >= pool_size) {
+		return 0;
+	}
+	return slots[p_slot].current_lod;
+}
+
+int SymphonyVoicePool::get_slot_target_lod(int p_slot) const {
+	if (p_slot < 0 || p_slot >= pool_size) {
+		return 0;
+	}
+	return slots[p_slot].target_lod;
+}
+
+void SymphonyVoicePool::update_lod_targets() {
+	// Compute LOD targets based on distance ratio for each active slot.
+	// This is called from process_frame() alongside importance updates.
+	for (int i = 0; i < pool_size; i++) {
+		if (slots[i].state != VOICE_PLAYING && slots[i].state != VOICE_TO_PLAY) {
+			continue;
+		}
+		if (slots[i].lod_forced) {
+			continue; // Respect forced LOD
+		}
+		if (slots[i].max_distance <= 0.0f) {
+			slots[i].target_lod = 0;
+			continue;
+		}
+
+		// Compute distance ratio (0 = at listener, 1 = at max_distance)
+		float dist_sq = slots[i].position.distance_squared_to(listener_position);
+		float max_dist_sq = slots[i].max_distance * slots[i].max_distance;
+		float distance_ratio = (max_dist_sq > 0.0f) ? Math::sqrt(dist_sq / max_dist_sq) : 0.0f;
+		distance_ratio = CLAMP(distance_ratio, 0.0f, 1.0f);
+
+		// Determine target LOD from distance ratio
+		// Default thresholds: 0.3 for LOD 1, 0.7 for LOD 2
+		int new_target;
+		if (distance_ratio >= 0.7f) {
+			new_target = 2;
+		} else if (distance_ratio >= 0.3f) {
+			new_target = 1;
+		} else {
+			new_target = 0;
+		}
+
+		// Hysteresis: only upgrade (lower LOD number) if distance drops below threshold - 5%
+		if (new_target < slots[i].current_lod) {
+			// Upgrading: require 5% margin to prevent oscillation
+			float hysteresis = 0.05f;
+			if (new_target == 0 && distance_ratio > (0.3f - hysteresis)) {
+				new_target = 1; // Stay at LOD 1
+			} else if (new_target == 1 && distance_ratio > (0.7f - hysteresis)) {
+				new_target = 2; // Stay at LOD 2
+			}
+		}
+
+		slots[i].target_lod = new_target;
+	}
+}
+
 // --- Event Log ---
 
 void SymphonyVoicePool::_log_event(const StringName &p_event_name, EventResult p_result, int p_slot, float p_importance, const StringName &p_steal_reason) {
@@ -557,6 +642,9 @@ void SymphonyVoicePool::process_frame() {
 
 	// Update importance (staggered — 1/4 of pool per frame)
 	update_importance();
+
+	// Update LOD targets based on distance
+	update_lod_targets();
 
 	VoiceMetrics m;
 	m.active = active;

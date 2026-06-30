@@ -96,6 +96,38 @@ int AudioStreamPlaybackSymphony::mix(AudioFrame *p_buffer, float p_rate_scale, i
 		int chunk = MIN(SYMPHONY_MICRO_BLOCK_SIZE, p_frames - frames_processed);
 		graph_output_node->set_output(p_buffer, frames_processed);
 		current_graph->execute(chunk);
+
+		// LOD crossfade: if outgoing graph exists, execute it too and blend
+		if (lod_outgoing_graph && lod_outgoing_output && lod_crossfade_progress < 1.0f) {
+			// Temporary buffer for outgoing graph output
+			AudioFrame outgoing_buf[SYMPHONY_MICRO_BLOCK_SIZE];
+			lod_outgoing_output->set_output(outgoing_buf, 0);
+			lod_outgoing_graph->execute(chunk);
+
+			// Blend: crossfade from outgoing to current
+			for (int s = 0; s < chunk; s++) {
+				float mix_new = lod_crossfade_progress;
+				float mix_old = 1.0f - mix_new;
+				int buf_idx = frames_processed + s;
+				p_buffer[buf_idx].left = p_buffer[buf_idx].left * mix_new + outgoing_buf[s].left * mix_old;
+				p_buffer[buf_idx].right = p_buffer[buf_idx].right * mix_new + outgoing_buf[s].right * mix_old;
+
+				lod_crossfade_progress += lod_crossfade_speed;
+				if (lod_crossfade_progress >= 1.0f) {
+					lod_crossfade_progress = 1.0f;
+					lod_crossfade_speed = 0.0f;
+					break; // Crossfade complete mid-chunk
+				}
+			}
+
+			// If crossfade complete, destroy outgoing graph
+			if (lod_crossfade_progress >= 1.0f) {
+				memdelete(lod_outgoing_graph);
+				lod_outgoing_graph = nullptr;
+				lod_outgoing_output = nullptr;
+			}
+		}
+
 		frames_processed += chunk;
 	}
 
@@ -232,4 +264,47 @@ AudioStreamPlaybackSymphony::~AudioStreamPlaybackSymphony() {
 		memdelete(current_graph);
 		current_graph = nullptr;
 	}
+	if (lod_outgoing_graph) {
+		memdelete(lod_outgoing_graph);
+		lod_outgoing_graph = nullptr;
+	}
+}
+
+void AudioStreamPlaybackSymphony::transition_to_lod(int p_lod_tier) {
+	if (!stream.is_valid()) {
+		return;
+	}
+	if (p_lod_tier == current_lod_tier) {
+		return; // Already at requested LOD
+	}
+	if (p_lod_tier < 0 || p_lod_tier >= stream->get_lod_count()) {
+		return; // Invalid tier
+	}
+
+	// Compile the new LOD graph
+	CompiledGraph *new_graph = stream->compile_lod_graph(p_lod_tier);
+	if (!new_graph) {
+		return; // Compilation failed
+	}
+
+	// If already in a crossfade, immediately finish the old one
+	if (lod_outgoing_graph) {
+		memdelete(lod_outgoing_graph);
+		lod_outgoing_graph = nullptr;
+		lod_outgoing_output = nullptr;
+	}
+
+	// Move current graph to outgoing slot
+	lod_outgoing_graph = current_graph;
+	lod_outgoing_output = graph_output_node;
+
+	// Install new graph as current
+	current_graph = new_graph;
+	find_graph_output();
+	rebuild_routing_tables();
+
+	// Start crossfade
+	lod_crossfade_progress = 0.0f;
+	lod_crossfade_speed = 1.0f / (float)LOD_CROSSFADE_SAMPLES;
+	current_lod_tier = p_lod_tier;
 }

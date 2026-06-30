@@ -13,7 +13,17 @@ private:
 	friend class AudioStreamPlaybackSymphony;
 	float mix_rate = 44100.0f;
 	int voice_priority = 50; // 0-100, higher = harder to steal
-	GraphDescription graph_desc;
+	GraphDescription graph_desc; // LOD 0 (full quality)
+
+	// LOD system: simplified graph variants for distance/importance-based degradation.
+	// lod_graphs[0] = LOD 1 (simplified), lod_graphs[1] = LOD 2 (minimal).
+	// Main graph_desc is always LOD 0 (full quality).
+	Vector<GraphDescription> lod_graphs;
+
+	// LOD distance thresholds (normalized 0-1 of max_distance).
+	// Default: LOD 0 at 0-30%, LOD 1 at 30-70%, LOD 2 at 70-100%.
+	float lod_threshold_1 = 0.3f; // Distance ratio above which LOD 1 activates
+	float lod_threshold_2 = 0.7f; // Distance ratio above which LOD 2 activates
 
 protected:
 	static void _bind_methods();
@@ -34,6 +44,15 @@ public:
 	const GraphDescription &get_graph_description() const;
 
 	CompiledGraph *compile_graph() const;
+	CompiledGraph *compile_lod_graph(int p_lod_tier) const;
+	int get_lod_count() const; // Returns 1 if no LOD graphs, up to 3 (LOD 0 + 2 variants)
+
+	void set_lod_threshold_1(float p_threshold);
+	float get_lod_threshold_1() const;
+	void set_lod_threshold_2(float p_threshold);
+	float get_lod_threshold_2() const;
+
+	int get_recommended_lod(float p_distance_ratio) const;
 
 	static GraphDescription build_test_graph_10_nodes();
 	static GraphDescription build_test_graph_30_nodes();

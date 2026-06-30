@@ -1,5 +1,73 @@
 # Dev Log — Symphony Audio System
 
+## 2026-06-30 — S3 Advanced Synthesis
+
+### Completed
+
+| Task | Status | Files |
+|------|--------|-------|
+| S3.1 — FormantOsc Operator | ✅ Done | `nodes/generators/symphony_formant_osc.h` |
+| S3.2 — FDN Reverb Operator | ✅ Done | `nodes/delay/symphony_fdn_reverb.h` |
+| S3.3 — Composite Presets (28 total) | ✅ Done | `game-template/addons/symphony_audio/presets/graphs/` (22 new + 6 existing) |
+| S3.4 — LOD Graph System | ✅ Done | `stream/audio_stream_symphony.h/.cpp`, `stream/audio_stream_playback_symphony.h/.cpp`, `runtime/voice_manager.h/.cpp` |
+| register_types.cpp | ✅ Done | FormantOsc + FDNReverb registered |
+
+### Architecture Decisions
+
+1. **FormantOsc — Single-formant approach**: One FormantOsc = one formant peak. Stack 2-5 instances in a graph for vowels/creatures. More composable than a multi-formant operator (like ModalBank). PAF algorithm: cos(carrier_phase * formant_ratio * TAU) * exp(-beta² * centered_phase²). The Gaussian envelope controls bandwidth.
+
+2. **FDN Reverb — Configurable 4/8 lines**: `num_lines` is a compile-time parameter (set in .tres, determines arena allocation). 4-line for most in-graph reverb, 8-line for halls. Hadamard mixing matrix (4×4 or 8×8 via Kronecker product H4⊗H2). Wet-only output (user adds CrossFade for dry/wet). Pre-delay built-in (up to 200ms). RT60-matched per-line decay gains.
+
+3. **FDN delay ratios**: Prime-based ratios prevent metallic coloration. 4-line: [1.0, 1.2599, 1.4983, 1.8409]. 8-line: [1.0, 1.1225, 1.2599, 1.4142, 1.4983, 1.6818, 1.8409, 1.9953]. These are carefully chosen to be mutually incommensurate.
+
+4. **LOD System — Option B parallel crossfade**: During LOD transition, BOTH graphs execute simultaneously. Output is linearly blended over 2048 samples (~42ms at 48kHz). Outgoing graph is destroyed after fade completes. This doubles CPU briefly but produces seamless transitions.
+
+5. **LOD 3-tier structure**: LOD 0 = full graph (main graph_desc), LOD 1 = simplified (lod_graphs[0]), LOD 2 = minimal (lod_graphs[1]). Thresholds: 30% and 70% of max_distance with 5% hysteresis band to prevent oscillation at boundaries.
+
+6. **LOD control model**: Both automatic (distance-based via VoicePool.update_lod_targets()) and manual (force_lod(slot, tier) / release_lod_force(slot)). GDScript AudioManager polls target_lod each frame and calls transition_to_lod() on the playback when target != current.
+
+7. **28 preset convention**: All presets in `game-template/addons/symphony_audio/presets/graphs/`. Categories: Impacts(5: metal, wood, glass, stone, soft), Physical Models(5: plucked_string, bowed_string, tube_resonance, bottle_blow, spring_twang), Creatures(5: creature_growl, creature_chirp, alien_warble, hiss_snarl, vocalization), Weather(5: wind, rain, fire, thunder, flowing_water), Mechanical(5: electric_hum, servo_motor, laser_zap, digital_glitch, alarm_siren), Environmental(3: reverb_room, drone_pad, bubble_drip).
+
+### Gotchas / Notes for Future Sessions
+
+1. **`Math_PI` does not exist (AGAIN)**: Use `Math::PI`. This is the third time this has been hit. Every new operator should use `Math::PI` and `Math::TAU`.
+
+2. **Member initializer order must match declaration order**: The `-Wreorder-ctor` warning is treated seriously. FDN Reverb hit this with `pre_delay_buffer` vs `max_pre_delay_samples`. Always check class member declaration order before writing the constructor initializer list.
+
+3. **GraphFlattener/GraphCompiler class names**: The actual classes are `GraphFlattener` and `GraphCompiler` (not `SymphonyGraphFlattener`/`SymphonyGraphCompiler`). The header files are named `symphony_graph_*.h` but the classes themselves don't have the `Symphony` prefix.
+
+4. **LOD crossfade buffer is stack-allocated**: `AudioFrame outgoing_buf[SYMPHONY_MICRO_BLOCK_SIZE]` in mix() — this is fine because SYMPHONY_MICRO_BLOCK_SIZE is 32 or 64 (256 or 512 bytes). If it ever grows beyond that, move to a pre-allocated member.
+
+5. **LOD outgoing graph ownership**: The outgoing graph is owned by the playback instance (not the arena). It's destroyed via `memdelete()` after crossfade completes. If the playback itself is destroyed during crossfade, the destructor handles cleanup.
+
+6. **LOD transition is NOT thread-safe from audio thread perspective**: `transition_to_lod()` is called from the main thread and directly swaps `current_graph`. The mix() function on the audio thread reads `current_graph`. This is currently safe because Godot's AudioStreamPlayback is always accessed from one thread at a time (the mix callback owns the playback during mix, main thread owns it otherwise). But if this assumption ever changes, transition_to_lod() needs the atomic pending_graph pattern.
+
+7. **VoicePool.update_lod_targets() uses hardcoded 0.3/0.7 thresholds**: These match AudioStreamSymphony's default lod_threshold_1/2 properties. In the future, the VoicePool should read the per-resource thresholds from the SoundEvent/AudioStreamSymphony. For now, the GDScript AudioManager should handle this by calling `stream.get_recommended_lod(distance_ratio)` and then `transition_to_lod()`.
+
+8. **LOD arena cost**: A voice transitioning between LODs briefly holds TWO compiled graphs in memory. For a complex LOD 0 (e.g., GrainCloud + FDN) this could be ~1MB during the 42ms transition. This is acceptable for desktop but should be monitored on web.
+
+9. **FDN Reverb arena allocation order matters**: Delay memory is allocated BEFORE the operator struct. If you change create() to allocate struct first, the delay_memory pointer passed to the constructor would be wrong. The pattern is: allocate delay buffers → allocate pre-delay buffer → allocate operator struct → placement new with buffer pointers.
+
+10. **FormantOsc centered_phase**: The phase is remapped to [-0.5, 0.5] so the Gaussian envelope peaks at the CENTER of each fundamental period. This ensures the formant spectral envelope is symmetric. If you shift this (e.g., to peak at phase=0 raw), you get asymmetric partials which sound harsher.
+
+### New Operator Registry (Post-S3)
+
+After S3, the full operator set is:
+
+**Generators**: Oscillator, Constant, Noise, LFO, WavePlayer, FMOscillator, FormantOsc
+**Filters**: BiquadFilter, OnePole, DCBlocker, Saturator, SVFilter, Waveshaper
+**Envelopes**: Gain, ADSR, Compressor
+**Math**: MathAdd, Mix, MapRange, SampleHold, RingMod, CrossFade
+**Timing**: Clock, TriggerDelay, StochasticTrigger
+**Delay**: DelayLine, FeedbackPath, PitchShifter, FDNReverb
+**Utility**: ParameterSmoother, EnvelopeFollower
+**Synthesis**: ModalBank, GrainCloud
+**I/O**: GraphInput, GraphInputAudio, GraphOutput, TriggerInput, SubGraph
+
+Total: 34 operators (up from 32 after S2).
+
+---
+
 ## 2026-06-30 — S2 Synthesis Toolkit
 
 ### Completed

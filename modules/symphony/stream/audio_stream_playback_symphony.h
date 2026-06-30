@@ -28,6 +28,14 @@ private:
 	// Graveyard: old graphs waiting to be freed on the main thread.
 	CompiledGraph *graveyard = nullptr;
 
+	// --- LOD crossfade (Option B: parallel execution during transition) ---
+	CompiledGraph *lod_outgoing_graph = nullptr;   // Old graph being faded out
+	SymphonyGraphOutput *lod_outgoing_output = nullptr;
+	float lod_crossfade_progress = 1.0f;  // 0 = fully outgoing, 1 = fully current (no crossfade)
+	float lod_crossfade_speed = 0.0f;     // Progress increment per sample
+	int current_lod_tier = 0;             // Current active LOD (0=full, 1=simplified, 2=minimal)
+	static constexpr int LOD_CROSSFADE_SAMPLES = 2048; // ~42ms at 48kHz
+
 	// Pointer to the GraphOutput operator in the current graph.
 	SymphonyGraphOutput *graph_output_node = nullptr;
 
@@ -59,6 +67,11 @@ public:
 
 	// Hot-swap: publish a new compiled graph (called from main thread).
 	void swap_graph(CompiledGraph *p_graph);
+
+	// LOD transition: initiate parallel crossfade to a new LOD tier (called from main thread).
+	void transition_to_lod(int p_lod_tier);
+	int get_current_lod_tier() const { return current_lod_tier; }
+	bool is_lod_transitioning() const { return lod_crossfade_progress < 1.0f; }
 
 	// GDScript API — overrides AudioStreamPlayback virtuals.
 	virtual void set_parameter(const StringName &p_name, const Variant &p_value) override;

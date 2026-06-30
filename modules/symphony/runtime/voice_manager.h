@@ -75,6 +75,11 @@ public:
 		StringName local_param_names[MAX_LOCAL_PARAMS];
 		float local_param_values[MAX_LOCAL_PARAMS];
 		int local_param_count = 0;
+
+		// LOD state
+		int current_lod = 0;      // Current LOD tier (0=full, 1=simplified, 2=minimal)
+		int target_lod = 0;       // Target LOD (set by auto or force_lod)
+		bool lod_forced = false;  // If true, auto-LOD is disabled for this slot
 	};
 
 	struct VoiceMetrics {
@@ -166,6 +171,13 @@ public:
 
 	// Per-category voice counts (for Performance monitors)
 	Dictionary get_category_voice_counts() const;
+
+	// LOD control
+	void force_lod(int p_slot, int p_lod_tier);    // Force a specific LOD tier (disables auto)
+	void release_lod_force(int p_slot);             // Re-enable auto-LOD for this slot
+	int get_slot_current_lod(int p_slot) const;
+	int get_slot_target_lod(int p_slot) const;
+	void update_lod_targets();                      // Called each frame, updates target LOD based on distance
 
 	void process_frame();
 
