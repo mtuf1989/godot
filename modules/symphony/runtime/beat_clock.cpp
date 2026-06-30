@@ -24,6 +24,9 @@ void BeatClock::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_time_to_next_bar"), &BeatClock::get_time_to_next_bar);
 	ClassDB::bind_method(D_METHOD("process", "delta"), &BeatClock::process);
 
+	// S4.4: Music Moment Integration
+	ClassDB::bind_method(D_METHOD("calculate_time_stretch_for_alignment", "target_time_sec", "tolerance_percent", "max_stretch"), &BeatClock::calculate_time_stretch_for_alignment, DEFVAL(5.0f), DEFVAL(0.1f));
+
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "bpm"), "set_bpm", "get_bpm");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "beats_per_bar"), "set_beats_per_bar", "get_beats_per_bar");
 
@@ -156,4 +159,47 @@ void BeatClock::process(double p_delta) {
 
 	prev_beat_index = beat_index;
 	prev_bar_index = bar_index;
+}
+
+float BeatClock::calculate_time_stretch_for_alignment(float p_target_time_sec, float p_tolerance_percent, float p_max_stretch) const {
+	// S4.4: Music Moment Integration
+	// Calculate the stretch ratio needed so that the next bar boundary
+	// arrives exactly at p_target_time_sec from now.
+	//
+	// Use case: "Boss door opens in 3.2 seconds — stretch music so downbeat hits at that moment."
+
+	if (!playing || bpm <= 0.0f) {
+		return 1.0f;
+	}
+
+	// How long until the next bar boundary at current tempo?
+	float time_to_next_bar = get_time_to_next_bar();
+
+	if (time_to_next_bar < 0.001f) {
+		// We're essentially AT the bar boundary already
+		return 1.0f;
+	}
+
+	// Target time must be positive
+	if (p_target_time_sec <= 0.0f) {
+		return 1.0f;
+	}
+
+	// Calculate required stretch ratio:
+	// If time_to_next_bar / stretch = p_target_time_sec
+	// Then stretch = time_to_next_bar / p_target_time_sec
+	float stretch = time_to_next_bar / p_target_time_sec;
+
+	// Check if we're already within tolerance (no stretch needed)
+	float deviation_percent = Math::abs(stretch - 1.0f) * 100.0f;
+	if (deviation_percent <= p_tolerance_percent) {
+		return 1.0f; // Close enough, no correction needed
+	}
+
+	// Clamp stretch to max allowed deviation
+	float min_stretch = 1.0f - p_max_stretch;
+	float max_stretch = 1.0f + p_max_stretch;
+	stretch = CLAMP(stretch, min_stretch, max_stretch);
+
+	return stretch;
 }

@@ -1,5 +1,71 @@
 # Dev Log — Symphony Audio System
 
+## 2026-06-30 — S4 Spectral & Granular Advanced
+
+### Completed
+
+| Task | Status | Files |
+|------|--------|-------|
+| S4.0 — Integrate pffft library | ✅ Done | `thirdparty/pffft/` (9 files + simd/) |
+| S4.1 — PhaseVocoder Operator | ✅ Done | `nodes/spectral/symphony_phase_vocoder.h` |
+| S4.2 — SpectralGate Operator | ✅ Done | `nodes/spectral/symphony_spectral_gate.h` |
+| S4.3 — Enhanced GrainCloud | ✅ Done | `nodes/synthesis/symphony_grain_cloud.h` |
+| S4.4 — Music Moment Integration | ✅ Done | `runtime/beat_clock.h`, `runtime/beat_clock.cpp` |
+| S4.5 — Register operators | ✅ Done | `register_types.cpp`, `SCsub` |
+
+### Architecture Decisions
+
+1. **FFT library: pffft** (not kissfft). Chose pffft (Pretty Fast FFT) because it provides SIMD acceleration on all our target platforms (SSE/AVX on x86, NEON on ARM/Apple Silicon, WASM SIMD on web) with the same source code. BSD-like license. Integration: 3 C source files compiled via separate env_pffft SCons environment with warnings suppressed. PFFFT_Setup pointer is heap-allocated and leaked on graph destruction (acceptable: ~2KB per graph lifetime, graphs are long-lived).
+
+2. **PhaseVocoder algorithm**: Full STFT phase vocoder with Hanning window, 4x overlap. Time-stretch via analysis rate modification (read analysis frames faster/slower than synthesis rate). Pitch-shift via frequency-domain bin remapping (shift magnitudes to dest_bin = k × pitch_ratio). Phase unwrapping with wrap_phase to [-π, π]. The `ifft_buffer` is reused as temporary storage for unwrapped phase deltas (safe because IFFT overwrites it later).
+
+3. **SpectralGate**: Simpler than PhaseVocoder — pass-through STFT with per-bin magnitude thresholding. No phase manipulation needed. 7 arena buffers vs 12 for PhaseVocoder. Useful for noise suppression on recordings and spectral effects.
+
+4. **GrainCloud S4.3 enhancements**: Added to existing operator (not a new operator). New features: scan_speed (auto-position advance), amp_randomness (per-grain ±dB), configurable position_randomness, source_pcm_loaded mode. Pan randomization intentionally skipped — mono architecture, downstream Panner node recommended.
+
+5. **Source PCM loading for GrainCloud**: Uses `source_pcm_ptr` and `source_pcm_length` compile-time parameters (set by graph compiler, not user-facing). At compile time, PCM data is copied from the AudioStreamWAV resource into the arena capture buffer. Grains then read from static data instead of live input.
+
+6. **Music Moment Integration (S4.4)**: Pure C++ method on BeatClock singleton. Calculates: `stretch = time_to_next_bar / target_time`. Clamped to ±max_stretch (default 10%). Returns 1.0 if within tolerance (default 5%) or impossible. MusicSystem GDScript wrapper deferred to game-template G-phase (one-liner call).
+
+7. **FFT size as compile-time graph parameter**: FFT size (256-8192, default 2048) is set per-operator in the .tres graph description. Changing it requires graph recompile (arena re-allocation) but NOT an engine rebuild. Power-of-2 enforced via clamping in create().
+
+### Gotchas / Notes for Future Sessions
+
+1. **pffft requires 16-byte aligned buffers**: Our arena allocates with 32-byte alignment (via `alloc(..., 32)`) — this satisfies pffft's requirement. Do NOT use `alloc_audio_buffer()` for pffft workspace (it only guarantees float alignment).
+
+2. **PFFFT_Setup leak**: `pffft_new_setup()` heap-allocates. The operator is placement-new'd in arena and never destructed. The setup pointer leaks when the arena is freed. This is ~2-4KB per PhaseVocoder/SpectralGate instance. Acceptable for desktop; monitor on web if many spectral operators are used.
+
+3. **pffft PFFFT_REAL output format**: For a real FFT of size N, the ordered output is N floats: `[DC_real, Nyquist_real, bin1_real, bin1_imag, bin2_real, bin2_imag, ...]`. DC and Nyquist are packed into slots 0 and 1. Bins 1..N/2-1 are interleaved re/im in slots 2..N-1.
+
+4. **PhaseVocoder latency**: With FFT 2048 at 48kHz, there's a ~43ms latency before output starts (must accumulate fft_size input samples before first frame). The `primed` flag handles this — output is silence until enough input arrives.
+
+5. **PhaseVocoder time-stretch direction**: `time_stretch > 1.0` = analysis reads FASTER than synthesis = audio plays FASTER (shorter duration). `time_stretch < 1.0` = audio plays slower (longer duration). This is the inverse of what some implementations use — match the plan's spec: "0.5-2.0 where 1.0 is normal."
+
+6. **GrainCloud new pins break existing graphs**: The enhanced GrainCloud now has 7 inputs (was 5). Old graphs that only connect 5 inputs will still work because unconnected pins default to nullptr (handled via ternary in execute). No migration needed.
+
+7. **GrainCloud source_pcm_ptr reinterpret_cast**: The PCM pointer is passed as int64 in the params HashMap (because Variant can't hold raw pointers). The graph compiler is responsible for obtaining the pointer from the AudioStreamWAV resource and converting to int64. This is safe because compilation happens on the main thread and the AudioStreamWAV resource lifetime exceeds the arena copy.
+
+8. **BeatClock calculate_time_stretch_for_alignment DEFVAL**: Uses DEFVAL(5.0f) for tolerance and DEFVAL(0.1f) for max_stretch. In GDScript: `BeatClock.calculate_time_stretch_for_alignment(3.2)` uses defaults. All three parameters are optional from GDScript's perspective.
+
+### New Operator Registry (Post-S4)
+
+After S4, the full operator set is:
+
+**Generators**: Oscillator, Constant, Noise, LFO, WavePlayer, FMOscillator, FormantOsc
+**Filters**: BiquadFilter, OnePole, DCBlocker, Saturator, SVFilter, Waveshaper
+**Envelopes**: Gain, ADSR, Compressor
+**Math**: MathAdd, Mix, MapRange, SampleHold, RingMod, CrossFade
+**Timing**: Clock, TriggerDelay, StochasticTrigger
+**Delay**: DelayLine, FeedbackPath, PitchShifter, FDNReverb
+**Utility**: ParameterSmoother, EnvelopeFollower
+**Synthesis**: ModalBank, GrainCloud
+**Spectral**: PhaseVocoder, SpectralGate
+**I/O**: GraphInput, GraphInputAudio, GraphOutput, TriggerInput, SubGraph
+
+Total: 36 operators (up from 34 after S3).
+
+---
+
 ## 2026-06-30 — S3 Advanced Synthesis
 
 ### Completed

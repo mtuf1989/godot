@@ -10,6 +10,34 @@ env_symphony = env_modules.Clone()
 if env["platform"] == "web":
     env_symphony.Append(CCFLAGS=["-msimd128"])
 
+# --- pffft (Pretty Fast FFT) thirdparty library ---
+# BSD-like license. Used for spectral processing (PhaseVocoder, SpectralGate).
+# SIMD auto-detects from compiler flags set by Godot's platform build.
+env_pffft = env_modules.Clone()
+env_pffft.Append(CPPPATH=["thirdparty/pffft"])
+env_pffft.Append(CPPDEFINES=["PFFFT_STATIC_DEFINE"])
+
+# Only build single-precision float (we don't need double)
+env_pffft.Append(CPPDEFINES=["PFFFT_USE_TYPE_FLOAT"])
+
+# Disable compiler warnings for thirdparty code
+if env.msvc:
+    env_pffft.Append(CCFLAGS=["/W0"])
+else:
+    env_pffft.Append(CCFLAGS=["-w"])
+
+# Web SIMD support (NEON path via SIMDe)
+if env["platform"] == "web":
+    env_pffft.Append(CCFLAGS=["-msimd128"])
+
+env_pffft.add_source_files(env.modules_sources, "thirdparty/pffft/pffft.c")
+env_pffft.add_source_files(env.modules_sources, "thirdparty/pffft/pffft_common.c")
+env_pffft.add_source_files(env.modules_sources, "thirdparty/pffft/fftpack.c")
+
+# Make pffft headers available to symphony sources
+env_symphony.Append(CPPPATH=["thirdparty/pffft"])
+
+# --- Symphony module sources ---
 env_symphony.add_source_files(env.modules_sources, "*.cpp")
 env_symphony.add_source_files(env.modules_sources, "core/*.cpp")
 env_symphony.add_source_files(env.modules_sources, "stream/*.cpp")
@@ -22,6 +50,7 @@ env_symphony.add_source_files(env.modules_sources, "nodes/io/*.cpp")
 env_symphony.add_source_files(env.modules_sources, "nodes/delay/*.cpp")
 env_symphony.add_source_files(env.modules_sources, "nodes/utility/*.cpp")
 env_symphony.add_source_files(env.modules_sources, "nodes/synthesis/*.cpp")
+env_symphony.add_source_files(env.modules_sources, "nodes/spectral/*.cpp")
 env_symphony.add_source_files(env.modules_sources, "runtime/*.cpp")
 
 if env.editor_build:

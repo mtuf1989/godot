@@ -11,19 +11,29 @@
 // Each grain is a windowed (Hanning) segment of the source, with:
 // - configurable size (10-200ms)
 // - stochastic scheduling (Poisson-like based on density)
-// - per-grain pitch randomization
+// - per-grain pitch randomization (± semitones)
+// - per-grain amplitude randomization (± dB)
 // - overlap-add output
 //
 // Source modes:
 // - Live input: granulates the audio_in signal via an internal capture buffer
-// - Buffer mode: reads from an internal circular buffer filled by audio_in
-//   Position parameter scans through the buffer for time-stretch effects
+// - Buffer mode (S4.3): When source PCM data is loaded into the capture buffer
+//   at compile time (via source_pcm parameter), the operator reads from pre-loaded
+//   data. Position parameter scans through the buffer for time-stretch effects.
+//
+// S4.3 Enhancements:
+// - scan_speed: automatically advances position through the buffer (0=manual, 1=normal)
+// - amp_randomness: per-grain amplitude variation in dB
+// - position_randomness: configurable jitter (was hardcoded at 10%)
+//
+// Pan randomization: Not implemented here (mono output architecture).
+// Use a downstream Panner node driven by GrainCloud's position for stereo spread.
 //
 // Max 8 concurrent grains to bound CPU usage.
 class SymphonyGrainCloud : public SymphonyOperator {
 private:
 	static constexpr int32_t MAX_GRAINS = 8;
-	static constexpr int32_t CAPTURE_BUFFER_SECONDS = 4; // 4 seconds of capture
+	static constexpr int32_t CAPTURE_BUFFER_SECONDS = 4;
 
 	// Grain state
 	struct Grain {
@@ -33,6 +43,7 @@ private:
 		int32_t current_sample = 0;   // Current playback position within grain
 		float playback_rate = 1.0f;   // Pitch variation (1.0 = normal)
 		float read_pos = 0.0f;        // Fractional read position for pitch shifting
+		float amplitude = 1.0f;       // Per-grain amplitude (S4.3)
 	};
 
 	const float *__restrict__ audio_in = nullptr;
@@ -40,6 +51,8 @@ private:
 	const float *__restrict__ density_input = nullptr;       // Float: grains/sec
 	const float *__restrict__ position_input = nullptr;      // Float: 0-1 buffer position
 	const float *__restrict__ pitch_rand_input = nullptr;    // Float: 0-0.5 semitone deviation
+	const float *__restrict__ scan_speed_input = nullptr;    // Float: 0-4 scan speed (S4.3)
+	const float *__restrict__ amp_rand_input = nullptr;      // Float: 0-6 dB variation (S4.3)
 	float *__restrict__ audio_out = nullptr;
 
 	// Capture buffer (circular, holds source audio)
@@ -47,11 +60,18 @@ private:
 	int32_t capture_size = 0;     // Total capture buffer size in samples
 	int32_t capture_write = 0;    // Current write position
 
+	// Source buffer mode (S4.3): if source_pcm_loaded, capture_buffer is pre-filled
+	bool source_pcm_loaded = false;
+	int32_t source_pcm_length = 0; // Length of pre-loaded PCM (may be less than capture_size)
+
 	// Grain pool
 	Grain grains[MAX_GRAINS];
 
 	// Scheduling state
 	float schedule_counter = 0.0f; // Counts down to next grain spawn
+
+	// Auto-scan position (S4.3): accumulates when scan_speed > 0
+	float auto_position = 0.0f;   // [0, 1] — automatically advancing scan position
 
 	// Hanning window lookup table
 	float *hanning_table = nullptr;
@@ -63,6 +83,9 @@ private:
 	float default_density = 8.0f;
 	float default_position = 0.5f;
 	float default_pitch_randomness = 0.0f;
+	float default_scan_speed = 0.0f;         // S4.3: 0 = manual position control
+	float default_amp_randomness = 0.0f;     // S4.3: 0 = no amplitude variation
+	float default_position_randomness = 0.1f; // S4.3: configurable (was hardcoded 10%)
 
 	// Fast PRNG (xorshift32)
 	uint32_t rng_state = 1;
@@ -81,22 +104,28 @@ private:
 
 	inline float hanning_window(float phase) const {
 		// phase: 0.0 to 1.0 through the grain
-		// Lookup in precomputed table with linear interpolation
 		float pos = phase * (float)(hanning_size - 1);
 		int32_t idx = (int32_t)pos;
-		if (idx >= hanning_size - 1) return 0.0f;
+		if (idx >= hanning_size - 1) {
+			return 0.0f;
+		}
 		float frac = pos - (float)idx;
 		return hanning_table[idx] + frac * (hanning_table[idx + 1] - hanning_table[idx]);
 	}
 
 	inline float read_capture(float pos) const {
 		// Read from capture buffer with linear interpolation
-		while (pos < 0.0f) pos += (float)capture_size;
-		while (pos >= (float)capture_size) pos -= (float)capture_size;
+		int32_t buf_len = source_pcm_loaded ? source_pcm_length : capture_size;
+		while (pos < 0.0f) {
+			pos += (float)buf_len;
+		}
+		while (pos >= (float)buf_len) {
+			pos -= (float)buf_len;
+		}
 
 		int32_t idx = (int32_t)pos;
 		float frac = pos - (float)idx;
-		int32_t next = (idx + 1) % capture_size;
+		int32_t next = (idx + 1) % buf_len;
 
 		return capture_buffer[idx] + frac * (capture_buffer[next] - capture_buffer[idx]);
 	}
@@ -110,6 +139,8 @@ public:
 		density_input = (const float *)p_input_ptrs[2];
 		position_input = (const float *)p_input_ptrs[3];
 		pitch_rand_input = (const float *)p_input_ptrs[4];
+		scan_speed_input = (const float *)p_input_ptrs[5];
+		amp_rand_input = (const float *)p_input_ptrs[6];
 		audio_out = (float *)p_output_ptrs[0];
 	}
 
@@ -121,37 +152,66 @@ public:
 		float density = density_input ? *density_input : default_density;
 		float position = position_input ? *position_input : default_position;
 		float pitch_rand = pitch_rand_input ? *pitch_rand_input : default_pitch_randomness;
+		float scan_speed = scan_speed_input ? *scan_speed_input : default_scan_speed;
+		float amp_rand = amp_rand_input ? *amp_rand_input : default_amp_randomness;
 
 		grain_size_ms = CLAMP(grain_size_ms, 10.0f, 200.0f);
 		density = CLAMP(density, 0.0f, 50.0f);
 		position = CLAMP(position, 0.0f, 1.0f);
 		pitch_rand = CLAMP(pitch_rand, 0.0f, 0.5f);
+		scan_speed = CLAMP(scan_speed, 0.0f, 4.0f);
+		amp_rand = CLAMP(amp_rand, 0.0f, 6.0f);
 
 		int32_t grain_length = (int32_t)(grain_size_ms * mix_rate * 0.001f);
-		if (grain_length < 1) grain_length = 1;
+		if (grain_length < 1) {
+			grain_length = 1;
+		}
 
 		// Average interval between grains (in samples)
 		float avg_interval = (density > 0.001f) ? (mix_rate / density) : 1000000.0f;
 
+		// S4.3: Calculate scan increment per sample
+		// scan_speed=1 means traverse the entire buffer in capture_seconds time
+		// So at speed=1, position advances by 1/(capture_size) per sample
+		int32_t effective_size = source_pcm_loaded ? source_pcm_length : capture_size;
+		float scan_increment = scan_speed / (float)effective_size;
+
 		for (int32_t i = 0; i < p_num_frames; i++) {
-			// Write input to capture buffer (always capture, even if input is silence)
-			if (audio_in) {
-				capture_buffer[capture_write] = audio_in[i];
-			} else {
-				capture_buffer[capture_write] = 0.0f;
+			// Write input to capture buffer (only in live mode, not source PCM mode)
+			if (!source_pcm_loaded) {
+				if (audio_in) {
+					capture_buffer[capture_write] = audio_in[i];
+				} else {
+					capture_buffer[capture_write] = 0.0f;
+				}
+				capture_write = (capture_write + 1) % capture_size;
 			}
-			capture_write = (capture_write + 1) % capture_size;
+
+			// S4.3: Auto-advance position
+			if (scan_speed > 0.001f) {
+				auto_position += scan_increment;
+				if (auto_position >= 1.0f) {
+					auto_position -= 1.0f; // Wrap around
+				}
+			}
+
+			// Effective position: manual position + auto-scan offset
+			float effective_position = position + auto_position;
+			if (effective_position >= 1.0f) {
+				effective_position -= 1.0f;
+			}
 
 			// --- Grain scheduling (Poisson-like) ---
 			schedule_counter -= 1.0f;
 			if (schedule_counter <= 0.0f) {
 				// Spawn a new grain
-				spawn_grain(grain_length, position, pitch_rand);
+				spawn_grain(grain_length, effective_position, pitch_rand, amp_rand);
 
 				// Next grain interval with exponential randomization (Poisson process)
-				// -log(uniform) gives exponential distribution
 				float u = random_float();
-				if (u < 0.0001f) u = 0.0001f; // Avoid log(0)
+				if (u < 0.0001f) {
+					u = 0.0001f; // Avoid log(0)
+				}
 				schedule_counter = -Math::log(u) * avg_interval;
 			}
 
@@ -160,7 +220,9 @@ public:
 
 			for (int32_t g = 0; g < MAX_GRAINS; g++) {
 				Grain &grain = grains[g];
-				if (!grain.active) continue;
+				if (!grain.active) {
+					continue;
+				}
 
 				// Grain phase for windowing (0 to 1)
 				float phase = (float)grain.current_sample / (float)grain.length_samples;
@@ -170,7 +232,8 @@ public:
 				float read_sample_pos = (float)grain.start_sample + grain.read_pos;
 				float sample = read_capture(read_sample_pos);
 
-				output += sample * window;
+				// Apply per-grain amplitude (S4.3)
+				output += sample * window * grain.amplitude;
 
 				// Advance grain
 				grain.read_pos += grain.playback_rate;
@@ -186,7 +249,7 @@ public:
 		}
 	}
 
-	void spawn_grain(int32_t length_samples, float position, float pitch_rand) {
+	void spawn_grain(int32_t length_samples, float position, float pitch_rand, float amp_rand) {
 		// Find a free grain slot
 		int32_t slot = -1;
 		for (int32_t g = 0; g < MAX_GRAINS; g++) {
@@ -195,7 +258,9 @@ public:
 				break;
 			}
 		}
-		if (slot < 0) return; // All slots busy
+		if (slot < 0) {
+			return; // All slots busy
+		}
 
 		Grain &grain = grains[slot];
 		grain.active = true;
@@ -203,31 +268,48 @@ public:
 		grain.current_sample = 0;
 		grain.read_pos = 0.0f;
 
-		// Position in capture buffer (with randomization)
-		float pos_randomness = 0.1f; // Fixed 10% position jitter
-		float jitter = (random_float() - 0.5f) * 2.0f * pos_randomness;
+		// Position in capture buffer (with configurable randomization)
+		float jitter = (random_float() - 0.5f) * 2.0f * default_position_randomness;
 		float final_pos = CLAMP(position + jitter, 0.0f, 1.0f);
 
-		// Map position [0,1] to capture buffer offset behind write head
-		// position=0: read from oldest data, position=1: read from newest
-		int32_t offset_behind = (int32_t)((1.0f - final_pos) * (float)(capture_size - length_samples));
-		grain.start_sample = (capture_write - offset_behind + capture_size) % capture_size;
+		if (source_pcm_loaded) {
+			// Source buffer mode: position maps directly to PCM data [0, source_pcm_length)
+			grain.start_sample = (int32_t)(final_pos * (float)(source_pcm_length - length_samples));
+			grain.start_sample = CLAMP(grain.start_sample, 0, source_pcm_length - 1);
+		} else {
+			// Live mode: position maps to offset behind write head
+			int32_t offset_behind = (int32_t)((1.0f - final_pos) * (float)(capture_size - length_samples));
+			grain.start_sample = (capture_write - offset_behind + capture_size) % capture_size;
+		}
 
 		// Pitch randomization: semitone deviation
 		float pitch_deviation = (random_float() - 0.5f) * 2.0f * pitch_rand;
 		grain.playback_rate = Math::pow(2.0f, pitch_deviation / 12.0f);
+
+		// S4.3: Amplitude randomization (± dB)
+		if (amp_rand > 0.001f) {
+			float amp_deviation_db = (random_float() - 0.5f) * 2.0f * amp_rand;
+			grain.amplitude = Math::pow(10.0f, amp_deviation_db / 20.0f);
+		} else {
+			grain.amplitude = 1.0f;
+		}
 	}
 
 	virtual size_t export_state(uint8_t *p_buffer, size_t p_max_size) const override {
-		// Export: capture_write pos, schedule_counter, grain states, rng_state
-		size_t needed = sizeof(int32_t) + sizeof(float) + sizeof(uint32_t) + sizeof(Grain) * MAX_GRAINS;
-		if (!p_buffer) return needed;
-		if (p_max_size < needed) return 0;
+		size_t needed = sizeof(int32_t) + sizeof(float) * 2 + sizeof(uint32_t) + sizeof(Grain) * MAX_GRAINS;
+		if (!p_buffer) {
+			return needed;
+		}
+		if (p_max_size < needed) {
+			return 0;
+		}
 
 		size_t offset = 0;
 		memcpy(p_buffer + offset, &capture_write, sizeof(int32_t));
 		offset += sizeof(int32_t);
 		memcpy(p_buffer + offset, &schedule_counter, sizeof(float));
+		offset += sizeof(float);
+		memcpy(p_buffer + offset, &auto_position, sizeof(float));
 		offset += sizeof(float);
 		memcpy(p_buffer + offset, &rng_state, sizeof(uint32_t));
 		offset += sizeof(uint32_t);
@@ -236,13 +318,17 @@ public:
 	}
 
 	virtual void import_state(const uint8_t *p_buffer, size_t p_size) override {
-		size_t needed = sizeof(int32_t) + sizeof(float) + sizeof(uint32_t) + sizeof(Grain) * MAX_GRAINS;
-		if (p_size < needed) return;
+		size_t needed = sizeof(int32_t) + sizeof(float) * 2 + sizeof(uint32_t) + sizeof(Grain) * MAX_GRAINS;
+		if (p_size < needed) {
+			return;
+		}
 
 		size_t offset = 0;
 		memcpy(&capture_write, p_buffer + offset, sizeof(int32_t));
 		offset += sizeof(int32_t);
 		memcpy(&schedule_counter, p_buffer + offset, sizeof(float));
+		offset += sizeof(float);
+		memcpy(&auto_position, p_buffer + offset, sizeof(float));
 		offset += sizeof(float);
 		memcpy(&rng_state, p_buffer + offset, sizeof(uint32_t));
 		offset += sizeof(uint32_t);
@@ -258,11 +344,16 @@ public:
 		desc.inputs.push_back({ "density", SymphonyPinType::FLOAT, false });
 		desc.inputs.push_back({ "position", SymphonyPinType::FLOAT, false });
 		desc.inputs.push_back({ "pitch_randomness", SymphonyPinType::FLOAT, false });
+		desc.inputs.push_back({ "scan_speed", SymphonyPinType::FLOAT, false });
+		desc.inputs.push_back({ "amp_randomness", SymphonyPinType::FLOAT, false });
 		desc.outputs.push_back({ "audio_out", SymphonyPinType::AUDIO, false });
 		desc.params.push_back({ "grain_size_ms", 50.0f, 10.0f, 200.0f, 1.0f });
 		desc.params.push_back({ "density", 8.0f, 0.0f, 50.0f, 0.1f });
 		desc.params.push_back({ "position", 0.5f, 0.0f, 1.0f, 0.01f });
 		desc.params.push_back({ "pitch_randomness", 0.0f, 0.0f, 0.5f, 0.01f });
+		desc.params.push_back({ "scan_speed", 0.0f, 0.0f, 4.0f, 0.01f });
+		desc.params.push_back({ "amp_randomness", 0.0f, 0.0f, 6.0f, 0.1f });
+		desc.params.push_back({ "position_randomness", 0.1f, 0.0f, 1.0f, 0.01f });
 		desc.params.push_back({ "seed", 1.0f, 1.0f, 999999.0f, 1.0f });
 		desc.params.push_back({ "capture_seconds", 4.0f, 1.0f, 10.0f, 1.0f });
 		desc.state_size = sizeof(SymphonyGrainCloud);
@@ -273,7 +364,9 @@ public:
 
 	static SymphonyOperator *create(ArenaAllocator &p_arena, const HashMap<StringName, Variant> &p_params, float p_mix_rate) {
 		void *mem = p_arena.alloc(sizeof(SymphonyGrainCloud), alignof(SymphonyGrainCloud));
-		if (!mem) return nullptr;
+		if (!mem) {
+			return nullptr;
+		}
 		SymphonyGrainCloud *gc = new (mem) SymphonyGrainCloud();
 
 		gc->mix_rate = p_mix_rate;
@@ -281,33 +374,64 @@ public:
 		gc->default_density = p_params.has("density") ? (float)p_params["density"] : 8.0f;
 		gc->default_position = p_params.has("position") ? (float)p_params["position"] : 0.5f;
 		gc->default_pitch_randomness = p_params.has("pitch_randomness") ? (float)p_params["pitch_randomness"] : 0.0f;
+		gc->default_scan_speed = p_params.has("scan_speed") ? (float)p_params["scan_speed"] : 0.0f;
+		gc->default_amp_randomness = p_params.has("amp_randomness") ? (float)p_params["amp_randomness"] : 0.0f;
+		gc->default_position_randomness = p_params.has("position_randomness") ? (float)p_params["position_randomness"] : 0.1f;
 
 		// RNG seed (different per voice for variety)
 		gc->rng_state = p_params.has("seed") ? (uint32_t)(float)p_params["seed"] : 1;
-		if (gc->rng_state == 0) gc->rng_state = 1; // xorshift cannot have 0 state
+		if (gc->rng_state == 0) {
+			gc->rng_state = 1; // xorshift cannot have 0 state
+		}
 
 		// Capture buffer
 		float capture_sec = p_params.has("capture_seconds") ? (float)p_params["capture_seconds"] : 4.0f;
 		capture_sec = CLAMP(capture_sec, 1.0f, 10.0f);
 		gc->capture_size = (int32_t)(capture_sec * p_mix_rate);
 		gc->capture_buffer = (float *)p_arena.alloc(sizeof(float) * gc->capture_size, 32);
-		if (!gc->capture_buffer) return nullptr;
+		if (!gc->capture_buffer) {
+			return nullptr;
+		}
 		memset(gc->capture_buffer, 0, sizeof(float) * gc->capture_size);
 		gc->capture_write = 0;
+
+		// S4.3: Source PCM loading
+		// If "source_pcm" parameter provides a pointer to PCM data and "source_pcm_length"
+		// specifies the sample count, copy it into the capture buffer at compile time.
+		// This is handled by the graph compiler when it detects a WavePlayer-linked source.
+		// The parameter "source_pcm_ptr" is set by the compiler (not user-facing).
+		if (p_params.has("source_pcm_ptr") && p_params.has("source_pcm_length")) {
+			int64_t ptr_val = (int64_t)p_params["source_pcm_ptr"];
+			const float *source_data = reinterpret_cast<const float *>(ptr_val);
+			int32_t pcm_len = (int32_t)(float)p_params["source_pcm_length"];
+
+			if (source_data && pcm_len > 0) {
+				// Copy PCM data into capture buffer (clamped to capture_size)
+				int32_t copy_len = (pcm_len < gc->capture_size) ? pcm_len : gc->capture_size;
+				memcpy(gc->capture_buffer, source_data, sizeof(float) * copy_len);
+				gc->source_pcm_loaded = true;
+				gc->source_pcm_length = copy_len;
+			}
+		}
 
 		// Hanning window lookup table (1024 entries)
 		gc->hanning_size = 1024;
 		gc->hanning_table = (float *)p_arena.alloc(sizeof(float) * gc->hanning_size, alignof(float));
-		if (!gc->hanning_table) return nullptr;
+		if (!gc->hanning_table) {
+			return nullptr;
+		}
 		for (int32_t i = 0; i < gc->hanning_size; i++) {
 			float phase = (float)i / (float)(gc->hanning_size - 1);
-			gc->hanning_table[i] = 0.5f * (1.0f - Math::cos(2.0f * (float)Math::PI * phase));
+			gc->hanning_table[i] = 0.5f * (1.0f - Math::cos(Math::TAU * phase));
 		}
 
 		// Initialize grains as inactive
 		for (int32_t g = 0; g < MAX_GRAINS; g++) {
 			gc->grains[g].active = false;
 		}
+
+		// Auto-scan position starts at 0
+		gc->auto_position = 0.0f;
 
 		// Schedule first grain quickly
 		gc->schedule_counter = gc->random_float() * (p_mix_rate / gc->default_density);

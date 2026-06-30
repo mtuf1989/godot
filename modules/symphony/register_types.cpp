@@ -45,6 +45,8 @@
 #include "nodes/filters/symphony_waveshaper.h"
 #include "nodes/generators/symphony_formant_osc.h"
 #include "nodes/delay/symphony_fdn_reverb.h"
+#include "nodes/spectral/symphony_phase_vocoder.h"
+#include "nodes/spectral/symphony_spectral_gate.h"
 #include "nodes/io/symphony_graph_input.h"
 #include "nodes/io/symphony_graph_input_audio.h"
 #include "nodes/io/symphony_graph_output.h"
@@ -121,6 +123,10 @@ void initialize_symphony_module(ModuleInitializationLevel p_level) {
 
 		// S3 Delay
 		SymphonyFDNReverb::register_operator();
+
+		// S4 Spectral
+		SymphonyPhaseVocoder::register_operator();
+		SymphonySpectralGate::register_operator();
 
 		// I/O
 		SymphonyGraphOutput::register_operator();

@@ -62,6 +62,15 @@ public:
 	// Called each frame to detect beat crossings and emit signals
 	void process(double p_delta);
 
+	// S4.4: Music Moment Integration
+	// Calculates the time-stretch ratio needed to align the next strong beat
+	// (bar boundary) with a target time point.
+	// Returns: stretch ratio (e.g., 0.95 = slightly slow down, 1.05 = slightly speed up)
+	// Returns 1.0 if not playing, if alignment is impossible, or if within tolerance.
+	// tolerance_percent: acceptable deviation (default 5% = within 5% of target is "close enough")
+	// max_stretch: maximum allowed stretch deviation from 1.0 (default 0.1 = ±10%)
+	float calculate_time_stretch_for_alignment(float p_target_time_sec, float p_tolerance_percent = 5.0f, float p_max_stretch = 0.1f) const;
+
 	BeatClock();
 	~BeatClock();
 };
