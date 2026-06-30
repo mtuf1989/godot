@@ -2,12 +2,12 @@
 #include "voice_manager.h"
 #include "core/object/class_db.h"
 #include "core/os/os.h"
-#include "core/math/math_funcs.h"
 
 SymphonyEventDispatcher *SymphonyEventDispatcher::singleton = nullptr;
 
 SymphonyEventDispatcher::SymphonyEventDispatcher() {
 	singleton = this;
+	rng.seed(OS::get_singleton()->get_ticks_usec());
 }
 
 SymphonyEventDispatcher::~SymphonyEventDispatcher() {
@@ -98,7 +98,7 @@ int SymphonyEventDispatcher::resolve_variation(const Ref<SoundEvent> &p_event) {
 
 	switch (p_event->get_variation_mode()) {
 		case SoundEvent::VARIATION_RANDOM:
-			return Math::rand() % count;
+			return rng.rand() % count;
 
 		case SoundEvent::VARIATION_SEQUENCE: {
 			int idx = sequence_indices.has(event_id) ? sequence_indices[event_id] : 0;
@@ -115,7 +115,7 @@ int SymphonyEventDispatcher::resolve_variation(const Ref<SoundEvent> &p_event) {
 				}
 				// Fisher-Yates shuffle
 				for (int i = count - 1; i > 0; i--) {
-					int j = Math::rand() % (i + 1);
+					int j = rng.rand() % (i + 1);
 					SWAP(order.write[i], order.write[j]);
 				}
 				shuffle_orders[event_id] = order;

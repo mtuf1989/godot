@@ -143,28 +143,28 @@ void initialize_symphony_module(ModuleInitializationLevel p_level) {
 
 void uninitialize_symphony_module(ModuleInitializationLevel p_level) {
 	if (p_level == MODULE_INITIALIZATION_LEVEL_SCENE) {
-		Engine::get_singleton()->remove_singleton("BeatClock");
 		if (BeatClock::get_singleton()) {
+			Engine::get_singleton()->remove_singleton("BeatClock");
 			memdelete(BeatClock::get_singleton());
 		}
-		Engine::get_singleton()->remove_singleton("BusController");
 		if (BusController::get_singleton()) {
+			Engine::get_singleton()->remove_singleton("BusController");
 			memdelete(BusController::get_singleton());
 		}
-		Engine::get_singleton()->remove_singleton("RTPCEngine");
 		if (RTPCEngine::get_singleton()) {
+			Engine::get_singleton()->remove_singleton("RTPCEngine");
 			memdelete(RTPCEngine::get_singleton());
 		}
-		Engine::get_singleton()->remove_singleton("SymphonyEventDispatcher");
 		if (SymphonyEventDispatcher::get_singleton()) {
+			Engine::get_singleton()->remove_singleton("SymphonyEventDispatcher");
 			memdelete(SymphonyEventDispatcher::get_singleton());
 		}
-		Engine::get_singleton()->remove_singleton("SymphonyVoicePool");
 		if (SymphonyVoicePool::get_singleton()) {
+			Engine::get_singleton()->remove_singleton("SymphonyVoicePool");
 			memdelete(SymphonyVoicePool::get_singleton());
 		}
-		Engine::get_singleton()->remove_singleton("SymphonyVoiceManager");
 		if (SymphonyVoiceManager::get_singleton()) {
+			Engine::get_singleton()->remove_singleton("SymphonyVoiceManager");
 			memdelete(SymphonyVoiceManager::get_singleton());
 		}
 		OperatorRegistry::destroy_singleton();

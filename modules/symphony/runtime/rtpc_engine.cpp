@@ -47,9 +47,10 @@ void RTPCEngine::smooth_all(int p_num_frames) {
 		if (!param.active) {
 			continue;
 		}
-		float diff = param.target_value - param.current_value;
+		float target = param.target_value.load(std::memory_order_relaxed);
+		float diff = target - param.current_value;
 		if (Math::abs(diff) < 1e-7f) {
-			param.current_value = param.target_value;
+			param.current_value = target;
 		} else {
 			// Apply smoothing: advance by coeff per micro-block worth of samples
 			// coeff is computed for one micro-block advance
@@ -70,7 +71,7 @@ void RTPCEngine::register_parameter(const StringName &p_name, float p_default_va
 	int idx = global_param_count++;
 	global_params[idx].name = p_name;
 	global_params[idx].current_value = p_default_value;
-	global_params[idx].target_value = p_default_value;
+	global_params[idx].target_value.store(p_default_value, std::memory_order_relaxed);
 	global_params[idx].smooth_coeff = _compute_coeff(p_smooth_time_ms);
 	global_params[idx].active = true;
 	global_param_index[p_name] = idx;
@@ -79,7 +80,7 @@ void RTPCEngine::register_parameter(const StringName &p_name, float p_default_va
 void RTPCEngine::set_target(const StringName &p_name, float p_value) {
 	int *idx_ptr = global_param_index.getptr(p_name);
 	if (idx_ptr) {
-		global_params[*idx_ptr].target_value = p_value;
+		global_params[*idx_ptr].target_value.store(p_value, std::memory_order_relaxed);
 	} else {
 		// Auto-register on first use with default smoothing
 		register_parameter(p_name, p_value, default_smooth_time_ms);
@@ -101,7 +102,7 @@ float RTPCEngine::get_current_value(const StringName &p_name) const {
 float RTPCEngine::get_target_value(const StringName &p_name) const {
 	const int *idx_ptr = global_param_index.getptr(p_name);
 	if (idx_ptr) {
-		return global_params[*idx_ptr].target_value;
+		return global_params[*idx_ptr].target_value.load(std::memory_order_relaxed);
 	}
 	return 0.0f;
 }

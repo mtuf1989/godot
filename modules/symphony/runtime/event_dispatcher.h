@@ -2,6 +2,7 @@
 
 #include "core/object/object.h"
 #include "core/object/class_db.h"
+#include "core/math/random_pcg.h"
 #include "sound_event.h"
 
 class SymphonyVoicePool;
@@ -34,6 +35,9 @@ private:
 
 	// Shuffle state: event resource ID → shuffled index order
 	HashMap<uint64_t, Vector<int>> shuffle_orders;
+
+	// Thread-safe random number generator (not relying on global rand())
+	RandomPCG rng;
 
 protected:
 	static void _bind_methods();

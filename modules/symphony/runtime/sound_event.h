@@ -27,6 +27,7 @@ private:
 	float cooldown_ms = 0.0;
 	Category category = CATEGORY_SFX;
 	StringName bus_override;
+	float importance_weight = 1.0f; // Base importance multiplier for voice stealing/virtualization
 	SpatialMode spatial_mode = SPATIAL_NON_POSITIONAL;
 	AttenuationModel attenuation_model = ATTENUATION_LINEAR;
 	Ref<Curve> attenuation_curve; // Used only when attenuation_model == ATTENUATION_CUSTOM
@@ -71,6 +72,9 @@ public:
 
 	void set_bus_override(const StringName &p_bus) { bus_override = p_bus; }
 	StringName get_bus_override() const { return bus_override; }
+
+	void set_importance_weight(float p_weight) { importance_weight = p_weight; }
+	float get_importance_weight() const { return importance_weight; }
 
 	void set_spatial_mode(SpatialMode p_mode) { spatial_mode = p_mode; }
 	SpatialMode get_spatial_mode() const { return spatial_mode; }

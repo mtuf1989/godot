@@ -22,6 +22,8 @@ void SoundEvent::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_category"), &SoundEvent::get_category);
 	ClassDB::bind_method(D_METHOD("set_bus_override", "bus"), &SoundEvent::set_bus_override);
 	ClassDB::bind_method(D_METHOD("get_bus_override"), &SoundEvent::get_bus_override);
+	ClassDB::bind_method(D_METHOD("set_importance_weight", "weight"), &SoundEvent::set_importance_weight);
+	ClassDB::bind_method(D_METHOD("get_importance_weight"), &SoundEvent::get_importance_weight);
 	ClassDB::bind_method(D_METHOD("set_spatial_mode", "mode"), &SoundEvent::set_spatial_mode);
 	ClassDB::bind_method(D_METHOD("get_spatial_mode"), &SoundEvent::get_spatial_mode);
 	ClassDB::bind_method(D_METHOD("set_attenuation_model", "model"), &SoundEvent::set_attenuation_model);
@@ -58,6 +60,7 @@ void SoundEvent::_bind_methods() {
 	ADD_GROUP("Routing", "");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "category", PROPERTY_HINT_ENUM, "SFX,Music,UI,Ambient,Voice"), "set_category", "get_category");
 	ADD_PROPERTY(PropertyInfo(Variant::STRING_NAME, "bus_override"), "set_bus_override", "get_bus_override");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "importance_weight", PROPERTY_HINT_RANGE, "0.0,10.0,0.1"), "set_importance_weight", "get_importance_weight");
 
 	ADD_GROUP("Spatial", "");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "spatial_mode", PROPERTY_HINT_ENUM, "Non-Positional,2D,3D"), "set_spatial_mode", "get_spatial_mode");
