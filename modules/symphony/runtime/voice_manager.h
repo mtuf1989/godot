@@ -3,6 +3,8 @@
 #include "core/object/object.h"
 #include "core/object/class_db.h"
 #include "core/config/project_settings.h"
+#include "core/variant/dictionary.h"
+#include "core/variant/array.h"
 #include "scene/resources/curve.h"
 #include <atomic>
 
@@ -17,6 +19,26 @@ class SymphonyVoicePool : public Object {
 public:
 	static constexpr int ANTI_CLICK_SAMPLES = 64;
 	static constexpr int MAX_LOCAL_PARAMS = 8;
+	static constexpr int EVENT_LOG_SIZE = 64;
+
+	enum EventResult {
+		EVENT_PLAYED = 0,
+		EVENT_STOLEN,
+		EVENT_REJECTED_COOLDOWN,
+		EVENT_REJECTED_VOICE_LIMIT,
+		EVENT_REJECTED_NO_STREAMS,
+		EVENT_VIRTUALIZED,
+		EVENT_DEVIRTUALIZED,
+	};
+
+	struct AudioEventLog {
+		int64_t timestamp_usec = 0;
+		StringName event_name;
+		EventResult result = EVENT_PLAYED;
+		int voice_slot = -1;
+		float importance = 0.0f;
+		StringName steal_reason; // e.g. "lowest_importance", "cooldown", "voice_limit"
+	};
 
 	enum VoiceState {
 		VOICE_FREE = 0,
@@ -69,6 +91,13 @@ private:
 	int pool_size = 48;
 	std::atomic<VoiceMetrics> metrics;
 	int stolen_this_frame = 0;
+
+	// Event log ring buffer (written on main thread, read on main thread — no thread safety issue)
+	AudioEventLog event_log[EVENT_LOG_SIZE];
+	int event_log_write_index = 0;
+	int event_log_count = 0; // Total events written (saturates at EVENT_LOG_SIZE for read logic)
+
+	void _log_event(const StringName &p_event_name, EventResult p_result, int p_slot, float p_importance, const StringName &p_steal_reason = StringName());
 
 	// Per-slot attenuation curves (separate from VoiceSlot for cache reasons)
 	Ref<Curve> *slot_attenuation_curves = nullptr;
@@ -130,6 +159,14 @@ public:
 	void set_slot_attenuation_curve(int p_slot, const Ref<Curve> &p_curve);
 	Ref<Curve> get_slot_attenuation_curve(int p_slot) const;
 
+	// Event Log API
+	void log_event(const StringName &p_event_name, EventResult p_result, int p_slot, float p_importance, const StringName &p_steal_reason = StringName());
+	Array get_recent_events(int p_count = 20) const;
+	int get_event_log_count() const { return event_log_count; }
+
+	// Per-category voice counts (for Performance monitors)
+	Dictionary get_category_voice_counts() const;
+
 	void process_frame();
 
 	SymphonyVoicePool();
@@ -137,3 +174,4 @@ public:
 };
 
 VARIANT_ENUM_CAST(SymphonyVoicePool::VoiceState);
+VARIANT_ENUM_CAST(SymphonyVoicePool::EventResult);

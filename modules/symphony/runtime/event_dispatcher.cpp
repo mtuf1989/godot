@@ -159,5 +159,49 @@ Dictionary SymphonyEventDispatcher::play_event(const Ref<SoundEvent> &p_event) {
 	result["slot"] = slot;
 	result["result"] = (int)pr;
 	result["stream_index"] = stream_index;
+
+	// Log the event to the ring buffer
+	SymphonyVoicePool *pool = SymphonyVoicePool::get_singleton();
+	if (pool) {
+		StringName event_name;
+		if (p_event.is_valid()) {
+			String path = p_event->get_path().get_file();
+			if (!path.is_empty()) {
+				event_name = StringName(path);
+			} else {
+				event_name = p_event->get_name();
+			}
+		}
+		float importance = (slot >= 0 && pool->get_slot(slot)) ? pool->get_slot(slot)->importance : 0.0f;
+
+		SymphonyVoicePool::EventResult log_result;
+		StringName reason;
+		switch (pr) {
+			case RESULT_PLAYED:
+				log_result = SymphonyVoicePool::EVENT_PLAYED;
+				break;
+			case RESULT_STOLEN:
+				log_result = SymphonyVoicePool::EVENT_STOLEN;
+				reason = StringName("lowest_importance");
+				break;
+			case RESULT_REJECTED_COOLDOWN:
+				log_result = SymphonyVoicePool::EVENT_REJECTED_COOLDOWN;
+				reason = StringName("cooldown");
+				break;
+			case RESULT_REJECTED_VOICE_LIMIT:
+				log_result = SymphonyVoicePool::EVENT_REJECTED_VOICE_LIMIT;
+				reason = StringName("voice_limit");
+				break;
+			case RESULT_REJECTED_NO_STREAMS:
+				log_result = SymphonyVoicePool::EVENT_REJECTED_NO_STREAMS;
+				reason = StringName("no_streams");
+				break;
+			default:
+				log_result = SymphonyVoicePool::EVENT_PLAYED;
+				break;
+		}
+		pool->log_event(event_name, log_result, slot, importance, reason);
+	}
+
 	return result;
 }

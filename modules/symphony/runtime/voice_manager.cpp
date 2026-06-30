@@ -2,6 +2,8 @@
 #include "core/object/class_db.h"
 #include "core/os/os.h"
 #include "core/math/math_funcs.h"
+#include "core/variant/dictionary.h"
+#include "core/variant/array.h"
 
 #include <cfloat>
 
@@ -74,6 +76,20 @@ void SymphonyVoicePool::_bind_methods() {
 	BIND_ENUM_CONSTANT(VOICE_DEVIRTUALIZING);
 	BIND_ENUM_CONSTANT(VOICE_STOPPING);
 	BIND_ENUM_CONSTANT(VOICE_STOPPED);
+
+	// Event log
+	ClassDB::bind_method(D_METHOD("log_event", "event_name", "result", "slot", "importance", "steal_reason"), &SymphonyVoicePool::log_event, DEFVAL(StringName()));
+	ClassDB::bind_method(D_METHOD("get_recent_events", "count"), &SymphonyVoicePool::get_recent_events, DEFVAL(20));
+	ClassDB::bind_method(D_METHOD("get_event_log_count"), &SymphonyVoicePool::get_event_log_count);
+	ClassDB::bind_method(D_METHOD("get_category_voice_counts"), &SymphonyVoicePool::get_category_voice_counts);
+
+	BIND_ENUM_CONSTANT(EVENT_PLAYED);
+	BIND_ENUM_CONSTANT(EVENT_STOLEN);
+	BIND_ENUM_CONSTANT(EVENT_REJECTED_COOLDOWN);
+	BIND_ENUM_CONSTANT(EVENT_REJECTED_VOICE_LIMIT);
+	BIND_ENUM_CONSTANT(EVENT_REJECTED_NO_STREAMS);
+	BIND_ENUM_CONSTANT(EVENT_VIRTUALIZED);
+	BIND_ENUM_CONSTANT(EVENT_DEVIRTUALIZED);
 }
 
 int SymphonyVoicePool::acquire_slot(int p_priority) {
@@ -133,6 +149,8 @@ int SymphonyVoicePool::steal_lowest_importance() {
 	}
 
 	if (worst_idx >= 0) {
+		// Log the steal event with the victim's info
+		_log_event(StringName(), EVENT_STOLEN, worst_idx, worst_importance, StringName("lowest_importance"));
 		slots[worst_idx].state = VOICE_FREE;
 		stolen_this_frame++;
 	}
@@ -384,17 +402,106 @@ void SymphonyVoicePool::_update_importance_batch(int p_start, int p_count) {
 		// Auto-virtualize if beyond max_distance and virtualize_when_inaudible is set
 		if (distance >= max_dist && slots[i].virtualize_when_inaudible) {
 			if (slots[i].state == VOICE_PLAYING) {
+				_log_event(StringName(), EVENT_VIRTUALIZED, i, slots[i].importance, StringName("distance_exceeded"));
 				slots[i].state = VOICE_VIRTUALIZING;
 				slots[i].fade_progress = 1.0f;
 				slots[i].fade_speed = 1.0f / ANTI_CLICK_SAMPLES;
 			}
 		} else if (slots[i].state == VOICE_VIRTUAL && distance < max_dist * 0.95f) {
 			// Devirtualize when listener comes back within 95% of max_distance (hysteresis)
+			_log_event(StringName(), EVENT_DEVIRTUALIZED, i, slots[i].importance, StringName("listener_returned"));
 			slots[i].state = VOICE_DEVIRTUALIZING;
 			slots[i].fade_progress = 0.0f;
 			slots[i].fade_speed = 1.0f / ANTI_CLICK_SAMPLES;
 		}
 	}
+}
+
+// --- Per-Category Voice Counts ---
+
+Dictionary SymphonyVoicePool::get_category_voice_counts() const {
+	int counts[5] = {0, 0, 0, 0, 0}; // SFX, Music, UI, Ambient, Voice
+	for (int i = 0; i < pool_size; i++) {
+		if (slots[i].state == VOICE_PLAYING || slots[i].state == VOICE_TO_PLAY ||
+				slots[i].state == VOICE_VIRTUALIZING || slots[i].state == VOICE_DEVIRTUALIZING) {
+			int cat = CLAMP(slots[i].category, 0, 4);
+			counts[cat]++;
+		}
+	}
+	Dictionary d;
+	d["sfx"] = counts[0];
+	d["music"] = counts[1];
+	d["ui"] = counts[2];
+	d["ambient"] = counts[3];
+	d["voice"] = counts[4];
+	return d;
+}
+
+// --- Event Log ---
+
+void SymphonyVoicePool::_log_event(const StringName &p_event_name, EventResult p_result, int p_slot, float p_importance, const StringName &p_steal_reason) {
+	AudioEventLog &entry = event_log[event_log_write_index];
+	entry.timestamp_usec = OS::get_singleton()->get_ticks_usec();
+	entry.event_name = p_event_name;
+	entry.result = p_result;
+	entry.voice_slot = p_slot;
+	entry.importance = p_importance;
+	entry.steal_reason = p_steal_reason;
+
+	event_log_write_index = (event_log_write_index + 1) % EVENT_LOG_SIZE;
+	if (event_log_count < EVENT_LOG_SIZE) {
+		event_log_count++;
+	}
+}
+
+void SymphonyVoicePool::log_event(const StringName &p_event_name, EventResult p_result, int p_slot, float p_importance, const StringName &p_steal_reason) {
+	_log_event(p_event_name, p_result, p_slot, p_importance, p_steal_reason);
+}
+
+Array SymphonyVoicePool::get_recent_events(int p_count) const {
+	Array result;
+	int count = MIN(p_count, event_log_count);
+	if (count <= 0) {
+		return result;
+	}
+
+	// Read from most recent backwards
+	int read_index = event_log_write_index - 1;
+	if (read_index < 0) {
+		read_index = EVENT_LOG_SIZE - 1;
+	}
+
+	for (int i = 0; i < count; i++) {
+		const AudioEventLog &entry = event_log[read_index];
+
+		Dictionary d;
+		d["timestamp_usec"] = entry.timestamp_usec;
+		d["event_name"] = entry.event_name;
+		d["result"] = (int)entry.result;
+		d["voice_slot"] = entry.voice_slot;
+		d["importance"] = entry.importance;
+		d["steal_reason"] = entry.steal_reason;
+
+		// Human-readable result string for debug overlay
+		switch (entry.result) {
+			case EVENT_PLAYED: d["result_text"] = "Played"; break;
+			case EVENT_STOLEN: d["result_text"] = "Stolen"; break;
+			case EVENT_REJECTED_COOLDOWN: d["result_text"] = "Rejected: cooldown"; break;
+			case EVENT_REJECTED_VOICE_LIMIT: d["result_text"] = "Rejected: voice limit"; break;
+			case EVENT_REJECTED_NO_STREAMS: d["result_text"] = "Rejected: no streams"; break;
+			case EVENT_VIRTUALIZED: d["result_text"] = "Virtualized"; break;
+			case EVENT_DEVIRTUALIZED: d["result_text"] = "Devirtualized"; break;
+		}
+
+		result.append(d);
+
+		read_index--;
+		if (read_index < 0) {
+			read_index = EVENT_LOG_SIZE - 1;
+		}
+	}
+
+	return result;
 }
 
 void SymphonyVoicePool::process_frame() {

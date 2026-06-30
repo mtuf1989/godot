@@ -345,3 +345,42 @@ The test runner crashes in `embree::TaskScheduler::removeScheduler` during shutd
 
 **8. Race condition with raw pointers across lock boundaries.**
 When collecting "victim" pointers inside a lock and then using them outside the lock, another thread can invalidate them. Always use `ObjectID` + `ObjectDB::get_instance()` validation pattern for deferred operations on Godot objects.
+
+---
+
+## 2026-06-30 — G6 Profiling & Debug Tools
+
+### Completed
+
+| Task | Status | Files |
+|------|--------|-------|
+| G6.3 — Event Log Ring Buffer (C++) | ✅ Done | `runtime/voice_manager.h/.cpp`, `runtime/event_dispatcher.cpp` |
+| G6.1 — Enhanced Performance Monitors | ✅ Done | `addons/symphony_audio/audio_manager.gd` |
+| G6.2 — Debug Overlay (CanvasLayer) | ✅ Done | `addons/symphony_audio/debug/audio_debug_overlay.gd/.tscn` |
+| G6.4 — Automated Test Suite (20 tests) | ✅ Done | `test/audio/test_sound_event.gd`, `test_voice_manager.gd`, `test_systems.gd` |
+
+### Architecture Decisions
+
+1. **Event log is main-thread-only ring buffer**: Since both writes (from EventDispatcher.play_event and VoiceManager state transitions) and reads (from debug overlay / GDScript monitors) happen on the main thread, no lock-free mechanism is needed. Simple circular buffer of 64 entries.
+
+2. **EventResult enum on VoicePool**: Added 7-value enum (PLAYED, STOLEN, REJECTED_COOLDOWN, REJECTED_VOICE_LIMIT, REJECTED_NO_STREAMS, VIRTUALIZED, DEVIRTUALIZED) with VARIANT_ENUM_CAST for GDScript access.
+
+3. **Rate-per-second monitors from ring buffer**: Instead of maintaining separate atomic counters, the GDScript monitors scan the ring buffer every 1 second and count events with timestamps within the last second. Simple and accurate.
+
+4. **Per-category voice counts via C++ Dictionary return**: `get_category_voice_counts()` iterates the pool once and returns {sfx, music, ui, ambient, voice} counts. Called by each monitor callback — slight redundancy but negligible cost at 1Hz sampling.
+
+5. **Debug overlay programmatic UI**: All UI built in `_ready()` — no complex .tscn scene tree. CanvasLayer at layer 128. F10 toggle via dynamically registered InputAction. Updates every 4 frames. Semi-transparent dark background. Monospace SystemFont.
+
+6. **Test suite strategy**: 3 test files organized by component. Tests use C++ singletons directly (not AudioManager autoload) for headless compatibility. `after_test()` cleanup releases all acquired voice slots. Tests account for staggered importance updates (call update_importance() 8 times to cover all pool batches).
+
+### Gotchas / Notes for Future Sessions
+
+1. **process_frame() must be called for state transitions**: `acquire_slot()` puts voice in TO_PLAY state. Must call `process_frame()` once to transition to PLAYING before testing virtualization or importance.
+
+2. **Staggered importance updates**: Only 1/4 of the pool is updated per `update_importance()` call. Tests must call it at least 4 times (or 8 for safety) to guarantee a specific slot was processed.
+
+3. **EventDispatcher uses instance_id for cooldown/voice tracking**: Each `SoundEvent.new()` in tests gets a unique instance_id, so cooldown between different test events never interferes.
+
+4. **`get_path().get_file()` returns empty for unsaved Resources**: Event names in the log will be empty for programmatically-created SoundEvents. Only .tres resources loaded from disk will have meaningful path-based names.
+
+5. **Debug overlay auto-frees in release builds**: The `OS.is_debug_build()` guard in `_ready()` calls `queue_free()` immediately. AudioManager's instantiation of the overlay scene is also guarded. Zero overhead in release.
