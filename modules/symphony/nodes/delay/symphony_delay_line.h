@@ -9,9 +9,9 @@
 // Arena-allocated buffer. Supports modulated delay time (chorus/flanger).
 class SymphonyDelayLine : public SymphonyOperator {
 private:
-	const float *__restrict__ audio_in = nullptr;
-	const float *__restrict__ delay_input = nullptr; // Float: delay time in ms
-	float *__restrict__ audio_out = nullptr;
+	const float *SYMPHONY_RESTRICT audio_in = nullptr;
+	const float *SYMPHONY_RESTRICT delay_input = nullptr; // Float: delay time in ms
+	float *SYMPHONY_RESTRICT audio_out = nullptr;
 
 	float *buffer = nullptr;
 	int32_t buffer_size = 0; // in samples

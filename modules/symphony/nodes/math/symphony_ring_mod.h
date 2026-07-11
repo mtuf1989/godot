@@ -8,9 +8,9 @@
 // Creates sum and difference frequencies for metallic/inharmonic tones.
 class SymphonyRingMod : public SymphonyOperator {
 private:
-	const float *__restrict__ input_a = nullptr;
-	const float *__restrict__ input_b = nullptr;
-	float *__restrict__ audio_out = nullptr;
+	const float *SYMPHONY_RESTRICT input_a = nullptr;
+	const float *SYMPHONY_RESTRICT input_b = nullptr;
+	float *SYMPHONY_RESTRICT audio_out = nullptr;
 
 public:
 	SymphonyRingMod() {}

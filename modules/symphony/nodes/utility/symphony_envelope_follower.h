@@ -10,10 +10,10 @@
 // Outputs a single Float value per micro-block (the tracked envelope level).
 class SymphonyEnvelopeFollower : public SymphonyOperator {
 private:
-	const float *__restrict__ audio_in = nullptr;
-	const float *__restrict__ attack_input = nullptr;
-	const float *__restrict__ release_input = nullptr;
-	float *__restrict__ envelope_out = nullptr; // Single float output (FLOAT pin)
+	const float *SYMPHONY_RESTRICT audio_in = nullptr;
+	const float *SYMPHONY_RESTRICT attack_input = nullptr;
+	const float *SYMPHONY_RESTRICT release_input = nullptr;
+	float *SYMPHONY_RESTRICT envelope_out = nullptr; // Single float output (FLOAT pin)
 
 	float envelope = 0.0f; // Current envelope state
 	float mix_rate = 44100.0f;

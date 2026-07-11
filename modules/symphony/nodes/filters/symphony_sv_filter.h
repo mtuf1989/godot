@@ -9,12 +9,12 @@
 // More stable than BiquadFilter under rapid cutoff modulation.
 class SymphonySVFilter : public SymphonyOperator {
 private:
-	const float *__restrict__ audio_in = nullptr;
-	const float *__restrict__ cutoff_input = nullptr;
-	const float *__restrict__ reso_input = nullptr;
-	float *__restrict__ lp_out = nullptr;
-	float *__restrict__ hp_out = nullptr;
-	float *__restrict__ bp_out = nullptr;
+	const float *SYMPHONY_RESTRICT audio_in = nullptr;
+	const float *SYMPHONY_RESTRICT cutoff_input = nullptr;
+	const float *SYMPHONY_RESTRICT reso_input = nullptr;
+	float *SYMPHONY_RESTRICT lp_out = nullptr;
+	float *SYMPHONY_RESTRICT hp_out = nullptr;
+	float *SYMPHONY_RESTRICT bp_out = nullptr;
 
 	float lp = 0.0f; // low-pass state
 	float bp = 0.0f; // band-pass state

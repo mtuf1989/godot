@@ -7,8 +7,8 @@
 // Multiplies input audio by a gain value. Output: audio.
 class SymphonyGain : public SymphonyOperator {
 private:
-	const float *__restrict__ input = nullptr;
-	float *__restrict__ output = nullptr;
+	const float *SYMPHONY_RESTRICT input = nullptr;
+	float *SYMPHONY_RESTRICT output = nullptr;
 	float gain = 0.5f;
 
 public:

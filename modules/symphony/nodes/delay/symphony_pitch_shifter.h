@@ -19,9 +19,9 @@
 // Design spec: latency < 50ms (buffer = 2048 samples at 48kHz ≈ 42ms).
 class SymphonyPitchShifter : public SymphonyOperator {
 private:
-	const float *__restrict__ audio_in = nullptr;
-	const float *__restrict__ shift_input = nullptr; // Float: semitones
-	float *__restrict__ audio_out = nullptr;
+	const float *SYMPHONY_RESTRICT audio_in = nullptr;
+	const float *SYMPHONY_RESTRICT shift_input = nullptr; // Float: semitones
+	float *SYMPHONY_RESTRICT audio_out = nullptr;
 
 	float *buffer = nullptr;
 	int32_t buffer_size = 0;

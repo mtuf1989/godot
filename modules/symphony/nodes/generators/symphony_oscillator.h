@@ -9,8 +9,8 @@
 // Waveforms: Sine(0), Saw(1), Square(2), Triangle(3)
 class SymphonyOscillator : public SymphonyOperator {
 private:
-	const float *__restrict__ freq_input = nullptr;
-	float *__restrict__ output = nullptr;
+	const float *SYMPHONY_RESTRICT freq_input = nullptr;
+	float *SYMPHONY_RESTRICT output = nullptr;
 	float phase = 0.0f;
 	float mix_rate = 44100.0f;
 	float default_freq = 440.0f;

@@ -25,8 +25,8 @@ class SymphonyModalBank : public SymphonyOperator {
 private:
 	static constexpr int32_t MAX_MODES_LIMIT = 64; // Hard cap for arena allocation
 
-	const float *__restrict__ excitation = nullptr;
-	float *__restrict__ audio_out = nullptr;
+	const float *SYMPHONY_RESTRICT excitation = nullptr;
+	float *SYMPHONY_RESTRICT audio_out = nullptr;
 
 	// Per-mode biquad state (y[n-1], y[n-2])
 	float *state_y1 = nullptr; // [max_modes]

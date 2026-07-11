@@ -7,9 +7,9 @@
 // Adds two audio-rate signals sample-by-sample.
 class SymphonyMathAdd : public SymphonyOperator {
 private:
-	const float *__restrict__ input_a = nullptr;
-	const float *__restrict__ input_b = nullptr;
-	float *__restrict__ output = nullptr;
+	const float *SYMPHONY_RESTRICT input_a = nullptr;
+	const float *SYMPHONY_RESTRICT input_b = nullptr;
+	float *SYMPHONY_RESTRICT output = nullptr;
 
 public:
 	SymphonyMathAdd() {}

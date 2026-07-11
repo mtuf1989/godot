@@ -38,7 +38,7 @@ public:
 		} else {
 			for (int32_t i = 0; i < p_num_frames; i++) {
 				// Voss-McCartney: update one row per sample based on trailing zeros
-				int32_t changed = __builtin_ctz(pink_index + 1) & 7;
+				int32_t changed = symphony_ctz(pink_index + 1) & 7;
 				pink_running_sum -= pink_rows[changed];
 				pink_rows[changed] = white_sample();
 				pink_running_sum += pink_rows[changed];

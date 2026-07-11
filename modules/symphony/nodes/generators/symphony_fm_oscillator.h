@@ -19,11 +19,11 @@
 // instead of the internal sine oscillator.
 class SymphonyFMOscillator : public SymphonyOperator {
 private:
-	const float *__restrict__ carrier_freq_input = nullptr;
-	const float *__restrict__ mod_freq_input = nullptr;
-	const float *__restrict__ mod_index_input = nullptr;
-	const float *__restrict__ mod_input = nullptr; // External audio modulator
-	float *__restrict__ audio_out = nullptr;
+	const float *SYMPHONY_RESTRICT carrier_freq_input = nullptr;
+	const float *SYMPHONY_RESTRICT mod_freq_input = nullptr;
+	const float *SYMPHONY_RESTRICT mod_index_input = nullptr;
+	const float *SYMPHONY_RESTRICT mod_input = nullptr; // External audio modulator
+	float *SYMPHONY_RESTRICT audio_out = nullptr;
 
 	float carrier_phase = 0.0f;
 	float mod_phase = 0.0f;

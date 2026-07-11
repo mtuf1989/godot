@@ -37,12 +37,12 @@ private:
 	static constexpr float DELAY_RATIOS_4[4] = { 1.0f, 1.2599f, 1.4983f, 1.8409f };
 	static constexpr float DELAY_RATIOS_8[8] = { 1.0f, 1.1225f, 1.2599f, 1.4142f, 1.4983f, 1.6818f, 1.8409f, 1.9953f };
 
-	const float *__restrict__ audio_in = nullptr;
-	const float *__restrict__ room_size_input = nullptr;
-	const float *__restrict__ decay_time_input = nullptr;
-	const float *__restrict__ damping_input = nullptr;
-	const float *__restrict__ pre_delay_input = nullptr;
-	float *__restrict__ audio_out = nullptr;
+	const float *SYMPHONY_RESTRICT audio_in = nullptr;
+	const float *SYMPHONY_RESTRICT room_size_input = nullptr;
+	const float *SYMPHONY_RESTRICT decay_time_input = nullptr;
+	const float *SYMPHONY_RESTRICT damping_input = nullptr;
+	const float *SYMPHONY_RESTRICT pre_delay_input = nullptr;
+	float *SYMPHONY_RESTRICT audio_out = nullptr;
 
 	// Delay line state
 	float *delay_buffers[MAX_LINES] = {};

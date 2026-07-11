@@ -9,10 +9,10 @@
 // mix=0 → pure A, mix=1 → pure B, mix=0.5 → no volume dip.
 class SymphonyCrossFade : public SymphonyOperator {
 private:
-	const float *__restrict__ input_a = nullptr;
-	const float *__restrict__ input_b = nullptr;
-	const float *__restrict__ mix_input = nullptr;
-	float *__restrict__ audio_out = nullptr;
+	const float *SYMPHONY_RESTRICT input_a = nullptr;
+	const float *SYMPHONY_RESTRICT input_b = nullptr;
+	const float *SYMPHONY_RESTRICT mix_input = nullptr;
+	float *SYMPHONY_RESTRICT audio_out = nullptr;
 	float default_mix = 0.5f;
 
 public:

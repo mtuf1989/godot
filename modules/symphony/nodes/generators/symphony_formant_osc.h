@@ -35,10 +35,10 @@
 //
 class SymphonyFormantOsc : public SymphonyOperator {
 private:
-	const float *__restrict__ fundamental_freq_input = nullptr;
-	const float *__restrict__ formant_freq_input = nullptr;
-	const float *__restrict__ bandwidth_input = nullptr;
-	float *__restrict__ audio_out = nullptr;
+	const float *SYMPHONY_RESTRICT fundamental_freq_input = nullptr;
+	const float *SYMPHONY_RESTRICT formant_freq_input = nullptr;
+	const float *SYMPHONY_RESTRICT bandwidth_input = nullptr;
+	float *SYMPHONY_RESTRICT audio_out = nullptr;
 
 	float carrier_phase = 0.0f; // Phase of the fundamental (0-1), resets each period
 	float mix_rate = 48000.0f;

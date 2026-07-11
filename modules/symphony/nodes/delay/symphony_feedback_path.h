@@ -11,8 +11,8 @@
 // This introduces exactly 1 micro-block of latency in the feedback loop.
 class SymphonyFeedbackPath : public SymphonyOperator {
 private:
-	const float *__restrict__ audio_in = nullptr;
-	float *__restrict__ audio_out = nullptr;
+	const float *SYMPHONY_RESTRICT audio_in = nullptr;
+	float *SYMPHONY_RESTRICT audio_out = nullptr;
 
 	float *prev_block = nullptr; // Arena-allocated buffer for previous block
 

@@ -10,9 +10,9 @@
 // Operates at control rate (once per micro-block), not per sample.
 class SymphonyParameterSmoother : public SymphonyOperator {
 private:
-	const float *__restrict__ value_input = nullptr;
-	const float *__restrict__ time_input = nullptr; // optional smooth_time_ms override
-	float *__restrict__ smoothed_output = nullptr;
+	const float *SYMPHONY_RESTRICT value_input = nullptr;
+	const float *SYMPHONY_RESTRICT time_input = nullptr; // optional smooth_time_ms override
+	float *SYMPHONY_RESTRICT smoothed_output = nullptr;
 
 	float smoothed = 0.0f;
 	float default_smooth_ms = 5.0f;

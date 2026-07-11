@@ -10,9 +10,9 @@
 // Cutoff input is Audio-rate (can be modulated), but coefficients recalculated per micro-block.
 class SymphonyBiquadFilter : public SymphonyOperator {
 private:
-	const float *__restrict__ input = nullptr;
-	const float *__restrict__ cutoff_input = nullptr; // Audio-rate cutoff (uses first sample of block)
-	float *__restrict__ output = nullptr;
+	const float *SYMPHONY_RESTRICT input = nullptr;
+	const float *SYMPHONY_RESTRICT cutoff_input = nullptr; // Audio-rate cutoff (uses first sample of block)
+	float *SYMPHONY_RESTRICT output = nullptr;
 
 	int32_t mode = 0;
 	float cutoff = 1000.0f;

@@ -36,6 +36,7 @@ env_pffft.add_source_files(env.modules_sources, "thirdparty/pffft/fftpack.c")
 
 # Make pffft headers available to symphony sources
 env_symphony.Append(CPPPATH=["thirdparty/pffft"])
+env_symphony.Append(CPPDEFINES=["PFFFT_STATIC_DEFINE"])
 
 # --- Symphony module sources ---
 env_symphony.add_source_files(env.modules_sources, "*.cpp")

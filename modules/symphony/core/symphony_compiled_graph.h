@@ -37,7 +37,7 @@ struct CompiledGraph {
 		// Fill promotion buffers (Float→Audio).
 		for (int32_t i = 0; i < promotion_count; i++) {
 			float val = promotions[i].src[0];
-			float *__restrict__ dst = promotions[i].dst;
+			float *SYMPHONY_RESTRICT dst = promotions[i].dst;
 			for (int32_t s = 0; s < p_num_frames; s++) {
 				dst[s] = val;
 			}

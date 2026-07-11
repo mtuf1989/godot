@@ -2,6 +2,33 @@
 
 #include <cstdint>
 
+// === Cross-platform compiler intrinsics ===
+
+// Restrict qualifier: tells the compiler pointers don't alias.
+// MSVC uses __restrict, GCC/Clang use __restrict__.
+#if defined(_MSC_VER)
+#define SYMPHONY_RESTRICT __restrict
+#else
+#define SYMPHONY_RESTRICT __restrict__
+#endif
+
+// Count trailing zeros (used in Voss-McCartney pink noise).
+// MSVC doesn't have __builtin_ctz; use _BitScanForward instead.
+#if defined(_MSC_VER)
+#include <intrin.h>
+static inline int32_t symphony_ctz(uint32_t value) {
+	unsigned long index;
+	if (_BitScanForward(&index, value)) {
+		return (int32_t)index;
+	}
+	return 32; // undefined for 0 in __builtin_ctz too, but safe fallback
+}
+#else
+static inline int32_t symphony_ctz(uint32_t value) {
+	return __builtin_ctz(value);
+}
+#endif
+
 // Internal micro-block size: configurable per platform.
 // Web (128-sample AudioWorklet buffer): 32 samples = 4 iterations for finer trigger resolution.
 // Native (512-sample driver buffer): 64 samples = 8 iterations, better throughput.

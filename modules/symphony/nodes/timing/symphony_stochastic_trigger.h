@@ -9,8 +9,8 @@
 // controlled by density (events/sec). Essential for rain, fire crackle, insects.
 class SymphonyStochasticTrigger : public SymphonyOperator {
 private:
-	const float *__restrict__ density_input = nullptr;
-	TriggerBuffer *__restrict__ trigger_out = nullptr;
+	const float *SYMPHONY_RESTRICT density_input = nullptr;
+	TriggerBuffer *SYMPHONY_RESTRICT trigger_out = nullptr;
 
 	float mix_rate = 44100.0f;
 	float default_density = 5.0f;

@@ -24,10 +24,10 @@
 class SymphonyPhaseVocoder : public SymphonyOperator {
 private:
 	// --- Pin pointers (bound by compiler) ---
-	const float *__restrict__ audio_in = nullptr;
-	const float *__restrict__ time_stretch_input = nullptr;
-	const float *__restrict__ pitch_shift_input = nullptr;
-	float *__restrict__ audio_out = nullptr;
+	const float *SYMPHONY_RESTRICT audio_in = nullptr;
+	const float *SYMPHONY_RESTRICT time_stretch_input = nullptr;
+	const float *SYMPHONY_RESTRICT pitch_shift_input = nullptr;
+	float *SYMPHONY_RESTRICT audio_out = nullptr;
 
 	// --- FFT setup (heap-allocated, see note above) ---
 	PFFFT_Setup *pffft_setup = nullptr;

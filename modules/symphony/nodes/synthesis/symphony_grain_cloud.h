@@ -47,15 +47,15 @@ private:
 		float amplitude = 1.0f;       // Per-grain amplitude (S4.3)
 	};
 
-	const float *__restrict__ audio_in = nullptr;
-	const float *__restrict__ grain_size_input = nullptr;    // Float: ms
-	const float *__restrict__ density_input = nullptr;       // Float: grains/sec
-	const float *__restrict__ position_input = nullptr;      // Float: 0-1 buffer position
-	const float *__restrict__ pitch_rand_input = nullptr;    // Float: 0-0.5 semitone deviation
-	const float *__restrict__ scan_speed_input = nullptr;    // Float: 0-4 scan speed (S4.3)
-	const float *__restrict__ amp_rand_input = nullptr;      // Float: 0-6 dB variation (S4.3)
-	const float *__restrict__ pitch_tracking_input = nullptr; // Float: 0-1 pitch following (S4.3)
-	float *__restrict__ audio_out = nullptr;
+	const float *SYMPHONY_RESTRICT audio_in = nullptr;
+	const float *SYMPHONY_RESTRICT grain_size_input = nullptr;    // Float: ms
+	const float *SYMPHONY_RESTRICT density_input = nullptr;       // Float: grains/sec
+	const float *SYMPHONY_RESTRICT position_input = nullptr;      // Float: 0-1 buffer position
+	const float *SYMPHONY_RESTRICT pitch_rand_input = nullptr;    // Float: 0-0.5 semitone deviation
+	const float *SYMPHONY_RESTRICT scan_speed_input = nullptr;    // Float: 0-4 scan speed (S4.3)
+	const float *SYMPHONY_RESTRICT amp_rand_input = nullptr;      // Float: 0-6 dB variation (S4.3)
+	const float *SYMPHONY_RESTRICT pitch_tracking_input = nullptr; // Float: 0-1 pitch following (S4.3)
+	float *SYMPHONY_RESTRICT audio_out = nullptr;
 
 	// Capture buffer (circular, holds source audio)
 	float *capture_buffer = nullptr;

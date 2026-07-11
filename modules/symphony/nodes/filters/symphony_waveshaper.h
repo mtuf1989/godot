@@ -21,9 +21,9 @@ public:
 	};
 
 private:
-	const float *__restrict__ audio_in = nullptr;
-	const float *__restrict__ drive_input = nullptr;
-	float *__restrict__ audio_out = nullptr;
+	const float *SYMPHONY_RESTRICT audio_in = nullptr;
+	const float *SYMPHONY_RESTRICT drive_input = nullptr;
+	float *SYMPHONY_RESTRICT audio_out = nullptr;
 
 	float *table = nullptr;      // Arena-allocated transfer curve
 	int32_t table_size = 512;    // Number of entries in the table
