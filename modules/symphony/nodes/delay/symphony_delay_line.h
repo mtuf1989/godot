@@ -97,11 +97,12 @@ public:
 		desc.inputs.push_back({ "audio_in", SymphonyPinType::AUDIO, true });
 		desc.inputs.push_back({ "delay_time", SymphonyPinType::FLOAT, false });
 		desc.outputs.push_back({ "audio_out", SymphonyPinType::AUDIO, false });
-		desc.params.push_back({ "max_delay_ms", 1000.0f, 1.0f, 10000.0f, 1.0f });
-		desc.params.push_back({ "delay_ms", 10.0f, 0.0f, 10000.0f, 0.1f });
+		desc.params.push_back({ "max_delay_ms", 1000.0f, 1.0f, 2000.0f, 1.0f });
+		desc.params.push_back({ "delay_ms", 10.0f, 0.0f, 2000.0f, 0.1f });
 		desc.state_size = sizeof(SymphonyDelayLine);
 		desc.state_align = alignof(SymphonyDelayLine);
-		desc.extra_arena_bytes = sizeof(float) * 96000 + 32; // Max 2s delay at 48kHz
+		// Max buffer: max_delay_ms=2000 at 48kHz = (2000*48000/1000)+4 = 96004 floats.
+		desc.extra_arena_bytes = sizeof(float) * 96004 + 32;
 		desc.create_fn = &SymphonyDelayLine::create;
 		OperatorRegistry::get_singleton()->register_operator(desc);
 	}
@@ -112,6 +113,8 @@ public:
 
 		dl->mix_rate = p_mix_rate;
 		float max_ms = p_params.has("max_delay_ms") ? (float)p_params["max_delay_ms"] : 1000.0f;
+		if (max_ms > 2000.0f) max_ms = 2000.0f; // Clamp to arena budget
+		if (max_ms < 1.0f) max_ms = 1.0f;
 		dl->default_delay_ms = p_params.has("delay_ms") ? (float)p_params["delay_ms"] : 10.0f;
 		dl->buffer_size = (int32_t)(max_ms * p_mix_rate * 0.001f) + 4; // +4 for interpolation
 		dl->buffer = (float *)p_arena.alloc(sizeof(float) * dl->buffer_size, 32);

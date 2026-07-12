@@ -161,6 +161,9 @@ public:
 		desc.params.push_back({ "auto_play", 1.0f, 0.0f, 1.0f, 1.0f });
 		desc.state_size = sizeof(SymphonyWavePlayer);
 		desc.state_align = alignof(SymphonyWavePlayer);
+		// Baked PCM budget: up to 5 seconds of stereo 16-bit at 48kHz = 960,000 bytes.
+		// Files larger than this will fall back to reference mode (no arena copy).
+		desc.extra_arena_bytes = 960000 + 32;
 		desc.create_fn = &SymphonyWavePlayer::create;
 		OperatorRegistry::get_singleton()->register_operator(desc);
 	}
@@ -195,11 +198,25 @@ public:
 		wp->pcm_length_samples = raw_data.size() / (2 * channels); // 2 bytes per sample per channel
 
 		if (bake) {
-			// Copy PCM into arena
+			// Copy PCM into arena — but only if it fits the arena budget.
+			// Budget: 960,000 bytes (5s stereo 16-bit at 48kHz).
+			// Larger files fall back to reference mode to avoid arena overflow.
 			size_t byte_count = raw_data.size();
-			void *arena_buf = p_arena.alloc(byte_count, 16);
-			memcpy(arena_buf, raw_data.ptr(), byte_count);
-			wp->pcm_data = (const int16_t *)arena_buf;
+			if (byte_count <= 960000) {
+				void *arena_buf = p_arena.alloc(byte_count, 16);
+				if (arena_buf) {
+					memcpy(arena_buf, raw_data.ptr(), byte_count);
+					wp->pcm_data = (const int16_t *)arena_buf;
+				} else {
+					// Arena alloc failed — fall back to reference mode
+					wp->pcm_data_copy = raw_data;
+					wp->pcm_data = (const int16_t *)wp->pcm_data_copy.ptr();
+				}
+			} else {
+				// File too large for arena budget — use reference mode instead
+				wp->pcm_data_copy = raw_data;
+				wp->pcm_data = (const int16_t *)wp->pcm_data_copy.ptr();
+			}
 		} else {
 			// Reference mode: store data copy to keep pointer alive
 			wp->pcm_data_copy = raw_data;

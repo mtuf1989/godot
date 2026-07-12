@@ -2,23 +2,23 @@
 
 #include "core/object/object.h"
 #include "core/object/class_db.h"
+#include "core/templates/safe_list.h"
 #include <atomic>
-#include <mutex>
 
 class AudioStreamPlaybackSymphony;
 
 // Singleton that tracks all active Symphony voices and provides global metrics.
-// Lock-free metrics: audio thread writes atomics, main thread reads them without locking.
-// Mutex is retained ONLY for voice registry mutations (register/unregister).
+// Lock-free design:
+// - active_voices uses SafeList (lock-free linked list) for registration/iteration.
+// - Metrics published via atomics (audio thread writes, main thread reads).
+// - No mutex anywhere — audio thread never blocks.
 class SymphonyVoiceManager : public Object {
 	GDCLASS(SymphonyVoiceManager, Object)
 
 	static SymphonyVoiceManager *singleton;
 
-	// Mutex guards ONLY the active_voices vector (register/unregister from main thread,
-	// read from audio thread in enforce_voice_limits). Getter methods do NOT acquire this.
-	mutable std::mutex registry_mutex;
-	Vector<AudioStreamPlaybackSymphony *> active_voices;
+	// Lock-free voice list: main thread inserts/erases, audio thread iterates.
+	SafeList<AudioStreamPlaybackSymphony *> active_voices;
 
 	int32_t max_voices = 0; // 0 = unlimited
 	float warning_threshold = 0.70f;

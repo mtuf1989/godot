@@ -188,7 +188,9 @@ public:
 		desc.params.push_back({ "buffer_ms", 85.0f, 20.0f, 200.0f, 1.0f });
 		desc.state_size = sizeof(SymphonyPitchShifter);
 		desc.state_align = alignof(SymphonyPitchShifter);
-		desc.extra_arena_bytes = sizeof(float) * 8192 + 32; // Pitch shift buffer
+		// Max buffer: buffer_ms=200 at 48kHz = (200*48000/1000)+4 = 9604 floats.
+		// Use 9604 to cover worst case (highest common sample rate).
+		desc.extra_arena_bytes = sizeof(float) * 9604 + 32;
 		desc.create_fn = &SymphonyPitchShifter::create;
 		OperatorRegistry::get_singleton()->register_operator(desc);
 	}

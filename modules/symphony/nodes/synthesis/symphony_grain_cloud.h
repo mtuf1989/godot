@@ -433,7 +433,9 @@ public:
 		desc.params.push_back({ "capture_seconds", 4.0f, 1.0f, 10.0f, 1.0f });
 		desc.state_size = sizeof(SymphonyGrainCloud);
 		desc.state_align = alignof(SymphonyGrainCloud);
-		desc.extra_arena_bytes = sizeof(float) * 96000 + sizeof(float) * 4096 + 64; // Capture buffer + hanning table
+		// Max capture: capture_seconds=10 at 48kHz = 480000 floats.
+		// Hanning table: 1024 floats. Total worst case allocation.
+		desc.extra_arena_bytes = sizeof(float) * 480000 + sizeof(float) * 1024 + 64;
 		desc.create_fn = &SymphonyGrainCloud::create;
 		OperatorRegistry::get_singleton()->register_operator(desc);
 	}

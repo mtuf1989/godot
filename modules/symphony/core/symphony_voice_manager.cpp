@@ -46,19 +46,17 @@ void SymphonyVoiceManager::_mix_callback(void *p_userdata) {
 }
 
 void SymphonyVoiceManager::register_voice(AudioStreamPlaybackSymphony *p_voice) {
-	std::lock_guard<std::mutex> lock(registry_mutex);
-	active_voices.push_back(p_voice);
+	// Lock-free insert into SafeList. Can be called from any thread.
+	active_voices.insert(p_voice);
 }
 
 void SymphonyVoiceManager::unregister_voice(AudioStreamPlaybackSymphony *p_voice) {
-	std::lock_guard<std::mutex> lock(registry_mutex);
-	int idx = active_voices.find(p_voice);
-	if (idx >= 0) {
-		active_voices.remove_at(idx);
-	}
+	// Lock-free erase from SafeList. The node is logically removed immediately
+	// but memory is reclaimed later via maybe_cleanup().
+	active_voices.erase(p_voice);
 }
 
-// --- Lock-free getters: read atomic snapshots, NO mutex ---
+// --- Lock-free getters: read atomic snapshots ---
 
 int32_t SymphonyVoiceManager::get_active_voice_count() const {
 	return metric_active_count.load(std::memory_order_relaxed);
@@ -105,128 +103,156 @@ float SymphonyVoiceManager::get_critical_threshold() const {
 }
 
 void SymphonyVoiceManager::enforce_voice_limits() {
+	// --- Phase 1: Iterate SafeList to compute metrics and snapshot voice state ---
+	// SafeList iteration is lock-free. The iterator keeps nodes alive during traversal.
+
+	struct VoiceSnapshot {
+		AudioStreamPlaybackSymphony *voice = nullptr;
+		ObjectID id;
+		float budget = 0.0f;
+		float rms = 0.0f;
+		int priority = 50;
+		float microseconds = 0.0f;
+	};
+
+	// Stack-local snapshot array (bounded by a reasonable max).
+	static constexpr int32_t MAX_SNAPSHOT = 256;
+	VoiceSnapshot snapshots[MAX_SNAPSHOT];
+	int32_t voice_count = 0;
+
+	float total_budget = 0.0f;
+	float peak_budget = 0.0f;
+	float total_microseconds = 0.0f;
+
+	for (auto it = active_voices.begin(); it != active_voices.end(); ++it) {
+		if (voice_count >= MAX_SNAPSHOT) {
+			break; // Safety cap
+		}
+		AudioStreamPlaybackSymphony *v = *it;
+		if (!v) {
+			continue;
+		}
+
+		VoiceSnapshot &snap = snapshots[voice_count];
+		snap.voice = v;
+		snap.id = v->get_instance_id();
+		snap.budget = v->get_budget_percent();
+		snap.rms = v->get_last_rms();
+		snap.priority = v->get_effective_priority();
+		snap.microseconds = v->get_voice_cpu_microseconds();
+
+		total_budget += snap.budget;
+		if (snap.budget > peak_budget) {
+			peak_budget = snap.budget;
+		}
+		total_microseconds += snap.microseconds;
+
+		voice_count++;
+	}
+
+	float avg_microseconds = (voice_count > 0) ? (total_microseconds / voice_count) : 0.0f;
+
+	// --- Phase 2: Identify victims for voice stealing ---
 	Vector<ObjectID> victim_ids;
 
-	{
-		// Acquire mutex briefly to snapshot the voice list and compute metrics.
-		// Main-thread register/unregister is infrequent, so contention is minimal.
-		std::lock_guard<std::mutex> lock(registry_mutex);
+	// Voice count limit
+	if (max_voices > 0 && voice_count > max_voices) {
+		// Mark lowest-priority, quietest voices as victims until we're at the limit.
+		// Use a simple repeated scan (voice counts are small, typically < 64).
+		while (voice_count - (int32_t)victim_ids.size() > max_voices) {
+			int worst_idx = -1;
+			int worst_priority = INT32_MAX;
+			float worst_rms = FLT_MAX;
 
-		const int32_t voice_count = active_voices.size();
+			for (int32_t i = 0; i < voice_count; i++) {
+				// Skip already-identified victims
+				bool is_victim = false;
+				for (int vi = 0; vi < victim_ids.size(); vi++) {
+					if (snapshots[i].id == victim_ids[vi]) {
+						is_victim = true;
+						break;
+					}
+				}
+				if (is_victim) {
+					continue;
+				}
 
-		// --- Compute metrics while we hold the lock ---
-		float total_budget = 0.0f;
-		float peak_budget = 0.0f;
-		float total_microseconds = 0.0f;
-
-		for (const AudioStreamPlaybackSymphony *v : active_voices) {
-			float b = v->get_budget_percent();
-			total_budget += b;
-			if (b > peak_budget) {
-				peak_budget = b;
+				if (snapshots[i].priority < worst_priority ||
+						(snapshots[i].priority == worst_priority && snapshots[i].rms < worst_rms)) {
+					worst_priority = snapshots[i].priority;
+					worst_rms = snapshots[i].rms;
+					worst_idx = i;
+				}
 			}
-			total_microseconds += v->get_voice_cpu_microseconds();
-		}
 
-		float avg_microseconds = (voice_count > 0) ? (total_microseconds / voice_count) : 0.0f;
-
-		// --- Voice count limit: identify victims ---
-		if (max_voices > 0 && voice_count > max_voices) {
-			while (static_cast<int32_t>(active_voices.size()) - victim_ids.size() > max_voices) {
-				int worst_idx = -1;
-				int worst_priority = INT32_MAX;
-				float worst_rms = FLT_MAX;
-
-				for (int i = 0; i < active_voices.size(); i++) {
-					bool is_victim = false;
-					for (int vi = 0; vi < victim_ids.size(); vi++) {
-						if (active_voices[i]->get_instance_id() == victim_ids[vi]) {
-							is_victim = true;
-							break;
-						}
-					}
-					if (is_victim) {
-						continue;
-					}
-					int pri = active_voices[i]->get_effective_priority();
-					float rms = active_voices[i]->get_last_rms();
-					if (pri < worst_priority || (pri == worst_priority && rms < worst_rms)) {
-						worst_priority = pri;
-						worst_rms = rms;
-						worst_idx = i;
-					}
-				}
-
-				if (worst_idx >= 0) {
-					victim_ids.push_back(active_voices[worst_idx]->get_instance_id());
-				} else {
-					break;
-				}
+			if (worst_idx >= 0) {
+				victim_ids.push_back(snapshots[worst_idx].id);
+			} else {
+				break;
 			}
 		}
+	}
 
-		// --- Budget critical threshold: identify more victims ---
-		// Recompute budget excluding already-identified victims.
-		float remaining_budget = 0.0f;
-		for (const AudioStreamPlaybackSymphony *v : active_voices) {
-			bool is_victim = false;
-			for (int vi = 0; vi < victim_ids.size(); vi++) {
-				if (v->get_instance_id() == victim_ids[vi]) {
-					is_victim = true;
-					break;
-				}
-			}
-			if (!is_victim) {
-				remaining_budget += v->get_budget_percent();
+	// Budget critical threshold: steal more voices if over budget.
+	float remaining_budget = 0.0f;
+	for (int32_t i = 0; i < voice_count; i++) {
+		bool is_victim = false;
+		for (int vi = 0; vi < victim_ids.size(); vi++) {
+			if (snapshots[i].id == victim_ids[vi]) {
+				is_victim = true;
+				break;
 			}
 		}
+		if (!is_victim) {
+			remaining_budget += snapshots[i].budget;
+		}
+	}
 
-		if (remaining_budget > critical_threshold * 100.0f) {
-			while (remaining_budget > warning_threshold * 100.0f && !active_voices.is_empty()) {
-				int worst_idx = -1;
-				int worst_priority = INT32_MAX;
-				float worst_rms = FLT_MAX;
+	if (remaining_budget > critical_threshold * 100.0f) {
+		while (remaining_budget > warning_threshold * 100.0f) {
+			int worst_idx = -1;
+			int worst_priority = INT32_MAX;
+			float worst_rms = FLT_MAX;
 
-				for (int i = 0; i < active_voices.size(); i++) {
-					bool is_victim = false;
-					for (int vi = 0; vi < victim_ids.size(); vi++) {
-						if (active_voices[i]->get_instance_id() == victim_ids[vi]) {
-							is_victim = true;
-							break;
-						}
-					}
-					if (is_victim) {
-						continue;
-					}
-					int pri = active_voices[i]->get_effective_priority();
-					float rms = active_voices[i]->get_last_rms();
-					if (pri < worst_priority || (pri == worst_priority && rms < worst_rms)) {
-						worst_priority = pri;
-						worst_rms = rms;
-						worst_idx = i;
+			for (int32_t i = 0; i < voice_count; i++) {
+				bool is_victim = false;
+				for (int vi = 0; vi < victim_ids.size(); vi++) {
+					if (snapshots[i].id == victim_ids[vi]) {
+						is_victim = true;
+						break;
 					}
 				}
+				if (is_victim) {
+					continue;
+				}
 
-				if (worst_idx >= 0) {
-					remaining_budget -= active_voices[worst_idx]->get_budget_percent();
-					victim_ids.push_back(active_voices[worst_idx]->get_instance_id());
-				} else {
-					break;
+				if (snapshots[i].priority < worst_priority ||
+						(snapshots[i].priority == worst_priority && snapshots[i].rms < worst_rms)) {
+					worst_priority = snapshots[i].priority;
+					worst_rms = snapshots[i].rms;
+					worst_idx = i;
 				}
 			}
-		} else if (remaining_budget > warning_threshold * 100.0f) {
-			WARN_PRINT_ONCE("Symphony: Voice budget exceeds warning threshold.");
+
+			if (worst_idx >= 0) {
+				remaining_budget -= snapshots[worst_idx].budget;
+				victim_ids.push_back(snapshots[worst_idx].id);
+			} else {
+				break;
+			}
 		}
+	} else if (remaining_budget > warning_threshold * 100.0f) {
+		WARN_PRINT_ONCE("Symphony: Voice budget exceeds warning threshold.");
+	}
 
-		// --- Publish metrics atomically (relaxed stores — no ordering needed for diagnostics) ---
-		metric_active_count.store(voice_count, std::memory_order_relaxed);
-		metric_stolen_this_frame.store(victim_ids.size(), std::memory_order_relaxed);
-		metric_total_budget_millipercent.store(static_cast<int32_t>(total_budget * 1000.0f), std::memory_order_relaxed);
-		metric_peak_budget_millipercent.store(static_cast<int32_t>(peak_budget * 1000.0f), std::memory_order_relaxed);
-		metric_avg_voice_microseconds_x1000.store(static_cast<int32_t>(avg_microseconds * 1000.0f), std::memory_order_relaxed);
-	} // mutex released here
+	// --- Phase 3: Publish metrics atomically ---
+	metric_active_count.store(voice_count, std::memory_order_relaxed);
+	metric_stolen_this_frame.store(victim_ids.size(), std::memory_order_relaxed);
+	metric_total_budget_millipercent.store(static_cast<int32_t>(total_budget * 1000.0f), std::memory_order_relaxed);
+	metric_peak_budget_millipercent.store(static_cast<int32_t>(peak_budget * 1000.0f), std::memory_order_relaxed);
+	metric_avg_voice_microseconds_x1000.store(static_cast<int32_t>(avg_microseconds * 1000.0f), std::memory_order_relaxed);
 
-	// Stop victims outside the lock — use ObjectID for safe lookup.
+	// --- Phase 4: Stop victims via safe ObjectID lookup ---
 	for (int i = 0; i < victim_ids.size(); i++) {
 		Object *obj = ObjectDB::get_instance(victim_ids[i]);
 		if (obj) {
@@ -236,4 +262,8 @@ void SymphonyVoiceManager::enforce_voice_limits() {
 			}
 		}
 	}
+
+	// --- Phase 5: Deferred cleanup of erased SafeList nodes ---
+	// Safe to call here because we are past the iteration (iterator destructed above).
+	active_voices.maybe_cleanup();
 }

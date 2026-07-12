@@ -17,10 +17,11 @@ class AudioStreamPlaybackSymphony : public AudioStreamPlayback {
 
 private:
 	Ref<AudioStreamSymphony> stream;
-	bool active = false;
+	std::atomic<bool> active{ false };
 	bool registered_with_manager = false;
+	bool stop_pending = false; // Deferred stop: graph deletion happens in mix()
 
-	// The currently executing graph (owned, freed on main thread).
+	// The currently executing graph (owned, freed on audio thread via deferred stop).
 	CompiledGraph *current_graph = nullptr;
 
 	// Atomic slot for hot-swap: main thread writes here, audio thread picks up.
@@ -53,6 +54,7 @@ private:
 	void cleanup_graveyard();
 	void find_graph_output();
 	void rebuild_routing_tables();
+	void _finalize_stop(); // Deferred graph deletion — always called from audio thread context
 
 protected:
 	static void _bind_methods();

@@ -270,7 +270,10 @@ public:
 		desc.params.push_back({ "reduction_db", -40.0f, -96.0f, 0.0f, 0.1f });
 		desc.state_size = sizeof(SymphonySpectralGate);
 		desc.state_align = alignof(SymphonySpectralGate);
-		desc.extra_arena_bytes = sizeof(float) * 8192 * 6 + 128; // Ring buffers, window, FFT workspace
+		// At max fft_size=8192: allocates 7 buffers of N floats (input_ring×2, output_ring×2,
+		// window_lut, fft_workspace, analysis_frame, fft_buffer, ifft_buffer).
+		// Total: 7*8192 = 57344 floats. Plus alignment overhead per alloc (7 allocs × 32 = 224).
+		desc.extra_arena_bytes = sizeof(float) * 57344 + 256;
 		desc.create_fn = &SymphonySpectralGate::create;
 		OperatorRegistry::get_singleton()->register_operator(desc);
 	}

@@ -371,7 +371,11 @@ public:
 		desc.params.push_back({ "seed", 1.0f, 1.0f, 999999.0f, 1.0f });
 		desc.state_size = sizeof(SymphonyPhaseVocoder);
 		desc.state_align = alignof(SymphonyPhaseVocoder);
-		desc.extra_arena_bytes = sizeof(float) * 8192 * 6 + 128; // Ring buffers, window, FFT workspace, phase arrays
+		// At max fft_size=8192: allocates 7 buffers of N floats (input_ring×2, output_ring×2,
+		// window_lut, fft_workspace, analysis_frame, fft_buffer, ifft_buffer)
+		// + 5 buffers of (N/2+1) floats (prev_phase, synth_phase, magnitude_buf, shifted_mag, shifted_phase).
+		// Total: 7*8192 + 5*4097 = 77829 floats. Plus alignment overhead per alloc (12 allocs × 32 = 384).
+		desc.extra_arena_bytes = sizeof(float) * 77829 + 512;
 		desc.create_fn = &SymphonyPhaseVocoder::create;
 		OperatorRegistry::get_singleton()->register_operator(desc);
 	}

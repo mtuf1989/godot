@@ -12,7 +12,7 @@ void AudioStreamPlaybackSymphony::_bind_methods() {
 }
 
 void AudioStreamPlaybackSymphony::start(double p_from_pos) {
-	active = true;
+	active.store(true, std::memory_order_release);
 	if (stream.is_valid()) {
 		mix_rate_cached = stream->get_mix_rate();
 	}
@@ -41,7 +41,7 @@ void AudioStreamPlaybackSymphony::start(double p_from_pos) {
 }
 
 void AudioStreamPlaybackSymphony::stop() {
-	active = false;
+	active.store(false, std::memory_order_release);
 
 	if (registered_with_manager) {
 		SymphonyVoiceManager *mgr = SymphonyVoiceManager::get_singleton();
@@ -51,18 +51,13 @@ void AudioStreamPlaybackSymphony::stop() {
 		registered_with_manager = false;
 	}
 
-	cleanup_graveyard();
-	if (current_graph) {
-		memdelete(current_graph);
-		current_graph = nullptr;
-	}
-	graph_output_node = nullptr;
-	parameter_map.clear();
-	trigger_map.clear();
+	// Defer graph deletion to the next mix() call on the audio thread.
+	// This ensures no one is mid-execution on the graph when we delete it.
+	stop_pending = true;
 }
 
 bool AudioStreamPlaybackSymphony::is_playing() const {
-	return active;
+	return active.load(std::memory_order_acquire);
 }
 
 int AudioStreamPlaybackSymphony::get_loop_count() const {
@@ -77,7 +72,12 @@ void AudioStreamPlaybackSymphony::seek(double p_time) {
 }
 
 int AudioStreamPlaybackSymphony::mix(AudioFrame *p_buffer, float p_rate_scale, int p_frames) {
-	if (!active) {
+	if (!active.load(std::memory_order_acquire)) {
+		// Finalize deferred stop: delete graph safely now that we know
+		// no one is mid-execution (we're the only reader of current_graph).
+		if (stop_pending) {
+			_finalize_stop();
+		}
 		return 0;
 	}
 
@@ -230,6 +230,33 @@ void AudioStreamPlaybackSymphony::cleanup_graveyard() {
 	}
 }
 
+void AudioStreamPlaybackSymphony::_finalize_stop() {
+	// Called from the audio thread (inside mix()) when stop_pending is true.
+	// Safe to delete the graph here because mix() has already returned early
+	// due to active==false, so no code path is using current_graph.
+	stop_pending = false;
+
+	cleanup_graveyard();
+	if (current_graph) {
+		memdelete(current_graph);
+		current_graph = nullptr;
+	}
+	if (lod_outgoing_graph) {
+		memdelete(lod_outgoing_graph);
+		lod_outgoing_graph = nullptr;
+		lod_outgoing_output = nullptr;
+	}
+	graph_output_node = nullptr;
+	parameter_map.clear();
+	trigger_map.clear();
+
+	// Discard any pending graph that was queued for hot-swap.
+	CompiledGraph *pending = pending_graph.exchange(nullptr, std::memory_order_acquire);
+	if (pending) {
+		memdelete(pending);
+	}
+}
+
 void AudioStreamPlaybackSymphony::find_graph_output() {
 	graph_output_node = nullptr;
 	if (!current_graph) {
@@ -264,12 +291,15 @@ void AudioStreamPlaybackSymphony::rebuild_routing_tables() {
 }
 
 AudioStreamPlaybackSymphony::~AudioStreamPlaybackSymphony() {
-	if (active && registered_with_manager) {
+	if (active.load(std::memory_order_acquire) && registered_with_manager) {
 		SymphonyVoiceManager *mgr = SymphonyVoiceManager::get_singleton();
 		if (mgr) {
 			mgr->unregister_voice(this);
 		}
 	}
+	// If stop was deferred but mix() was never called again (e.g., scene exit),
+	// finalize here. This runs on the main thread but is safe because the
+	// AudioServer has already removed this playback from its processing list.
 	cleanup_graveyard();
 	if (current_graph) {
 		memdelete(current_graph);
@@ -278,6 +308,10 @@ AudioStreamPlaybackSymphony::~AudioStreamPlaybackSymphony() {
 	if (lod_outgoing_graph) {
 		memdelete(lod_outgoing_graph);
 		lod_outgoing_graph = nullptr;
+	}
+	CompiledGraph *pending = pending_graph.exchange(nullptr, std::memory_order_acquire);
+	if (pending) {
+		memdelete(pending);
 	}
 }
 

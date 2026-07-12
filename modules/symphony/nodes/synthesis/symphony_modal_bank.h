@@ -151,7 +151,8 @@ public:
 		desc.params.push_back({ "num_modes", 20.0f, 1.0f, 64.0f, 1.0f });
 		desc.state_size = sizeof(SymphonyModalBank);
 		desc.state_align = alignof(SymphonyModalBank);
-		desc.extra_arena_bytes = sizeof(float) * 64 * 5 + 64; // State + coeff arrays for max 64 modes
+		// 6 arrays of max_modes(64) floats: state_y1, state_y2, coeff_b0, coeff_a1, coeff_a2, mode_gain.
+		desc.extra_arena_bytes = sizeof(float) * 64 * 6 + 64;
 		desc.create_fn = &SymphonyModalBank::create;
 		OperatorRegistry::get_singleton()->register_operator(desc);
 	}
