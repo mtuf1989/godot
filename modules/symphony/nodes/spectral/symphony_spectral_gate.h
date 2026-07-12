@@ -270,6 +270,7 @@ public:
 		desc.params.push_back({ "reduction_db", -40.0f, -96.0f, 0.0f, 0.1f });
 		desc.state_size = sizeof(SymphonySpectralGate);
 		desc.state_align = alignof(SymphonySpectralGate);
+		desc.extra_arena_bytes = sizeof(float) * 8192 * 6 + 128; // Ring buffers, window, FFT workspace
 		desc.create_fn = &SymphonySpectralGate::create;
 		OperatorRegistry::get_singleton()->register_operator(desc);
 	}

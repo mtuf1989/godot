@@ -28,11 +28,15 @@ void SymphonyVoiceManager::_bind_methods() {
 
 SymphonyVoiceManager::SymphonyVoiceManager() {
 	singleton = this;
+#ifndef TOOLS_ENABLED
 	AudioServer::get_singleton()->add_mix_callback(_mix_callback, this);
+#endif
 }
 
 SymphonyVoiceManager::~SymphonyVoiceManager() {
+#ifndef TOOLS_ENABLED
 	AudioServer::get_singleton()->remove_mix_callback(_mix_callback, this);
+#endif
 	singleton = nullptr;
 }
 

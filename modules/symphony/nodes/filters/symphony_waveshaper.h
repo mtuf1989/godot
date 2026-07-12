@@ -150,6 +150,7 @@ public:
 		desc.params.push_back({ "table_size", 512.0f, 64.0f, 2048.0f, 1.0f });
 		desc.state_size = sizeof(SymphonyWaveshaper);
 		desc.state_align = alignof(SymphonyWaveshaper);
+		desc.extra_arena_bytes = sizeof(float) * 2048 + 32; // Max table size + alignment
 		desc.create_fn = &SymphonyWaveshaper::create;
 		OperatorRegistry::get_singleton()->register_operator(desc);
 	}

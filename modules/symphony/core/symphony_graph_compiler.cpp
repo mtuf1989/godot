@@ -184,6 +184,7 @@ GraphCompiler::CompileResult GraphCompiler::compile(const GraphDescription &p_de
 	// Space for each operator's state
 	for (int32_t i = 0; i < node_count; i++) {
 		arena_size += node_descs[i]->state_size + node_descs[i]->state_align;
+		arena_size += node_descs[i]->extra_arena_bytes;
 	}
 
 	// Space for output buffers (one per output pin)
@@ -214,6 +215,11 @@ GraphCompiler::CompileResult GraphCompiler::compile(const GraphDescription &p_de
 	arena_size += sizeof(CompiledGraph::Promotion) * total_promotions + 32;
 
 	// --- Phase 6: Allocate arena and build compiled graph ---
+	// Add safety margin: some operators allocate extra buffers (lookup tables, delay
+	// lines, ring buffers) in their create_fn beyond what state_size declares.
+	// extra_arena_bytes covers declared needs; this margin handles alignment overhead.
+	arena_size += arena_size / 4; // 25% headroom for alignment padding
+
 	CompiledGraph *compiled = memnew(CompiledGraph);
 	if (!compiled->arena.init(arena_size)) {
 		result.errors.push_back("Failed to allocate arena.");

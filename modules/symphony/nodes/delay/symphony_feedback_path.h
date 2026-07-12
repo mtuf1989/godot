@@ -66,6 +66,7 @@ public:
 		desc.outputs.push_back({ "audio_out", SymphonyPinType::AUDIO, false });
 		desc.state_size = sizeof(SymphonyFeedbackPath);
 		desc.state_align = alignof(SymphonyFeedbackPath);
+		desc.extra_arena_bytes = sizeof(float) * SYMPHONY_MICRO_BLOCK_SIZE + 32; // prev_block buffer
 		desc.create_fn = &SymphonyFeedbackPath::create;
 		OperatorRegistry::get_singleton()->register_operator(desc);
 	}

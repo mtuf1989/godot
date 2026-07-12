@@ -371,6 +371,7 @@ public:
 		desc.params.push_back({ "seed", 1.0f, 1.0f, 999999.0f, 1.0f });
 		desc.state_size = sizeof(SymphonyPhaseVocoder);
 		desc.state_align = alignof(SymphonyPhaseVocoder);
+		desc.extra_arena_bytes = sizeof(float) * 8192 * 6 + 128; // Ring buffers, window, FFT workspace, phase arrays
 		desc.create_fn = &SymphonyPhaseVocoder::create;
 		OperatorRegistry::get_singleton()->register_operator(desc);
 	}

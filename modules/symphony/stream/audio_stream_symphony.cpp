@@ -6,6 +6,7 @@
 
 #include "core/object/class_db.h"
 #include "core/io/resource.h"
+#include "core/os/thread.h"
 
 void AudioStreamSymphony::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_mix_rate", "rate"), &AudioStreamSymphony::set_mix_rate);
@@ -695,8 +696,12 @@ Ref<AudioStreamPlayback> AudioStreamSymphony::instantiate_playback() {
 	playback.instantiate();
 	playback->stream = Ref<AudioStreamSymphony>(this);
 
-	// If we have a graph description, compile and load it
-	if (graph_desc.nodes.size() > 0) {
+	// If we have a graph description, compile and load it.
+	// Skip compilation when called from a non-main thread (e.g., the editor's
+	// resource preview generator). Procedural audio has no meaningful waveform
+	// preview, and compiling + executing DSP on the preview thread causes heap
+	// pressure that corrupts other threads (manifests as embree crash on macOS).
+	if (graph_desc.nodes.size() > 0 && Thread::is_main_thread()) {
 		CompiledGraph *compiled = compile_graph();
 		if (compiled) {
 			playback->swap_graph(compiled);
@@ -709,7 +714,10 @@ Ref<AudioStreamPlayback> AudioStreamSymphony::instantiate_playback() {
 
 
 double AudioStreamSymphony::get_length() const {
-	return 0.0;
+	// Return a small non-zero length so the editor's audio preview generator
+	// does not fall back to 60 seconds (2.6M frames × 90 resources = OOM/crash).
+	// AudioStreamSymphony is procedural — there's no meaningful waveform to preview.
+	return 0.5;
 }
 
 bool AudioStreamSymphony::is_monophonic() const {

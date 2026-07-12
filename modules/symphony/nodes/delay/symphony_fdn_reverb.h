@@ -248,6 +248,7 @@ public:
 		// State size is the operator struct only — delay buffers are arena-allocated separately
 		desc.state_size = sizeof(SymphonyFDNReverb);
 		desc.state_align = alignof(SymphonyFDNReverb);
+		desc.extra_arena_bytes = sizeof(float) * 100000 + 32; // Delay + pre-delay memory
 		desc.create_fn = &SymphonyFDNReverb::create;
 		OperatorRegistry::get_singleton()->register_operator(desc);
 	}

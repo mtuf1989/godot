@@ -2,6 +2,7 @@
 #include "../core/symphony_voice_manager.h"
 #include "../core/symphony_platform_time.h"
 #include "core/object/class_db.h"
+#include "core/os/thread.h"
 
 void AudioStreamPlaybackSymphony::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("trigger", "name", "value"), &AudioStreamPlaybackSymphony::trigger, DEFVAL(1.0f));
@@ -26,18 +27,28 @@ void AudioStreamPlaybackSymphony::start(double p_from_pos) {
 		rebuild_routing_tables();
 	}
 
+	// Only register with voice manager during game runtime, not in the editor.
+	// In the editor, voice limiting is unnecessary and the mix callback's
+	// enforce_voice_limits() can call stop() on playbacks mid-frame, causing
+	// graph destruction while AudioServer still expects the playback to be alive.
+#ifndef TOOLS_ENABLED
 	SymphonyVoiceManager *mgr = SymphonyVoiceManager::get_singleton();
 	if (mgr) {
 		mgr->register_voice(this);
+		registered_with_manager = true;
 	}
+#endif
 }
 
 void AudioStreamPlaybackSymphony::stop() {
 	active = false;
 
-	SymphonyVoiceManager *mgr = SymphonyVoiceManager::get_singleton();
-	if (mgr) {
-		mgr->unregister_voice(this);
+	if (registered_with_manager) {
+		SymphonyVoiceManager *mgr = SymphonyVoiceManager::get_singleton();
+		if (mgr) {
+			mgr->unregister_voice(this);
+		}
+		registered_with_manager = false;
 	}
 
 	cleanup_graveyard();
@@ -253,7 +264,7 @@ void AudioStreamPlaybackSymphony::rebuild_routing_tables() {
 }
 
 AudioStreamPlaybackSymphony::~AudioStreamPlaybackSymphony() {
-	if (active) {
+	if (active && registered_with_manager) {
 		SymphonyVoiceManager *mgr = SymphonyVoiceManager::get_singleton();
 		if (mgr) {
 			mgr->unregister_voice(this);

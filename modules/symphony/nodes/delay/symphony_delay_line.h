@@ -101,6 +101,7 @@ public:
 		desc.params.push_back({ "delay_ms", 10.0f, 0.0f, 10000.0f, 0.1f });
 		desc.state_size = sizeof(SymphonyDelayLine);
 		desc.state_align = alignof(SymphonyDelayLine);
+		desc.extra_arena_bytes = sizeof(float) * 96000 + 32; // Max 2s delay at 48kHz
 		desc.create_fn = &SymphonyDelayLine::create;
 		OperatorRegistry::get_singleton()->register_operator(desc);
 	}

@@ -188,6 +188,7 @@ public:
 		desc.params.push_back({ "buffer_ms", 85.0f, 20.0f, 200.0f, 1.0f });
 		desc.state_size = sizeof(SymphonyPitchShifter);
 		desc.state_align = alignof(SymphonyPitchShifter);
+		desc.extra_arena_bytes = sizeof(float) * 8192 + 32; // Pitch shift buffer
 		desc.create_fn = &SymphonyPitchShifter::create;
 		OperatorRegistry::get_singleton()->register_operator(desc);
 	}

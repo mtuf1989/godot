@@ -37,6 +37,7 @@ struct OperatorDescriptor {
 	Vector<ParamDescriptor> params; // Editable parameters exposed in the editor
 	size_t state_size = 0; // sizeof(ConcreteOperator)
 	size_t state_align = 8; // alignof(ConcreteOperator)
+	size_t extra_arena_bytes = 0; // Additional arena bytes needed by create_fn (e.g., lookup tables)
 	OperatorCreateFunc create_fn = nullptr;
 };
 

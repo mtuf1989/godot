@@ -18,6 +18,7 @@ class AudioStreamPlaybackSymphony : public AudioStreamPlayback {
 private:
 	Ref<AudioStreamSymphony> stream;
 	bool active = false;
+	bool registered_with_manager = false;
 
 	// The currently executing graph (owned, freed on main thread).
 	CompiledGraph *current_graph = nullptr;
