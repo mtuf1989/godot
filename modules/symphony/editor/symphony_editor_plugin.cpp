@@ -29,7 +29,12 @@ void SymphonyNodeInspectorProxy::_get_property_list(List<PropertyInfo> *p_list) 
 
 	for (int i = 0; i < op_desc->params.size(); i++) {
 		const ParamDescriptor &pd = op_desc->params[i];
-		p_list->push_back(PropertyInfo(Variant::FLOAT, pd.name, PROPERTY_HINT_RANGE, vformat("%f,%f,%f", pd.min_value, pd.max_value, pd.step)));
+		if (pd.step > 0.0f) {
+			p_list->push_back(PropertyInfo(Variant::FLOAT, pd.name, PROPERTY_HINT_RANGE, vformat("%f,%f,%f", pd.min_value, pd.max_value, pd.step)));
+		} else {
+			// step=0 indicates a string parameter (stored in node params dict, not numeric).
+			p_list->push_back(PropertyInfo(Variant::STRING, pd.name));
+		}
 	}
 }
 
@@ -432,7 +437,7 @@ GraphNode *SymphonyGraphEditor::_create_graph_node(const NodeDesc &p_node) {
 		SpinBox *spin = memnew(SpinBox);
 		spin->set_min(pd.min_value);
 		spin->set_max(pd.max_value);
-		spin->set_step(pd.step);
+		spin->set_step(pd.step > 0.0f ? pd.step : 0.01f);
 		spin->set_custom_minimum_size(Vector2(80, 0));
 
 		float val = pd.default_value;
