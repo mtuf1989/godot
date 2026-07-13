@@ -28,6 +28,12 @@ struct ParamDescriptor {
 // Returns the operator pointer (which lives inside the arena).
 using OperatorCreateFunc = SymphonyOperator *(*)(ArenaAllocator &p_arena, const HashMap<StringName, Variant> &p_params, float p_mix_rate);
 
+// Function signature for per-instance arena sizing.
+// Called by the graph compiler with the node's resolved params to determine
+// how many extra arena bytes this specific instance needs.
+// Returns the byte count (excluding state_size which is added separately).
+using ExtraArenaBytesFunc = size_t (*)(const HashMap<StringName, Variant> &p_params);
+
 // Describes an operator type: its pins, state size, and factory function.
 struct OperatorDescriptor {
 	StringName type_name;
@@ -38,6 +44,7 @@ struct OperatorDescriptor {
 	size_t state_size = 0; // sizeof(ConcreteOperator)
 	size_t state_align = 8; // alignof(ConcreteOperator)
 	size_t extra_arena_bytes = 0; // Additional arena bytes needed by create_fn (e.g., lookup tables)
+	ExtraArenaBytesFunc extra_arena_bytes_fn = nullptr; // Per-instance override; if set, takes priority over extra_arena_bytes
 	OperatorCreateFunc create_fn = nullptr;
 };
 

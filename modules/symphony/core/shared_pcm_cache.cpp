@@ -1,6 +1,7 @@
 #include "shared_pcm_cache.h"
 #include "core/os/memory.h"
 #include "core/error/error_macros.h"
+#include "core/variant/variant.h"
 #include "core/templates/pair.h"
 
 SharedPCMCache *SharedPCMCache::singleton = nullptr;

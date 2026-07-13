@@ -184,7 +184,12 @@ GraphCompiler::CompileResult GraphCompiler::compile(const GraphDescription &p_de
 	// Space for each operator's state
 	for (int32_t i = 0; i < node_count; i++) {
 		arena_size += node_descs[i]->state_size + node_descs[i]->state_align;
-		arena_size += node_descs[i]->extra_arena_bytes;
+		// Per-instance sizing callback takes priority over static worst-case value.
+		if (node_descs[i]->extra_arena_bytes_fn) {
+			arena_size += node_descs[i]->extra_arena_bytes_fn(p_desc.nodes[i].params);
+		} else {
+			arena_size += node_descs[i]->extra_arena_bytes;
+		}
 	}
 
 	// Space for output buffers (one per output pin)

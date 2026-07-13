@@ -743,6 +743,21 @@ CompiledGraph *AudioStreamSymphony::compile_lod_graph(int p_lod_tier) const {
 	if (lod_desc.nodes.size() == 0) {
 		return compile_graph(); // Empty LOD, fall back
 	}
+
+	// Lint: warn if expensive operators appear in LOD 2 graphs.
+	// GrainCloud allocates 384KB+ per voice and is overkill for distant/minimal voices.
+	if (p_lod_tier >= 2) {
+		for (int32_t i = 0; i < lod_desc.nodes.size(); i++) {
+			if (lod_desc.nodes[i].type_name == StringName("GrainCloud")) {
+				WARN_PRINT(vformat("Symphony: GrainCloud node found in LOD %d graph of '%s'. "
+						"GrainCloud is memory-intensive (384KB+ per voice). Consider replacing with "
+						"Noise→Filter→Gain for distant/minimal LOD tiers.",
+						p_lod_tier, get_path()));
+				break; // One warning per compile is sufficient
+			}
+		}
+	}
+
 	String owner_path = get_path();
 	GraphFlattener::FlattenResult flat = GraphFlattener::flatten(lod_desc, owner_path);
 	if (!flat.success()) {

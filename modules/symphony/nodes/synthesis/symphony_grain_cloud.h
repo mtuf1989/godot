@@ -449,12 +449,33 @@ public:
 		desc.params.push_back({ "capture_seconds", 2.0f, 1.0f, 10.0f, 1.0f });
 		desc.state_size = sizeof(SymphonyGrainCloud);
 		desc.state_align = alignof(SymphonyGrainCloud);
-		// Worst-case arena: capture_seconds=10 at 48kHz = 480000 floats (desktop).
-		// Web clamps to 4s max = 192000 floats, but arena budget must cover desktop worst case.
-		// Hanning table: 1024 floats.
-		desc.extra_arena_bytes = sizeof(float) * 480000 + sizeof(float) * 1024 + 64;
+		desc.extra_arena_bytes = 0; // Superseded by extra_arena_bytes_fn below.
+		desc.extra_arena_bytes_fn = &SymphonyGrainCloud::calculate_arena_bytes;
 		desc.create_fn = &SymphonyGrainCloud::create;
 		OperatorRegistry::get_singleton()->register_operator(desc);
+	}
+
+	// Per-instance arena sizing: returns only what this specific instance needs.
+	// - Shared PCM mode (source_pcm_cache_key present): only the hanning table.
+	// - Live/copy mode: full capture buffer + hanning table.
+	static size_t calculate_arena_bytes(const HashMap<StringName, Variant> &p_params) {
+		static constexpr size_t HANNING_BYTES = sizeof(float) * 1024 + 64; // 1024-entry table + alignment
+
+		// If source_pcm_cache_key is provided AND source PCM data will be available,
+		// the capture buffer is not needed — we'll point to SharedPCMCache data.
+		if (p_params.has("source_pcm_cache_key") && p_params.has("source_pcm_ptr") && p_params.has("source_pcm_length")) {
+			String key = p_params.has("source_pcm_cache_key") ? String(p_params["source_pcm_cache_key"]) : "";
+			if (!key.is_empty()) {
+				return HANNING_BYTES;
+			}
+		}
+
+		// Live-input or copy mode: need the full capture buffer.
+		float capture_sec = p_params.has("capture_seconds") ? (float)p_params["capture_seconds"] : 2.0f;
+		capture_sec = CLAMP(capture_sec, 1.0f, 10.0f);
+		// Use 48000 as worst-case sample rate for budget calculation.
+		int32_t capture_samples = (int32_t)(capture_sec * 48000.0f);
+		return sizeof(float) * capture_samples + HANNING_BYTES;
 	}
 
 	static SymphonyOperator *create(ArenaAllocator &p_arena, const HashMap<StringName, Variant> &p_params, float p_mix_rate) {
@@ -480,32 +501,22 @@ public:
 			gc->rng_state = 1; // xorshift cannot have 0 state
 		}
 
-		// Capture buffer
+		// Capture buffer sizing
 		float capture_sec = p_params.has("capture_seconds") ? (float)p_params["capture_seconds"] : 2.0f;
 		capture_sec = CLAMP(capture_sec, 1.0f, 10.0f);
 
 		// A2: On web targets, clamp to 4s max to limit memory pressure.
-		// Web has tighter memory constraints and GrainCloud buffers are the largest
-		// single arena allocation in the operator set.
 		if (OS::get_singleton()->has_feature("web")) {
 			capture_sec = MIN(capture_sec, 4.0f);
 		}
 
 		gc->capture_size = (int32_t)(capture_sec * p_mix_rate);
-		gc->capture_buffer = (float *)p_arena.alloc(sizeof(float) * gc->capture_size, 32);
-		if (!gc->capture_buffer) {
-			return nullptr;
-		}
-		memset(gc->capture_buffer, 0, sizeof(float) * gc->capture_size);
 		gc->capture_write = 0;
 
-		// S4.3: Source PCM loading
-		// If "source_pcm" parameter provides a pointer to PCM data and "source_pcm_length"
-		// specifies the sample count, load it for playback.
-		//
-		// Phase B2: Use SharedPCMCache when a cache key is provided. Multiple voices
-		// playing the same source share one heap copy instead of duplicating into each arena.
-		// The key is typically the resource path of the AudioStreamWAV source.
+		// --- Determine allocation strategy ---
+		// Try shared PCM path first. If successful, we skip the arena capture buffer entirely.
+		bool shared_pcm_acquired = false;
+
 		if (p_params.has("source_pcm_ptr") && p_params.has("source_pcm_length")) {
 			int64_t ptr_val = (int64_t)p_params["source_pcm_ptr"];
 			const float *source_data = reinterpret_cast<const float *>(ptr_val);
@@ -514,34 +525,45 @@ public:
 			if (source_data && pcm_len > 0) {
 				int32_t use_len = (pcm_len < gc->capture_size) ? pcm_len : gc->capture_size;
 
-				// Check if a cache key is provided (set by graph compiler from resource path).
+				// Phase B2: SharedPCMCache path — zero arena cost for the capture buffer.
 				if (p_params.has("source_pcm_cache_key")) {
 					StringName cache_key = StringName(String(p_params["source_pcm_cache_key"]));
 					SharedPCMCache *pcm_cache = SharedPCMCache::get_singleton();
 
 					if (pcm_cache && cache_key != StringName()) {
-						// Acquire shared buffer (creates or increments ref).
 						const float *shared_buf = pcm_cache->acquire(cache_key, source_data, use_len);
 						if (shared_buf) {
-							// Point capture_buffer to shared data (read-only).
-							// The arena-allocated buffer is wasted but small relative to savings
-							// when multiple voices share the same source.
 							gc->capture_buffer = const_cast<float *>(shared_buf);
 							gc->using_shared_pcm = true;
 							gc->shared_pcm_key = cache_key;
 							gc->source_pcm_loaded = true;
 							gc->source_pcm_length = use_len;
+							shared_pcm_acquired = true;
 						}
 					}
 				}
 
-				// Fallback: if shared cache was not used, copy into arena buffer directly.
-				if (!gc->source_pcm_loaded) {
+				// Fallback: shared cache not available/failed — allocate arena buffer and copy.
+				if (!shared_pcm_acquired) {
+					gc->capture_buffer = (float *)p_arena.alloc(sizeof(float) * gc->capture_size, 32);
+					if (!gc->capture_buffer) {
+						return nullptr;
+					}
+					memset(gc->capture_buffer, 0, sizeof(float) * gc->capture_size);
 					memcpy(gc->capture_buffer, source_data, sizeof(float) * use_len);
 					gc->source_pcm_loaded = true;
 					gc->source_pcm_length = use_len;
 				}
 			}
+		}
+
+		// Live-input mode: no source PCM at all — allocate arena capture buffer for live writing.
+		if (!gc->source_pcm_loaded && !shared_pcm_acquired) {
+			gc->capture_buffer = (float *)p_arena.alloc(sizeof(float) * gc->capture_size, 32);
+			if (!gc->capture_buffer) {
+				return nullptr;
+			}
+			memset(gc->capture_buffer, 0, sizeof(float) * gc->capture_size);
 		}
 
 		// Hanning window lookup table (1024 entries)
@@ -569,6 +591,9 @@ public:
 
 		// Schedule first grain quickly
 		gc->schedule_counter = gc->random_float() * (p_mix_rate / gc->default_density);
+
+		// Safety: verify we haven't overrun the arena budget.
+		DEV_ASSERT(p_arena.get_remaining() < p_arena.capacity); // Underflow check — remaining must be < capacity (i.e., non-wrapped).
 
 		return gc;
 	}

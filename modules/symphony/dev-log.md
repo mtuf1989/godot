@@ -6,24 +6,6 @@ Items below are verified-actionable as of 2026-07-13. Each represents a real lim
 
 ---
 
-### Thread Safety & Concurrency
-
-1. **~~LOD transition_to_lod() is not formally thread-safe~~** ✅ **RESOLVED** — `transition_to_lod()` now publishes via the `pending_graph` atomic slot with a `pending_is_lod` flag. The audio thread picks up the new graph at the next `mix()` block boundary and initiates the crossfade. All graph pointer mutations happen exclusively on the audio thread. *(stream/audio_stream_playback_symphony.cpp)*
-
-2. **~~RTPCEngine `current_value` data race~~** ✅ **RESOLVED** — `current_value` is now `std::atomic<float>` with `memory_order_relaxed` for both audio-thread writes and game-thread reads. Zero performance cost on ARM64/x86-64 (lock-free). Eliminates formal UB and silences ThreadSanitizer. *(runtime/rtpc_engine.h, runtime/rtpc_engine.cpp)*
-
-3. **~~BeatClock.process() has no double-call guard~~** ✅ **RESOLVED** — `process()` now checks `Engine::get_process_frames()` against a stored `last_process_frame` and early-returns if already called this frame. Prevents duplicate beat detection, double logic_time advancement, and over-applied drift correction. *(runtime/beat_clock.cpp)*
-
----
-
-### Resource Management & Memory
-
-4. **GrainCloud live-input shared pool (B1) not implemented**: Multiple live-input GrainCloud voices each allocate their own 384KB capture buffer. Unlike source_pcm mode (which uses SharedPCMCache), live-input buffers are unique per-voice and cannot be shared. Low priority since live-input granulation is rare in practice.
-
-5. **GrainCloud arena waste in shared PCM mode**: When SharedPCMCache is used (B2), the arena still allocates a capture buffer (then `capture_buffer` pointer is overwritten to point at shared data). The arena allocation is wasted. Future optimization: skip arena alloc when `source_pcm_cache_key` is present. Saves 384KB arena space per shared voice.
-
----
-
 ### API Design & UX
 
 6. **TriggerInput requires explicit trigger from game code**: One-shot graphs using TriggerInput won't produce sound unless game code calls `playback.trigger()` after `play()`. No auto-trigger-on-play mechanism exists. *(runtime/sound_event.h)*
@@ -132,42 +114,6 @@ The following topics need proper user-facing documentation before the module is 
 
 ### Operator Naming & .tres Compatibility
 - .tres files reference operators by StringName. Never rename operators without an alias/migration plan.
-
----
-
-## Implemented Improvements: GrainCloud Memory
-
-### Phase A — Default Reduction ✅
-- A1: Default `capture_seconds` 4s → 2s (384KB instead of 768KB)
-- A2: Web platform clamp to 4s max
-
-### Phase B — SharedPCMCache ✅
-- `core/shared_pcm_cache.h/.cpp` — Ref-counted singleton
-- GrainCloud `create()` uses cache when `source_pcm_cache_key` param is provided
-- N voices on same source = 1× memory
-
-**Usage:**
-```
-node.params["source_pcm_ptr"] = (int64_t)pcm_pointer;
-node.params["source_pcm_length"] = (float)sample_count;
-node.params["source_pcm_cache_key"] = "res://audio/samples/wind_loop.wav";
-```
-
-### Phase C — Virtual Voice Signals ✅
-- `SymphonyVoicePool` signals: `voice_virtualized(slot_index)`, `voice_devirtualized(slot_index)`
-- GDScript connects → stops player on virtualize (frees graph) → plays on devirtualize (recompiles)
-
-### Phase D — LOD Bypass (authoring guidance)
-- LOD 2 presets should avoid GrainCloud entirely. Use lightweight alternatives for distant voices.
-
-### Memory Budget (achieved)
-
-| Scenario | Before | After |
-|----------|--------|-------|
-| 1 voice (default) | 768 KB | 384 KB |
-| 8 voices (same source) | 6.1 MB | 384 KB shared |
-| 8 voices (virtualized) | 6.1 MB | ~0 KB |
-| Web (4 voices, worst case) | 3.1 MB | 384 KB–1.5 MB |
 
 ---
 
