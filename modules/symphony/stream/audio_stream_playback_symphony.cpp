@@ -27,6 +27,13 @@ void AudioStreamPlaybackSymphony::start(double p_from_pos) {
 		rebuild_routing_tables();
 	}
 
+	// Auto-fire triggers that have auto_trigger_on_play enabled.
+	for (const KeyValue<StringName, SymphonyTriggerInput *> &E : trigger_map) {
+		if (E.value->get_auto_trigger_on_play()) {
+			E.value->fire(1.0f);
+		}
+	}
+
 	// Only register with voice manager during game runtime, not in the editor.
 	// In the editor, voice limiting is unnecessary and the mix callback's
 	// enforce_voice_limits() can call stop() on playbacks mid-frame, causing

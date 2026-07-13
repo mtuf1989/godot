@@ -1,6 +1,14 @@
 #include "sound_event.h"
 #include "core/object/class_db.h"
 
+float SoundEvent::compute_final_volume_db(float p_random_offset_db, float p_rtpc_volume_db) {
+	// Offset/additive volume model (Wwise/FMOD style):
+	// All volume contributions stack additively in the dB domain.
+	// Final volume = random_offset_db + rtpc_volume_db + bus_volume_db
+	// (bus_volume_db is applied separately by BusController.)
+	return p_random_offset_db + p_rtpc_volume_db;
+}
+
 void SoundEvent::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_streams", "streams"), &SoundEvent::set_streams);
 	ClassDB::bind_method(D_METHOD("get_streams"), &SoundEvent::get_streams);
@@ -40,6 +48,8 @@ void SoundEvent::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_rtpc_bindings", "bindings"), &SoundEvent::set_rtpc_bindings);
 	ClassDB::bind_method(D_METHOD("get_rtpc_bindings"), &SoundEvent::get_rtpc_bindings);
 	ClassDB::bind_method(D_METHOD("get_rtpc_binding_count"), &SoundEvent::get_rtpc_binding_count);
+
+	ClassDB::bind_static_method("SoundEvent", D_METHOD("compute_final_volume_db", "random_offset_db", "rtpc_volume_db"), &SoundEvent::compute_final_volume_db);
 
 	ADD_GROUP("Streams", "");
 	ADD_PROPERTY(PropertyInfo(Variant::ARRAY, "streams", PROPERTY_HINT_TYPE_STRING, String::num(Variant::OBJECT) + "/" + String::num(PROPERTY_HINT_RESOURCE_TYPE) + ":AudioStream"), "set_streams", "get_streams");
@@ -92,7 +102,6 @@ void SoundEvent::_bind_methods() {
 
 	BIND_ENUM_CONSTANT(RTPC_PITCH);
 	BIND_ENUM_CONSTANT(RTPC_VOLUME);
-	BIND_ENUM_CONSTANT(RTPC_FILTER_CUTOFF);
 	BIND_ENUM_CONSTANT(RTPC_GRAPH_INPUT);
 	BIND_ENUM_CONSTANT(RTPC_PLAYBACK_SPEED);
 }

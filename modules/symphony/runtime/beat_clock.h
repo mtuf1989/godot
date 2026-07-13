@@ -74,6 +74,12 @@ public:
 	// max_stretch: maximum allowed stretch deviation from 1.0 (default 0.1 = ±10%)
 	float calculate_time_stretch_for_alignment(float p_target_time_sec, float p_tolerance_percent = 5.0f, float p_max_stretch = 0.1f) const;
 
+	// Duration-stretch helper (PhaseVocoder convention).
+	// Returns: duration factor for PhaseVocoder (>1.0 = slower/longer, <1.0 = faster/shorter).
+	// This is the reciprocal of calculate_time_stretch_for_alignment().
+	// Use this when routing the result directly to a PhaseVocoder's time_stretch input.
+	float calculate_duration_stretch_for_alignment(float p_target_time_sec, float p_tolerance_percent = 5.0f, float p_max_stretch = 0.1f) const;
+
 	BeatClock();
 	~BeatClock();
 };

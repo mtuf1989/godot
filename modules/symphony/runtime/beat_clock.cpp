@@ -27,6 +27,7 @@ void BeatClock::_bind_methods() {
 
 	// S4.4: Music Moment Integration
 	ClassDB::bind_method(D_METHOD("calculate_time_stretch_for_alignment", "target_time_sec", "tolerance_percent", "max_stretch"), &BeatClock::calculate_time_stretch_for_alignment, DEFVAL(5.0f), DEFVAL(0.1f));
+	ClassDB::bind_method(D_METHOD("calculate_duration_stretch_for_alignment", "target_time_sec", "tolerance_percent", "max_stretch"), &BeatClock::calculate_duration_stretch_for_alignment, DEFVAL(5.0f), DEFVAL(0.1f));
 
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "bpm"), "set_bpm", "get_bpm");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "beats_per_bar"), "set_beats_per_bar", "get_beats_per_bar");
@@ -211,4 +212,12 @@ float BeatClock::calculate_time_stretch_for_alignment(float p_target_time_sec, f
 	stretch = CLAMP(stretch, min_stretch, max_stretch);
 
 	return stretch;
+}
+
+float BeatClock::calculate_duration_stretch_for_alignment(float p_target_time_sec, float p_tolerance_percent, float p_max_stretch) const {
+	float rate_stretch = calculate_time_stretch_for_alignment(p_target_time_sec, p_tolerance_percent, p_max_stretch);
+	if (rate_stretch <= 0.0f || rate_stretch == 1.0f) {
+		return 1.0f;
+	}
+	return 1.0f / rate_stretch;
 }

@@ -14,7 +14,7 @@ public:
 	enum Category { CATEGORY_SFX = 0, CATEGORY_MUSIC, CATEGORY_UI, CATEGORY_AMBIENT, CATEGORY_VOICE };
 	enum SpatialMode { SPATIAL_NON_POSITIONAL = 0, SPATIAL_2D, SPATIAL_3D };
 	enum AttenuationModel { ATTENUATION_LINEAR = 0, ATTENUATION_LOGARITHMIC, ATTENUATION_CUSTOM };
-	enum RTPCTarget { RTPC_PITCH = 0, RTPC_VOLUME, RTPC_FILTER_CUTOFF, RTPC_GRAPH_INPUT, RTPC_PLAYBACK_SPEED };
+	enum RTPCTarget { RTPC_PITCH = 0, RTPC_VOLUME, RTPC_GRAPH_INPUT, RTPC_PLAYBACK_SPEED };
 
 private:
 	TypedArray<AudioStream> streams;
@@ -100,6 +100,17 @@ public:
 
 	// Convenience: get binding count
 	int get_rtpc_binding_count() const { return rtpc_bindings.size(); }
+
+	// --- Offset/Additive Volume Model ---
+	// Computes the final volume in dB using the standard middleware (Wwise/FMOD) additive approach:
+	//   Final volume = random_offset_db + rtpc_volume_db + bus_volume_db
+	// All offsets stack additively in the dB domain.
+	//
+	// - p_random_offset_db: dB offset from volume_range randomization (per-instance).
+	// - p_rtpc_volume_db:   dB offset from RTPC_VOLUME binding curve evaluation.
+	//
+	// Bus volume is applied separately by BusController; this helper covers the event-local offsets.
+	static float compute_final_volume_db(float p_random_offset_db, float p_rtpc_volume_db);
 };
 
 VARIANT_ENUM_CAST(SoundEvent::VariationMode);

@@ -151,14 +151,36 @@ Dictionary SymphonyEventDispatcher::play_event(const Ref<SoundEvent> &p_event) {
 	PlayResult pr;
 	int slot = dispatch(p_event, pr);
 	int stream_index = -1;
+	float volume_offset_db = 0.0f;
+	float pitch_scale = 1.0f;
 
 	if (slot >= 0) {
 		stream_index = resolve_variation(p_event);
+
+		// Compute per-instance randomized offsets (Wwise/FMOD additive model):
+		// - volume_offset_db: random dB offset from volume_range (additive in dB domain)
+		// - pitch_scale: random multiplier from pitch_range
+		// The game layer combines these with RTPC-driven offsets and bus volume.
+		Vector2 vol_range = p_event->get_volume_range();
+		if (vol_range.x != vol_range.y) {
+			volume_offset_db = vol_range.x + rng.randf() * (vol_range.y - vol_range.x);
+		} else {
+			volume_offset_db = vol_range.x;
+		}
+
+		Vector2 pit_range = p_event->get_pitch_range();
+		if (pit_range.x != pit_range.y) {
+			pitch_scale = pit_range.x + rng.randf() * (pit_range.y - pit_range.x);
+		} else {
+			pitch_scale = pit_range.x;
+		}
 	}
 
 	result["slot"] = slot;
 	result["result"] = (int)pr;
 	result["stream_index"] = stream_index;
+	result["volume_offset_db"] = volume_offset_db;
+	result["pitch_scale"] = pitch_scale;
 
 	// Log the event to the ring buffer
 	SymphonyVoicePool *pool = SymphonyVoicePool::get_singleton();

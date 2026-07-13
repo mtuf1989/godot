@@ -6,18 +6,6 @@ Items below are verified-actionable as of 2026-07-13. Each represents a real lim
 
 ---
 
-### API Design & UX
-
-6. **TriggerInput requires explicit trigger from game code**: One-shot graphs using TriggerInput won't produce sound unless game code calls `playback.trigger()` after `play()`. No auto-trigger-on-play mechanism exists. *(runtime/sound_event.h)*
-
-7. **FilterCutoff RTPC target is a no-op**: `RTPC_FILTER_CUTOFF` (target=2) exists in enum but has no native implementation. Currently dead code. *(runtime/sound_event.h)*
-
-8. **RTPC Volume: offset vs absolute semantics unresolved**: Design decision needed for how `volume_range` randomization interacts with RTPC volume binding. *(runtime/sound_event.h, game-template AudioManager)*
-
-9. **BeatClock vs PhaseVocoder time-stretch convention mismatch**: BeatClock returns rate-based (>1.0 = faster), PhaseVocoder uses duration-based (>1.0 = slower). GDScript must invert with `1.0 / stretch`. *(runtime/beat_clock.cpp, nodes/spectral/symphony_phase_vocoder.h)*
-
----
-
 ### Integration & Cross-Layer Concerns
 
 10. **BusController ducking offset drift**: `apply_snapshot()` does NOT reset `applied_duck_offsets`. Could cause volume drift when combining snapshots with auto-ducking. *(runtime/bus_controller.cpp)*
@@ -94,6 +82,34 @@ The following topics need proper user-facing documentation before the module is 
 ### PhaseVocoder Time-Stretch
 - `time_stretch = 2.0` = output is 2× longer (half-speed). Matches DAW convention.
 - If using BeatClock's `calculate_time_stretch_for_alignment()` output, invert with `1.0 / stretch`.
+- Preferred: use `calculate_duration_stretch_for_alignment()` directly — it returns the reciprocal.
+
+### Time-Stretch Convention: BeatClock vs PhaseVocoder
+
+Symphony uses two conventions for time-stretch values:
+
+| API | Convention | >1.0 means |
+|-----|-----------|------------|
+| `BeatClock.calculate_time_stretch_for_alignment()` | Rate-based | Faster (compressed duration) |
+| `BeatClock.calculate_duration_stretch_for_alignment()` | Duration-based | Slower (longer output) |
+| `PhaseVocoder` time_stretch input | Duration-based | Slower (longer output) |
+| `AudioStreamPlayer.pitch_scale` | Rate-based | Faster/higher pitch |
+
+**Rule of thumb:**
+- Use `calculate_time_stretch_for_alignment()` when setting `pitch_scale` or playback rate.
+- Use `calculate_duration_stretch_for_alignment()` when feeding a PhaseVocoder node.
+
+Example (GDScript):
+```gdscript
+# Align next bar to a gameplay event 3.2 seconds from now
+var target_time = 3.2
+
+# For AudioStreamPlayer (rate-based):
+player.pitch_scale = BeatClock.calculate_time_stretch_for_alignment(target_time)
+
+# For PhaseVocoder graph input (duration-based):
+playback.set_parameter("time_stretch", BeatClock.calculate_duration_stretch_for_alignment(target_time))
+```
 
 ### TriggerInput One-Shots
 - Graphs with TriggerInput nodes require explicit `playback.trigger(&"name")` call after `play()`.

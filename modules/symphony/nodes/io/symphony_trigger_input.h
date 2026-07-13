@@ -19,6 +19,9 @@ private:
 	std::atomic<float> pending_value{ 0.0f };
 	std::atomic<bool> pending_flag{ false };
 
+	// When true, fire(1.0) is called automatically when playback starts.
+	bool auto_trigger_on_play = true;
+
 public:
 	SymphonyTriggerInput() {}
 
@@ -41,11 +44,14 @@ public:
 		pending_flag.store(true, std::memory_order_release);
 	}
 
+	bool get_auto_trigger_on_play() const { return auto_trigger_on_play; }
+
 	static void register_operator() {
 		OperatorDescriptor desc;
 		desc.type_name = "TriggerInput";
 		desc.category = "I/O";
 		desc.outputs.push_back({ "output", SymphonyPinType::TRIGGER, false });
+		desc.params.push_back({ "auto_trigger_on_play", 1.0f, 0.0f, 1.0f, 1.0f });
 		desc.state_size = sizeof(SymphonyTriggerInput);
 		desc.state_align = alignof(SymphonyTriggerInput);
 		desc.create_fn = &SymphonyTriggerInput::create;
@@ -54,6 +60,11 @@ public:
 
 	static SymphonyOperator *create(ArenaAllocator &p_arena, const HashMap<StringName, Variant> &p_params, float p_mix_rate) {
 		void *mem = p_arena.alloc(sizeof(SymphonyTriggerInput), alignof(SymphonyTriggerInput));
-		return new (mem) SymphonyTriggerInput();
+		SymphonyTriggerInput *op = new (mem) SymphonyTriggerInput();
+		const Variant *v = p_params.getptr(StringName("auto_trigger_on_play"));
+		if (v) {
+			op->auto_trigger_on_play = (float)(*v) >= 0.5f;
+		}
+		return op;
 	}
 };
