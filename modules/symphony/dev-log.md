@@ -1,53 +1,5 @@
 # Dev Log — Symphony Audio System
 
-## Known Limitations & Tech Debt
-
-Items below are verified-actionable as of 2026-07-13. Each represents a real limitation, pending design decision, or known risk.
-
----
-
-### Game Audio Layer (game-template/) Concerns
-
-16. **AudioZone2D editor performance**: `queue_redraw()` every frame. Needs throttling with 50+ zones. *(audio_zone_2d.gd)*
-
-17. **Scatter timer leak on zone deactivation**: Entry persists in `_scatter_timers` dict. *(ambient_system.gd)*
-
-18. **Listener position queried redundantly**: AmbientSystem and AudioManager both query Camera2D. *(ambient_system.gd + audio_manager.gd)*
-
-19. **AudioZone2D shape caching is static**: Not tracked at runtime. *(audio_zone_2d.gd)*
-
-20. **AudioStreamPlayer2D.max_distance=99999 workaround**: Fragile magic number. *(audio_manager.gd)*
-
-21. **Scatter collision_mask silent failure**: No debug warning on miss. *(ambient_system.gd)*
-
-22. **No loop_event hot-swap at runtime**: Use `set_variant()` instead. *(audio_zone_2d.gd)*
-
----
-
-### Testing & CI
-
-23. **Embree crash (macOS unit tests)**: Editor crashes fixed, but unit test runner may still hit pre-existing Godot embree shutdown issue. Workaround: `module_raycast_enabled=no`. *(tests/)*
-
-24. **Staggered importance in tests**: Must call `process_frame()` 4+ times. *(runtime/voice_manager.cpp)*
-
-25. **EventDispatcher cooldown uses instance_id**: Non-obvious resource sharing semantics. *(runtime/event_dispatcher.cpp)*
-
-26. **Event names blank for dynamic Resources**: `get_path()` and `get_name()` both empty. *(runtime/event_dispatcher.cpp)*
-
-27. **Null stream entries not validated**: Passes dispatcher but fails downstream. *(runtime/event_dispatcher.cpp)*
-
-28. **AudioStreamInteractive codepath untested**: Test coverage gap. *(music_system.gd)*
-
-29. **MusicSystem player swap after crossfade**: Integration pitfall. *(music_system.gd)*
-
----
-
-### Compiler Warnings
-
-30. **Member initializer order must match declaration order**: `-Wreorder-ctor` is an error. *(all new operators)*
-
----
-
 ## User Guide Topics (to document)
 
 The following topics need proper user-facing documentation before the module is used by others. Currently they exist only as dev-log notes or source comments.
@@ -126,6 +78,25 @@ playback.set_parameter("time_stretch", BeatClock.calculate_duration_stretch_for_
 - Alias system: call `OperatorRegistry::register_alias("OldName", "NewName")` in `register_types.cpp` to maintain backward compatibility with existing .tres files.
 - When a deprecated name is resolved via alias, a `WARN_PRINT` is emitted once per compile prompting the user to update their resource files.
 - Aliases are a migration bridge, not permanent infrastructure. Remove them after a major version bump once all .tres files are updated.
+
+### AudioZone2D Loop Event Hot-Swap
+- Call `zone.set_loop_event(new_event)` at runtime to change the ambient loop with a crossfade.
+- The crossfade uses the zone's `fade_time` property — old loop fades out, new loop starts at current volume.
+- If the zone is not currently active (listener is out of range), the property updates silently and takes effect on next activation.
+- For time-of-day or weather-based switching across multiple zones, prefer `AmbientSystem.set_variant()` — it crossfades all active zones simultaneously.
+- `set_loop_event()` is for per-zone dynamic changes (e.g., a zone that changes based on gameplay state).
+
+### SoundEvent Cooldown & Voice Limit Sharing
+- Cooldown and voice limits are keyed by the SoundEvent's **resource instance**, not by caller.
+- All scripts that `load()` or `preload()` the same `.tres` file share the same cooldown timer and voice count. This is intentional — it mirrors Wwise/FMOD global event limiting.
+- If you need **per-emitter** cooldown/voice limits (e.g., each enemy has independent footstep cooldown), call `event.duplicate()` to create a separate instance.
+- `SoundEvent.new()` always creates a unique instance — it will NOT share cooldown with file-loaded events of the same configuration.
+- Variation sequence/shuffle state is also per-instance. All callers sharing a `.tres` advance the same sequence counter.
+
+### Testing: update_importance_all()
+- `SymphonyVoicePool.update_importance_all()` forces all voice slots to recompute importance scores immediately.
+- Use this in tests instead of calling `process_frame()` 4+ times. The normal `update_importance()` is staggered (processes 1/4 of the pool per frame) to spread CPU cost.
+- **Do not use in production gameplay code** — the staggered approach prevents per-frame spikes with many active voices.
 
 ---
 

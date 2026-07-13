@@ -59,6 +59,7 @@ void SymphonyVoicePool::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_slot_position", "slot", "position"), &SymphonyVoicePool::set_slot_position);
 	ClassDB::bind_method(D_METHOD("get_slot_importance", "slot"), &SymphonyVoicePool::get_slot_importance);
 	ClassDB::bind_method(D_METHOD("update_importance"), &SymphonyVoicePool::update_importance);
+	ClassDB::bind_method(D_METHOD("update_importance_all"), &SymphonyVoicePool::update_importance_all);
 
 	// Distance attenuation
 	ClassDB::bind_method(D_METHOD("set_slot_spatial_mode", "slot", "mode"), &SymphonyVoicePool::set_slot_spatial_mode);
@@ -358,6 +359,13 @@ void SymphonyVoicePool::update_importance() {
 
 	_update_importance_batch(start, count);
 	importance_update_frame++;
+}
+
+void SymphonyVoicePool::update_importance_all() {
+	// Process the entire pool at once. Use for tests and debug tools only —
+	// in production, the staggered update_importance() spreads the cost over
+	// IMPORTANCE_UPDATE_INTERVAL frames (currently 4).
+	_update_importance_batch(0, pool_size);
 }
 
 void SymphonyVoicePool::_update_importance_batch(int p_start, int p_count) {

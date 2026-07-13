@@ -29,6 +29,22 @@ void SymphonyEventDispatcher::_bind_methods() {
 int SymphonyEventDispatcher::dispatch(const Ref<SoundEvent> &p_event, PlayResult &r_result) {
 	ERR_FAIL_COND_V(p_event.is_null(), -1);
 
+	// --- instance_id Sharing Semantics ---
+	// Cooldown, voice limiting, and variation state are keyed by the SoundEvent's
+	// Object instance_id. This means:
+	//
+	// • All scripts referencing the same loaded .tres resource SHARE cooldown and
+	//   voice limits (Godot's resource cache returns one instance per path).
+	//   This is the standard middleware behavior (Wwise/FMOD global event limiting).
+	//
+	// • Calling event.duplicate() creates a NEW instance_id → independent cooldown
+	//   and voice limits. Use this when per-emitter limiting is needed.
+	//
+	// • Dynamically created SoundEvent.new() instances each get unique instance_ids
+	//   even if configured identically — they won't share cooldown.
+	//
+	// • Variation sequence/shuffle state is also per-instance_id, so all callers
+	//   sharing a .tres advance the same sequence counter.
 	uint64_t event_id = p_event->get_instance_id();
 	uint64_t now = OS::get_singleton()->get_ticks_usec();
 
@@ -157,22 +173,39 @@ Dictionary SymphonyEventDispatcher::play_event(const Ref<SoundEvent> &p_event) {
 	if (slot >= 0) {
 		stream_index = resolve_variation(p_event);
 
-		// Compute per-instance randomized offsets (Wwise/FMOD additive model):
-		// - volume_offset_db: random dB offset from volume_range (additive in dB domain)
-		// - pitch_scale: random multiplier from pitch_range
-		// The game layer combines these with RTPC-driven offsets and bus volume.
-		Vector2 vol_range = p_event->get_volume_range();
-		if (vol_range.x != vol_range.y) {
-			volume_offset_db = vol_range.x + rng.randf() * (vol_range.y - vol_range.x);
+		// Item 27: Validate resolved stream is non-null before returning success.
+		// A SoundEvent may have non-empty streams array but contain null entries
+		// (e.g., removed AudioStream references in .tres). Reject here rather than
+		// letting the game layer crash when assigning null to a player.
+		TypedArray<AudioStream> streams = p_event->get_streams();
+		if (stream_index < 0 || stream_index >= streams.size() || Variant(streams[stream_index]).get_type() == Variant::NIL) {
+			// Release the slot we just acquired — stream is invalid
+			SymphonyVoicePool *pool = SymphonyVoicePool::get_singleton();
+			if (pool) {
+				pool->release_slot(slot, true);
+			}
+			on_voice_stopped(p_event->get_instance_id());
+			pr = RESULT_REJECTED_NO_STREAMS;
+			slot = -1;
+			stream_index = -1;
 		} else {
-			volume_offset_db = vol_range.x;
-		}
+			// Compute per-instance randomized offsets (Wwise/FMOD additive model):
+			// - volume_offset_db: random dB offset from volume_range (additive in dB domain)
+			// - pitch_scale: random multiplier from pitch_range
+			// The game layer combines these with RTPC-driven offsets and bus volume.
+			Vector2 vol_range = p_event->get_volume_range();
+			if (vol_range.x != vol_range.y) {
+				volume_offset_db = vol_range.x + rng.randf() * (vol_range.y - vol_range.x);
+			} else {
+				volume_offset_db = vol_range.x;
+			}
 
-		Vector2 pit_range = p_event->get_pitch_range();
-		if (pit_range.x != pit_range.y) {
-			pitch_scale = pit_range.x + rng.randf() * (pit_range.y - pit_range.x);
-		} else {
-			pitch_scale = pit_range.x;
+			Vector2 pit_range = p_event->get_pitch_range();
+			if (pit_range.x != pit_range.y) {
+				pitch_scale = pit_range.x + rng.randf() * (pit_range.y - pit_range.x);
+			} else {
+				pitch_scale = pit_range.x;
+			}
 		}
 	}
 
@@ -185,13 +218,19 @@ Dictionary SymphonyEventDispatcher::play_event(const Ref<SoundEvent> &p_event) {
 	// Log the event to the ring buffer
 	SymphonyVoicePool *pool = SymphonyVoicePool::get_singleton();
 	if (pool) {
+		// Item 26: Generate a meaningful fallback name for dynamic Resources.
+		// get_path() is empty for Resources created at runtime (SoundEvent.new()).
+		// get_name() is also empty unless explicitly set by the user.
+		// Fallback: "SoundEvent#<instance_id>" to keep event logs debuggable.
 		StringName event_name;
 		if (p_event.is_valid()) {
 			String path = p_event->get_path().get_file();
 			if (!path.is_empty()) {
 				event_name = StringName(path);
-			} else {
+			} else if (!String(p_event->get_name()).is_empty()) {
 				event_name = p_event->get_name();
+			} else {
+				event_name = StringName("SoundEvent#" + itos(p_event->get_instance_id()));
 			}
 		}
 		float importance = (slot >= 0 && pool->get_slot(slot)) ? pool->get_slot(slot)->importance : 0.0f;

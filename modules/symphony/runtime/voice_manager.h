@@ -156,6 +156,7 @@ public:
 	void set_slot_position(int p_slot, const Vector3 &p_pos);
 	float get_slot_importance(int p_slot) const;
 	void update_importance(); // Called each frame (internally handles staggering)
+	void update_importance_all(); // Forces all slots to update immediately (test/debug only)
 
 	// Distance attenuation
 	void set_slot_spatial_mode(int p_slot, int p_mode);
