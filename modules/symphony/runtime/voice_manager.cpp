@@ -97,6 +97,10 @@ void SymphonyVoicePool::_bind_methods() {
 	BIND_ENUM_CONSTANT(EVENT_REJECTED_NO_STREAMS);
 	BIND_ENUM_CONSTANT(EVENT_VIRTUALIZED);
 	BIND_ENUM_CONSTANT(EVENT_DEVIRTUALIZED);
+
+	// Signals for virtualization transitions (Phase C: enables graph memory release)
+	ADD_SIGNAL(MethodInfo("voice_virtualized", PropertyInfo(Variant::INT, "slot_index")));
+	ADD_SIGNAL(MethodInfo("voice_devirtualized", PropertyInfo(Variant::INT, "slot_index")));
 }
 
 int SymphonyVoicePool::acquire_slot(int p_priority) {
@@ -609,6 +613,7 @@ void SymphonyVoicePool::process_frame() {
 				if (slots[i].fade_progress <= 0.0f) {
 					slots[i].state = VOICE_VIRTUAL;
 					slots[i].fade_progress = 0.0f;
+					emit_signal(SNAME("voice_virtualized"), i);
 				} else {
 					active++;
 				}
@@ -621,6 +626,7 @@ void SymphonyVoicePool::process_frame() {
 				if (slots[i].fade_progress >= 1.0f) {
 					slots[i].state = VOICE_PLAYING;
 					slots[i].fade_progress = 1.0f;
+					emit_signal(SNAME("voice_devirtualized"), i);
 				}
 				active++;
 				break;

@@ -4,6 +4,7 @@
 #include "stream/audio_stream_playback_symphony.h"
 #include "core/symphony_operator_registry.h"
 #include "core/symphony_voice_manager.h"
+#include "core/shared_pcm_cache.h"
 #include "runtime/sound_event.h"
 #include "runtime/voice_manager.h"
 #include "runtime/event_dispatcher.h"
@@ -63,6 +64,9 @@
 
 void initialize_symphony_module(ModuleInitializationLevel p_level) {
 	if (p_level == MODULE_INITIALIZATION_LEVEL_SCENE) {
+		// Create shared PCM cache (used by GrainCloud for shared source buffers)
+		memnew(SharedPCMCache);
+
 		// Create operator registry and register all built-in operators
 		OperatorRegistry::create_singleton();
 
@@ -206,6 +210,9 @@ void uninitialize_symphony_module(ModuleInitializationLevel p_level) {
 		if (SymphonyVoiceManager::get_singleton()) {
 			Engine::get_singleton()->remove_singleton("SymphonyVoiceManager");
 			memdelete(SymphonyVoiceManager::get_singleton());
+		}
+		if (SharedPCMCache::get_singleton()) {
+			memdelete(SharedPCMCache::get_singleton());
 		}
 		OperatorRegistry::destroy_singleton();
 	}

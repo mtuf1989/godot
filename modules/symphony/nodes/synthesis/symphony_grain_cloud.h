@@ -3,7 +3,9 @@
 #include "../../core/symphony_operator.h"
 #include "../../core/symphony_operator_registry.h"
 #include "../../core/symphony_arena_allocator.h"
+#include "../../core/shared_pcm_cache.h"
 #include "core/math/math_funcs.h"
+#include "core/os/os.h"
 
 // GrainCloud: Internal micro-scheduler managing overlapping grains.
 // Supports both live audio input granulation and source buffer mode.
@@ -65,6 +67,8 @@ private:
 	// Source buffer mode (S4.3): if source_pcm_loaded, capture_buffer is pre-filled
 	bool source_pcm_loaded = false;
 	int32_t source_pcm_length = 0; // Length of pre-loaded PCM (may be less than capture_size)
+	bool using_shared_pcm = false;  // True if capture_buffer points to SharedPCMCache data
+	StringName shared_pcm_key;     // Cache key for release in cleanup()
 
 	// Grain pool
 	Grain grains[MAX_GRAINS];
@@ -181,6 +185,18 @@ public:
 		amp_rand_input = (const float *)p_input_ptrs[6];
 		pitch_tracking_input = (const float *)p_input_ptrs[7];
 		audio_out = (float *)p_output_ptrs[0];
+	}
+
+	virtual void cleanup() override {
+		// Release shared PCM cache reference (if using shared mode).
+		if (using_shared_pcm && shared_pcm_key != StringName()) {
+			SharedPCMCache *cache = SharedPCMCache::get_singleton();
+			if (cache) {
+				cache->release(shared_pcm_key);
+			}
+			using_shared_pcm = false;
+			capture_buffer = nullptr; // No longer valid after release
+		}
 	}
 
 	virtual void execute(int32_t p_num_frames) override {
@@ -430,11 +446,12 @@ public:
 		desc.params.push_back({ "position_randomness", 0.1f, 0.0f, 1.0f, 0.01f });
 		desc.params.push_back({ "pitch_tracking", 0.0f, 0.0f, 1.0f, 0.01f });
 		desc.params.push_back({ "seed", 1.0f, 1.0f, 999999.0f, 1.0f });
-		desc.params.push_back({ "capture_seconds", 4.0f, 1.0f, 10.0f, 1.0f });
+		desc.params.push_back({ "capture_seconds", 2.0f, 1.0f, 10.0f, 1.0f });
 		desc.state_size = sizeof(SymphonyGrainCloud);
 		desc.state_align = alignof(SymphonyGrainCloud);
-		// Max capture: capture_seconds=10 at 48kHz = 480000 floats.
-		// Hanning table: 1024 floats. Total worst case allocation.
+		// Worst-case arena: capture_seconds=10 at 48kHz = 480000 floats (desktop).
+		// Web clamps to 4s max = 192000 floats, but arena budget must cover desktop worst case.
+		// Hanning table: 1024 floats.
 		desc.extra_arena_bytes = sizeof(float) * 480000 + sizeof(float) * 1024 + 64;
 		desc.create_fn = &SymphonyGrainCloud::create;
 		OperatorRegistry::get_singleton()->register_operator(desc);
@@ -464,8 +481,16 @@ public:
 		}
 
 		// Capture buffer
-		float capture_sec = p_params.has("capture_seconds") ? (float)p_params["capture_seconds"] : 4.0f;
+		float capture_sec = p_params.has("capture_seconds") ? (float)p_params["capture_seconds"] : 2.0f;
 		capture_sec = CLAMP(capture_sec, 1.0f, 10.0f);
+
+		// A2: On web targets, clamp to 4s max to limit memory pressure.
+		// Web has tighter memory constraints and GrainCloud buffers are the largest
+		// single arena allocation in the operator set.
+		if (OS::get_singleton()->has_feature("web")) {
+			capture_sec = MIN(capture_sec, 4.0f);
+		}
+
 		gc->capture_size = (int32_t)(capture_sec * p_mix_rate);
 		gc->capture_buffer = (float *)p_arena.alloc(sizeof(float) * gc->capture_size, 32);
 		if (!gc->capture_buffer) {
@@ -476,20 +501,46 @@ public:
 
 		// S4.3: Source PCM loading
 		// If "source_pcm" parameter provides a pointer to PCM data and "source_pcm_length"
-		// specifies the sample count, copy it into the capture buffer at compile time.
-		// This is handled by the graph compiler when it detects a WavePlayer-linked source.
-		// The parameter "source_pcm_ptr" is set by the compiler (not user-facing).
+		// specifies the sample count, load it for playback.
+		//
+		// Phase B2: Use SharedPCMCache when a cache key is provided. Multiple voices
+		// playing the same source share one heap copy instead of duplicating into each arena.
+		// The key is typically the resource path of the AudioStreamWAV source.
 		if (p_params.has("source_pcm_ptr") && p_params.has("source_pcm_length")) {
 			int64_t ptr_val = (int64_t)p_params["source_pcm_ptr"];
 			const float *source_data = reinterpret_cast<const float *>(ptr_val);
 			int32_t pcm_len = (int32_t)(float)p_params["source_pcm_length"];
 
 			if (source_data && pcm_len > 0) {
-				// Copy PCM data into capture buffer (clamped to capture_size)
-				int32_t copy_len = (pcm_len < gc->capture_size) ? pcm_len : gc->capture_size;
-				memcpy(gc->capture_buffer, source_data, sizeof(float) * copy_len);
-				gc->source_pcm_loaded = true;
-				gc->source_pcm_length = copy_len;
+				int32_t use_len = (pcm_len < gc->capture_size) ? pcm_len : gc->capture_size;
+
+				// Check if a cache key is provided (set by graph compiler from resource path).
+				if (p_params.has("source_pcm_cache_key")) {
+					StringName cache_key = StringName(String(p_params["source_pcm_cache_key"]));
+					SharedPCMCache *pcm_cache = SharedPCMCache::get_singleton();
+
+					if (pcm_cache && cache_key != StringName()) {
+						// Acquire shared buffer (creates or increments ref).
+						const float *shared_buf = pcm_cache->acquire(cache_key, source_data, use_len);
+						if (shared_buf) {
+							// Point capture_buffer to shared data (read-only).
+							// The arena-allocated buffer is wasted but small relative to savings
+							// when multiple voices share the same source.
+							gc->capture_buffer = const_cast<float *>(shared_buf);
+							gc->using_shared_pcm = true;
+							gc->shared_pcm_key = cache_key;
+							gc->source_pcm_loaded = true;
+							gc->source_pcm_length = use_len;
+						}
+					}
+				}
+
+				// Fallback: if shared cache was not used, copy into arena buffer directly.
+				if (!gc->source_pcm_loaded) {
+					memcpy(gc->capture_buffer, source_data, sizeof(float) * use_len);
+					gc->source_pcm_loaded = true;
+					gc->source_pcm_length = use_len;
+				}
 			}
 		}
 
