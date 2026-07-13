@@ -8,11 +8,11 @@ Items below are verified-actionable as of 2026-07-13. Each represents a real lim
 
 ### Thread Safety & Concurrency
 
-1. **LOD transition_to_lod() is not formally thread-safe**: Main thread directly swaps `current_graph` while `mix()` reads it on the audio thread. Currently safe because Godot's AudioStreamPlayback is accessed by one thread at a time, but if AudioServer ever parallelizes playback mixing, this needs the atomic `pending_graph` swap pattern. *(stream/audio_stream_playback_symphony.cpp)*
+1. **~~LOD transition_to_lod() is not formally thread-safe~~** ✅ **RESOLVED** — `transition_to_lod()` now publishes via the `pending_graph` atomic slot with a `pending_is_lod` flag. The audio thread picks up the new graph at the next `mix()` block boundary and initiates the crossfade. All graph pointer mutations happen exclusively on the audio thread. *(stream/audio_stream_playback_symphony.cpp)*
 
-2. **RTPCEngine `current_value` data race**: Game thread reads `current_value` via `get_current_value()` while audio thread writes it during smoothing. `target_value` uses `std::atomic<float>`, but `current_value` is a plain float. Practically safe on ARM64/x86 but formally UB in C++. Consider `std::atomic<float>` if issues arise. *(runtime/rtpc_engine.cpp)*
+2. **~~RTPCEngine `current_value` data race~~** ✅ **RESOLVED** — `current_value` is now `std::atomic<float>` with `memory_order_relaxed` for both audio-thread writes and game-thread reads. Zero performance cost on ARM64/x86-64 (lock-free). Eliminates formal UB and silences ThreadSanitizer. *(runtime/rtpc_engine.h, runtime/rtpc_engine.cpp)*
 
-3. **BeatClock.process() has no double-call guard**: If two GDScript systems both call it per frame, beats get detected twice. Integrators must ensure exactly one caller. *(runtime/beat_clock.cpp)*
+3. **~~BeatClock.process() has no double-call guard~~** ✅ **RESOLVED** — `process()` now checks `Engine::get_process_frames()` against a stored `last_process_frame` and early-returns if already called this frame. Prevents duplicate beat detection, double logic_time advancement, and over-applied drift correction. *(runtime/beat_clock.cpp)*
 
 ---
 

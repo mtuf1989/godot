@@ -30,18 +30,18 @@ Dependency direction: Game Audio Layer → Symphony. Never the reverse.
 
 | Phase | Scope | Repo | Status |
 |-------|-------|------|--------|
-| **S1** | Core Completion — DelayLine, FeedbackPath, SVFilter, ParameterSmoother, StochasticTrigger, PolyBLEP | `modules/symphony/` | — |
-| **S2** | Synthesis Toolkit — ModalBank, GrainCloud, PitchShifter, Waveshaper, FM, CrossFade | `modules/symphony/` | — |
-| **S3** | Advanced Synthesis — FormantOsc, FDN Reverb, Waveguide presets, LOD graphs | `modules/symphony/` | — |
-| **S4** | Spectral — PhaseVocoder, SpectralGate, enhanced GrainCloud | `modules/symphony/` | — |
-| **G1** | Foundation — SoundEvent, VoiceManager, EventDispatcher, AudioManager autoload | both | — |
-| **G2** | Music System — MusicStateGraph, BeatClock, layer control | both | — |
-| **G3** | RTPC Integration — parameter smoothing, curve evaluation, Symphony↔file-based unification | both | — |
-| **G4** | Dialogue & Bus — DialogueAudioPipeline, BusController snapshots, auto-ducking | both | — |
-| **G5** | Ambient & Spatial — AudioZone2D, scatter layers, distance attenuation | `game-template/` | — |
-| **G6** | Profiling & Debug — performance monitors, debug overlay | `game-template/` | — |
+| **S1** | Core Completion — DelayLine, FeedbackPath, SVFilter, ParameterSmoother, StochasticTrigger, PolyBLEP | `modules/symphony/` | Done |
+| **S2** | Synthesis Toolkit — ModalBank, GrainCloud, PitchShifter, Waveshaper, FM, CrossFade | `modules/symphony/` | Done |
+| **S3** | Advanced Synthesis — FormantOsc, FDN Reverb, Waveguide presets, LOD graphs | `modules/symphony/` | Done |
+| **S4** | Spectral Done PhaseVocoder, SpectralGate, enhanced GrainCloud | `modules/symphony/` | Done |
+| **G1** | Foundation — SoundEvent, VoiceManager, EventDispatcher, AudioManager autoload | both | Done |
+| **G2** | Music System — MusicStateGraph, BeatClock, layer control | both | Done |
+| **G3** | RTPC Integration — parameter smoothing, curve evaluation, Symphony↔file-based unification | both | Done |
+| **G4** | Dialogue & Bus — DialogueAudioPipeline, BusController snapshots, auto-ducking | both | Done |
+| **G5** | Ambient & Spatial — AudioZone2D, scatter layers, distance attenuation | `game-template/` | Done |
+| **G6** | Profiling & Debug — performance monitors, debug overlay | `game-template/` | Done |
 
-**v1.0 milestone**: G1 + S1 + G2 + G3 (~55 days)
+**v1.0 milestone**: Done
 
 ## Required Skills
 
@@ -49,6 +49,14 @@ The following skills MUST always be activated:
 
 - `godot-gdscript` — Typed GDScript, signals, lifecycle callbacks, Godot 4 conventions.
 - `godot-gdextension-cpp` — GDExtension C++, godot-cpp, ClassDB registration, GDCLASS macro, ownership discipline.
+
+## Knowledge Base Tool
+
+Always using Knowledge Base Tool to verify solutions or answers related to symphony module, procedural sounds and musics, techniques and optimizations
+
+- `audio-books` - this knowledge contains many books + researches involving how to create procedural sounds & musics
+- `stk-code` - Code for reference. This library framework details how to design object-oriented C++ classes for foundational audio building blocks (such as delay lines, filters, envelopes, and physical modeling nodes). It explains the software engineering principles required for real-time safe audio processing, including lock-free ring buffers, sample-accurate parameter interpolation, and memory pre-allocation to prevent runtime thread stalls. The library structure serves as a template for combining modular unit generators into complex physical configurations.
+- `faust-code` - Code for reference. This language reference demonstrates how to define block-diagram equations using a functional programming syntax optimized for signal processing. The Faust compiler analyzes these functional representations to perform compiler optimization, automatic loop unrolling, and SIMD (Single Instruction Multiple Data) vectorization. It teaches how to construct complex networks of waveguides and modal biquads that compile natively to run inside game audio engines (e.g., Wwise, FMOD, Unreal Engine) with minimal overhead.
 
 ## Key Design Decisions
 
@@ -58,23 +66,3 @@ The following skills MUST always be activated:
 4. **Lock-free game→audio communication** — command ring buffer for thread safety.
 5. **LLM-agent-first authoring** — all config is `.tres` files with deterministic, text-serializable format.
 6. **Phase separation** — Symphony C++ phases (S1-S4) never mix with Game Audio Layer phases (G1-G6).
-
-## Workflow for Picking Up Tasks
-
-1. Read **`modules/symphony/dev-log.md`** for gotchas and pitfalls from prior sessions.
-2. Search **audio-plan** KB for the task breakdown and acceptance criteria.
-3. Search **audio-research** KB for algorithms, patterns, and Godot engine internals.
-4. Search **audio-books** KB for DSP theory (Puckette, Perry Cook, GAP 1-5).
-5. Search **godot-doc** KB for Godot class API references.
-6. Read existing code in the referenced files before writing.
-7. Implement following the acceptance criteria exactly.
-8. One task = one commit.
-
-## Knowledge Base Quick Reference
-
-| KB Name | Contains | Use For |
-|---------|----------|---------|
-| `audio-plan` | Design doc + task breakdown | Architecture decisions, task specs, acceptance criteria |
-| `audio-research` | Deep research syntheses | Voice management, beat sync, RTPC, spatial audio, adaptive music patterns |
-| `audio-books` | Puckette, Perry Cook, GAP 1-5 | DSP algorithms, filter math, synthesis techniques, physical modeling |
-| `godot-doc` | Godot XML class docs | API signatures, class inheritance, method parameters |

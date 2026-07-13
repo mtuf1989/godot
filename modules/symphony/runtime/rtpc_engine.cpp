@@ -48,14 +48,15 @@ void RTPCEngine::smooth_all(int p_num_frames) {
 			continue;
 		}
 		float target = param.target_value.load(std::memory_order_relaxed);
-		float diff = target - param.current_value;
+		float current = param.current_value.load(std::memory_order_relaxed);
+		float diff = target - current;
 		if (Math::abs(diff) < 1e-7f) {
-			param.current_value = target;
+			param.current_value.store(target, std::memory_order_relaxed);
 		} else {
 			// Apply smoothing: advance by coeff per micro-block worth of samples
 			// coeff is computed for one micro-block advance
 			float alpha = 1.0f - powf(1.0f - param.smooth_coeff, (float)p_num_frames);
-			param.current_value += alpha * diff;
+			param.current_value.store(current + alpha * diff, std::memory_order_relaxed);
 		}
 	}
 }
@@ -70,7 +71,7 @@ void RTPCEngine::register_parameter(const StringName &p_name, float p_default_va
 
 	int idx = global_param_count++;
 	global_params[idx].name = p_name;
-	global_params[idx].current_value = p_default_value;
+	global_params[idx].current_value.store(p_default_value, std::memory_order_relaxed);
 	global_params[idx].target_value.store(p_default_value, std::memory_order_relaxed);
 	global_params[idx].smooth_coeff = _compute_coeff(p_smooth_time_ms);
 	global_params[idx].active = true;
@@ -94,7 +95,7 @@ bool RTPCEngine::has_parameter(const StringName &p_name) const {
 float RTPCEngine::get_current_value(const StringName &p_name) const {
 	const int *idx_ptr = global_param_index.getptr(p_name);
 	if (idx_ptr) {
-		return global_params[*idx_ptr].current_value;
+		return global_params[*idx_ptr].current_value.load(std::memory_order_relaxed);
 	}
 	return 0.0f;
 }

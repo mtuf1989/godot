@@ -27,6 +27,10 @@ private:
 	// Atomic slot for hot-swap: main thread writes here, audio thread picks up.
 	std::atomic<CompiledGraph *> pending_graph{ nullptr };
 
+	// When true, the pending_graph is an LOD transition (crossfade needed).
+	// When false, it's a regular hot-swap (graveyard pattern).
+	std::atomic<bool> pending_is_lod{ false };
+
 	// Graveyard: old graphs waiting to be freed on the main thread.
 	CompiledGraph *graveyard = nullptr;
 

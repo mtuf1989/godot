@@ -19,7 +19,7 @@ public:
 
 	struct RTPCParameter {
 		StringName name;
-		float current_value = 0.0f;
+		std::atomic<float> current_value{0.0f}; // Written by audio thread, read by game thread
 		std::atomic<float> target_value{0.0f}; // Written by game thread, read by audio thread
 		float smooth_coeff = 0.0f; // Computed from smooth_time and sample_rate
 		bool active = false;

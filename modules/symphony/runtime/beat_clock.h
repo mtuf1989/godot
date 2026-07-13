@@ -29,6 +29,9 @@ class BeatClock : public Object {
 	int prev_beat_index = -1;
 	int prev_bar_index = -1;
 
+	// Double-call guard: tracks the last engine frame we processed
+	uint64_t last_process_frame = UINT64_MAX;
+
 	// Internal
 	double _get_corrected_time() const;
 	void _refresh_latency_cache();

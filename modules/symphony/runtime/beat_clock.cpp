@@ -1,6 +1,7 @@
 #include "beat_clock.h"
 #include "core/object/class_db.h"
 #include "core/os/os.h"
+#include "core/config/engine.h"
 #include "servers/audio/audio_stream.h"
 #include "servers/audio/audio_server.h"
 
@@ -58,6 +59,7 @@ void BeatClock::start(float p_bpm, int p_beats_per_bar) {
 	logic_time = 0.0;
 	prev_beat_index = -1;
 	prev_bar_index = -1;
+	last_process_frame = UINT64_MAX;
 	_refresh_latency_cache();
 }
 
@@ -128,6 +130,13 @@ float BeatClock::get_time_to_next_bar() const {
 
 void BeatClock::process(double p_delta) {
 	if (!playing) return;
+
+	// Double-call guard: skip if already processed this frame.
+	uint64_t current_frame = Engine::get_singleton()->get_process_frames();
+	if (current_frame == last_process_frame) {
+		return;
+	}
+	last_process_frame = current_frame;
 
 	_refresh_latency_cache();
 

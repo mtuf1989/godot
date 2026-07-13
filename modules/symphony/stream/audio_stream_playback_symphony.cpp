@@ -86,8 +86,22 @@ int AudioStreamPlaybackSymphony::mix(AudioFrame *p_buffer, float p_rate_scale, i
 	// Hot-swap check: pick up new graph if available.
 	CompiledGraph *pending = pending_graph.exchange(nullptr, std::memory_order_acquire);
 	if (pending) {
-		cleanup_graveyard();
-		graveyard = current_graph;
+		bool is_lod = pending_is_lod.exchange(false, std::memory_order_acquire);
+		if (is_lod && current_graph) {
+			// LOD transition: set up parallel crossfade from current → new.
+			// If already in a crossfade, discard the old outgoing graph.
+			if (lod_outgoing_graph) {
+				memdelete(lod_outgoing_graph);
+			}
+			lod_outgoing_graph = current_graph;
+			lod_outgoing_output = graph_output_node;
+			lod_crossfade_progress = 0.0f;
+			lod_crossfade_speed = 1.0f / (float)LOD_CROSSFADE_SAMPLES;
+		} else {
+			// Regular hot-swap: graveyard the old graph.
+			cleanup_graveyard();
+			graveyard = current_graph;
+		}
 		current_graph = pending;
 		find_graph_output();
 		rebuild_routing_tables();
@@ -326,30 +340,20 @@ void AudioStreamPlaybackSymphony::transition_to_lod(int p_lod_tier) {
 		return; // Invalid tier
 	}
 
-	// Compile the new LOD graph
+	// Compile the new LOD graph on the main thread.
 	CompiledGraph *new_graph = stream->compile_lod_graph(p_lod_tier);
 	if (!new_graph) {
 		return; // Compilation failed
 	}
 
-	// If already in a crossfade, immediately finish the old one
-	if (lod_outgoing_graph) {
-		memdelete(lod_outgoing_graph);
-		lod_outgoing_graph = nullptr;
-		lod_outgoing_output = nullptr;
+	// Publish via the atomic pending_graph slot.
+	// The audio thread will pick this up at the next mix() block boundary
+	// and initiate the crossfade there (thread-safe).
+	pending_is_lod.store(true, std::memory_order_release);
+	CompiledGraph *old_pending = pending_graph.exchange(new_graph, std::memory_order_acq_rel);
+	if (old_pending) {
+		memdelete(old_pending);
 	}
 
-	// Move current graph to outgoing slot
-	lod_outgoing_graph = current_graph;
-	lod_outgoing_output = graph_output_node;
-
-	// Install new graph as current
-	current_graph = new_graph;
-	find_graph_output();
-	rebuild_routing_tables();
-
-	// Start crossfade
-	lod_crossfade_progress = 0.0f;
-	lod_crossfade_speed = 1.0f / (float)LOD_CROSSFADE_SAMPLES;
 	current_lod_tier = p_lod_tier;
 }
