@@ -80,6 +80,8 @@ public:
 		int current_lod = 0;      // Current LOD tier (0=full, 1=simplified, 2=minimal)
 		int target_lod = 0;       // Target LOD (set by auto or force_lod)
 		bool lod_forced = false;  // If true, auto-LOD is disabled for this slot
+		float lod_threshold_1 = 0.3f; // Distance ratio for LOD 0→1 transition
+		float lod_threshold_2 = 0.7f; // Distance ratio for LOD 1→2 transition
 	};
 
 	struct VoiceMetrics {
@@ -178,6 +180,7 @@ public:
 	int get_slot_current_lod(int p_slot) const;
 	int get_slot_target_lod(int p_slot) const;
 	void update_lod_targets();                      // Called each frame, updates target LOD based on distance
+	void set_slot_lod_thresholds(int p_slot, float p_threshold_1, float p_threshold_2);
 
 	void process_frame();
 

@@ -100,6 +100,9 @@ void BusController::apply_snapshot(const StringName &p_name, float p_transition_
 			as->set_bus_mute(idx, E.value.muted);
 			as->set_bus_solo(idx, E.value.solo);
 		}
+		// Reset ducking state to prevent offset drift (dev-log #10).
+		applied_duck_offsets.clear();
+		ducking_state.current_duck_db = 0.0f;
 		transition.active = false;
 	} else {
 		// Start interpolated transition
@@ -117,6 +120,9 @@ void BusController::apply_snapshot(const StringName &p_name, float p_transition_
 			transition.to_state.insert(E.key, E.value);
 		}
 
+		// Reset ducking state — transition takes over volume authority (dev-log #10).
+		applied_duck_offsets.clear();
+		ducking_state.current_duck_db = 0.0f;
 		transition.progress = 0.0f;
 		transition.duration = p_transition_time;
 		transition.active = true;
@@ -266,6 +272,13 @@ void BusController::_update_ducking(float p_delta) {
 	// Determine if ducking should be active
 	bool should_duck = (peak > ducking_config.silence_threshold_db);
 	ducking_state.is_ducking = should_duck;
+
+	// Warn once if ducking activates — volume stacks with any external bus modifications (dev-log #11).
+	if (should_duck && !ducking_state.warned_about_stacking) {
+		print_verbose("BusController: Auto-ducking active. Note: ducking dB offset stacks with any "
+				"external bus volume changes (e.g. set_category_volume). See BusController docs.");
+		ducking_state.warned_about_stacking = true;
+	}
 
 	// Set target
 	ducking_state.target_duck_db = should_duck ? ducking_config.duck_amount_db : 0.0f;

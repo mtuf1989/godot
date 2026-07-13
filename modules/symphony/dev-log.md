@@ -6,22 +6,6 @@ Items below are verified-actionable as of 2026-07-13. Each represents a real lim
 
 ---
 
-### Integration & Cross-Layer Concerns
-
-10. **BusController ducking offset drift**: `apply_snapshot()` does NOT reset `applied_duck_offsets`. Could cause volume drift when combining snapshots with auto-ducking. *(runtime/bus_controller.cpp)*
-
-11. **Dialogue ducking stacks with category volume**: Effects stack (intentional) but could surprise users. Needs documentation. *(runtime/bus_controller.cpp)*
-
-12. **VoicePool LOD thresholds are hardcoded (0.7/0.3)**: Ignores per-stream `lod_threshold_1/2` properties. Needs unification. *(runtime/voice_manager.cpp)*
-
-13. **GrainCloud pin count increased (5→8)**: Old .tres files still work (unconnected=nullptr), but a migration concern for explicit pin-count validation. *(nodes/synthesis/symphony_grain_cloud.h)*
-
-14. **GraphOutput does NOT sum multiple connections**: Must use Mix/MathAdd before GraphOutput. *(nodes/io/symphony_graph_output.h)*
-
-15. **Operator StringName coupling with .tres files**: Renaming an operator silently breaks .tres graphs. No migration/alias system. *(core/symphony_operator_registry.h)*
-
----
-
 ### Game Audio Layer (game-template/) Concerns
 
 16. **AudioZone2D editor performance**: `queue_redraw()` every frame. Needs throttling with 50+ zones. *(audio_zone_2d.gd)*
@@ -74,6 +58,12 @@ The following topics need proper user-facing documentation before the module is 
 - LOD tier 2 graphs should NOT use GrainCloud. Replace with Noise→Filter→Gain for distant voices.
 - Live-input granulation allocates 384KB per voice — budget accordingly.
 
+### GrainCloud Pin Evolution (S4.3)
+- GrainCloud grew from 5 to 8 input pins in S4.3: added `scan_speed`, `amp_randomness`, `pitch_tracking`.
+- Old `.tres` files with only 5 connections still load correctly — unconnected pins default to `nullptr` and parameter defaults are used (scan_speed=0, amp_randomness=0, pitch_tracking=0).
+- No migration action required. New pins are all `required = false`.
+- Pin layout: `audio_in`(0), `grain_size_ms`(1), `density`(2), `position`(3), `pitch_randomness`(4), `scan_speed`(5), `amp_randomness`(6), `pitch_tracking`(7).
+
 ### Virtualization & Memory
 - Connect to `SymphonyVoicePool.voice_virtualized` / `voice_devirtualized` signals.
 - On virtualize: call `player.stop()` to release graph memory.
@@ -116,12 +106,15 @@ playback.set_parameter("time_stretch", BeatClock.calculate_duration_stretch_for_
 - Without it, the graph runs but the ADSR/envelope never fires.
 
 ### BusController Snapshots & Ducking
-- Ducking effects stack with `set_category_volume()`. Both modify same bus.
-- After `apply_snapshot()`, ducking offsets may drift. Be aware when mixing snapshots + auto-ducking.
+- Ducking effects stack with `set_category_volume()`. Both modify the same AudioServer bus volume. This is intentional — there are no separate volume lanes (VCAs). If you need independent control, use separate buses.
+- `apply_snapshot()` resets ducking state automatically. After a snapshot applies, auto-ducking will re-attack from 0 dB over the configured `attack_ms`. This prevents offset drift but means you may hear a brief volume swell on ducked buses immediately after a snapshot transition.
+- A one-time verbose log is emitted when ducking first activates to remind about stacking behavior. Visible with `--verbose` flag.
 
 ### LOD System
 - 3 tiers: LOD 0 (full), LOD 1 (simplified), LOD 2 (minimal).
-- Thresholds: 30% / 70% of max_distance with 5% hysteresis.
+- Default thresholds: 30% / 70% of max_distance with 5% hysteresis.
+- Per-slot thresholds: call `VoicePool.set_slot_lod_thresholds(slot, threshold_1, threshold_2)` after `acquire_slot()` to override defaults. Read values from `AudioStreamSymphony.lod_threshold_1` / `lod_threshold_2`.
+- If not explicitly set, slots use 0.3 / 0.7 defaults. Thresholds reset on each `acquire_slot()`.
 - LOD crossfade: 2048 samples (~42ms) parallel execution of both graphs.
 - `force_lod()` / `release_lod_force()` for manual control.
 
@@ -129,7 +122,10 @@ playback.set_parameter("time_stretch", BeatClock.calculate_duration_stretch_for_
 - GraphOutput has a single input pin. Use Mix/MathAdd nodes to combine multiple sources before output.
 
 ### Operator Naming & .tres Compatibility
-- .tres files reference operators by StringName. Never rename operators without an alias/migration plan.
+- .tres files reference operators by StringName. Never rename operators without registering an alias.
+- Alias system: call `OperatorRegistry::register_alias("OldName", "NewName")` in `register_types.cpp` to maintain backward compatibility with existing .tres files.
+- When a deprecated name is resolved via alias, a `WARN_PRINT` is emitted once per compile prompting the user to update their resource files.
+- Aliases are a migration bridge, not permanent infrastructure. Remove them after a major version bump once all .tres files are updated.
 
 ---
 

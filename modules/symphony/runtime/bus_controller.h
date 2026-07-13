@@ -7,6 +7,15 @@
 #include "core/variant/dictionary.h"
 #include "core/variant/typed_array.h"
 
+/// BusController manages audio bus snapshots and auto-ducking.
+///
+/// @warning Ducking and external category volume changes (e.g. set_category_volume
+/// in the Game Audio Layer) both modify the same AudioServer bus volume_db.
+/// Their effects stack additively. For example, if auto-ducking applies -6 dB
+/// and category volume is set to -3 dB, the bus will be at -9 dB relative to
+/// its snapshot baseline. This is intentional but may surprise users who expect
+/// independent volume lanes. Consider using Godot's AudioServer bus effects or
+/// separate buses if independent control is needed.
 class BusController : public Object {
 	GDCLASS(BusController, Object);
 
@@ -47,6 +56,7 @@ public:
 		float target_duck_db = 0.0f;
 		float smooth_coeff_attack = 0.0f;
 		float smooth_coeff_release = 0.0f;
+		bool warned_about_stacking = false;
 	};
 
 private:

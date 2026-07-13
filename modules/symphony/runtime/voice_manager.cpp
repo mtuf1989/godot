@@ -87,6 +87,7 @@ void SymphonyVoicePool::_bind_methods() {
 	// LOD control
 	ClassDB::bind_method(D_METHOD("force_lod", "slot", "lod_tier"), &SymphonyVoicePool::force_lod);
 	ClassDB::bind_method(D_METHOD("release_lod_force", "slot"), &SymphonyVoicePool::release_lod_force);
+	ClassDB::bind_method(D_METHOD("set_slot_lod_thresholds", "slot", "threshold_1", "threshold_2"), &SymphonyVoicePool::set_slot_lod_thresholds);
 	ClassDB::bind_method(D_METHOD("get_slot_current_lod", "slot"), &SymphonyVoicePool::get_slot_current_lod);
 	ClassDB::bind_method(D_METHOD("get_slot_target_lod", "slot"), &SymphonyVoicePool::get_slot_target_lod);
 
@@ -115,6 +116,8 @@ int SymphonyVoicePool::acquire_slot(int p_priority) {
 			slots[i].start_time = OS::get_singleton()->get_ticks_usec();
 			slots[i].local_param_count = 0;
 			slots[i].attenuation_volume = 1.0f;
+			slots[i].lod_threshold_1 = 0.3f;
+			slots[i].lod_threshold_2 = 0.7f;
 			slot_attenuation_curves[i] = Ref<Curve>();
 			return i;
 		}
@@ -130,6 +133,8 @@ int SymphonyVoicePool::acquire_slot(int p_priority) {
 		slots[stolen].start_time = OS::get_singleton()->get_ticks_usec();
 		slots[stolen].local_param_count = 0;
 		slots[stolen].attenuation_volume = 1.0f;
+		slots[stolen].lod_threshold_1 = 0.3f;
+		slots[stolen].lod_threshold_2 = 0.7f;
 		slot_attenuation_curves[stolen] = Ref<Curve>();
 	}
 	return stolen;
@@ -501,12 +506,13 @@ void SymphonyVoicePool::update_lod_targets() {
 		float distance_ratio = (max_dist_sq > 0.0f) ? Math::sqrt(dist_sq / max_dist_sq) : 0.0f;
 		distance_ratio = CLAMP(distance_ratio, 0.0f, 1.0f);
 
-		// Determine target LOD from distance ratio
-		// Default thresholds: 0.3 for LOD 1, 0.7 for LOD 2
+		// Determine target LOD from distance ratio using per-slot thresholds (dev-log #12).
+		float t1 = slots[i].lod_threshold_1;
+		float t2 = slots[i].lod_threshold_2;
 		int new_target;
-		if (distance_ratio >= 0.7f) {
+		if (distance_ratio >= t2) {
 			new_target = 2;
-		} else if (distance_ratio >= 0.3f) {
+		} else if (distance_ratio >= t1) {
 			new_target = 1;
 		} else {
 			new_target = 0;
@@ -514,16 +520,25 @@ void SymphonyVoicePool::update_lod_targets() {
 
 		// Hysteresis: only upgrade (lower LOD number) if distance drops below threshold - 5%
 		if (new_target < slots[i].current_lod) {
-			// Upgrading: require 5% margin to prevent oscillation
 			float hysteresis = 0.05f;
-			if (new_target == 0 && distance_ratio > (0.3f - hysteresis)) {
+			if (new_target == 0 && distance_ratio > (t1 - hysteresis)) {
 				new_target = 1; // Stay at LOD 1
-			} else if (new_target == 1 && distance_ratio > (0.7f - hysteresis)) {
+			} else if (new_target == 1 && distance_ratio > (t2 - hysteresis)) {
 				new_target = 2; // Stay at LOD 2
 			}
 		}
 
 		slots[i].target_lod = new_target;
+	}
+}
+
+void SymphonyVoicePool::set_slot_lod_thresholds(int p_slot, float p_threshold_1, float p_threshold_2) {
+	ERR_FAIL_INDEX(p_slot, pool_size);
+	slots[p_slot].lod_threshold_1 = CLAMP(p_threshold_1, 0.0f, 1.0f);
+	slots[p_slot].lod_threshold_2 = CLAMP(p_threshold_2, 0.0f, 1.0f);
+	// Ensure threshold_2 >= threshold_1
+	if (slots[p_slot].lod_threshold_2 < slots[p_slot].lod_threshold_1) {
+		slots[p_slot].lod_threshold_2 = slots[p_slot].lod_threshold_1;
 	}
 }
 

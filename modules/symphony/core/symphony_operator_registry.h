@@ -53,6 +53,7 @@ class OperatorRegistry {
 private:
 	static OperatorRegistry *singleton;
 	HashMap<StringName, OperatorDescriptor> descriptors;
+	HashMap<StringName, StringName> aliases; // deprecated_name → current_name (dev-log #15)
 
 public:
 	static OperatorRegistry *get_singleton();
@@ -60,6 +61,7 @@ public:
 	static void destroy_singleton();
 
 	void register_operator(const OperatorDescriptor &p_desc);
+	void register_alias(const StringName &p_old_name, const StringName &p_current_name);
 	const OperatorDescriptor *find(const StringName &p_type_name) const;
 	void get_registered_types(Vector<StringName> &r_types) const;
 };

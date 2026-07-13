@@ -122,6 +122,15 @@ GraphCompiler::CompileResult GraphCompiler::compile(const GraphDescription &p_de
 
 		// Record the connection
 		bool promotion = (out_type == SymphonyPinType::FLOAT && in_type == SymphonyPinType::AUDIO);
+
+		// Warn if this input pin already has a connection — last one wins, earlier is lost (dev-log #14).
+		if (input_sources[to_idx][conn.to_pin].source_node_idx != -1) {
+			WARN_PRINT(vformat("Symphony compile: Node %d ('%s') input pin %d ('%s') has multiple connections. "
+					"Only the last connection is used. Use a Mix or MathAdd node to combine signals.",
+					conn.to_node, String(to_desc->type_name), conn.to_pin,
+					String(to_desc->inputs[conn.to_pin].name)));
+		}
+
 		input_sources.write[to_idx].write[conn.to_pin] = { from_idx, conn.from_pin, promotion };
 
 		// Build adjacency for topological sort — skip feedback edges (they don't create dependencies)
