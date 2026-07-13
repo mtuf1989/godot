@@ -25,6 +25,7 @@
 #include "nodes/envelopes/symphony_gain.h"
 #include "nodes/envelopes/symphony_adsr.h"
 #include "nodes/envelopes/symphony_compressor.h"
+#include "nodes/envelopes/symphony_envelope_float.h"
 #include "nodes/math/symphony_math_add.h"
 #include "nodes/math/symphony_mix.h"
 #include "nodes/math/symphony_map_range.h"
@@ -83,6 +84,7 @@ void initialize_symphony_module(ModuleInitializationLevel p_level) {
 		SymphonyGain::register_operator();
 		SymphonyADSR::register_operator();
 		SymphonyCompressor::register_operator();
+		SymphonyEnvelopeFloat::register_operator();
 
 		// Math
 		SymphonyMathAdd::register_operator();

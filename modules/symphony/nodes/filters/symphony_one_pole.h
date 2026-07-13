@@ -7,24 +7,30 @@
 
 // Simple one-pole low-pass filter (exponential smoothing).
 // y[n] = (1-a)*x[n] + a*y[n-1], where a = exp(-TAU * cutoff / sample_rate)
+// Cutoff can be modulated at runtime via the "cutoff" input pin (FLOAT).
 class SymphonyOnePole : public SymphonyOperator {
 private:
-	const float *input = nullptr;
-	float *output = nullptr;
+	const float *SYMPHONY_RESTRICT input = nullptr;
+	const float *SYMPHONY_RESTRICT cutoff_input = nullptr;
+	float *SYMPHONY_RESTRICT output = nullptr;
 	float prev = 0.0f;
-	float coeff = 0.0f; // 'a' coefficient
+	float default_cutoff = 100.0f;
+	float mix_rate = 48000.0f;
 
 public:
-	SymphonyOnePole(float p_cutoff, float p_mix_rate) {
-		coeff = expf(-Math::TAU * p_cutoff / p_mix_rate);
-	}
+	SymphonyOnePole(float p_cutoff, float p_mix_rate)
+			: default_cutoff(p_cutoff), mix_rate(p_mix_rate) {}
 
 	virtual void bind_pins(void **p_input_ptrs, void **p_output_ptrs) override {
 		input = (const float *)p_input_ptrs[0];
+		cutoff_input = (const float *)p_input_ptrs[1];
 		output = (float *)p_output_ptrs[0];
 	}
 
 	virtual void execute(int32_t p_num_frames) override {
+		float cutoff = cutoff_input ? *cutoff_input : default_cutoff;
+		float coeff = expf(-Math::TAU * cutoff / mix_rate);
+
 		for (int32_t i = 0; i < p_num_frames; i++) {
 			prev = (1.0f - coeff) * input[i] + coeff * prev;
 			output[i] = prev;
@@ -36,6 +42,7 @@ public:
 		if (p_max_size >= sizeof(float)) memcpy(p_buffer, &prev, sizeof(float));
 		return sizeof(float);
 	}
+
 	virtual void import_state(const uint8_t *p_buffer, size_t p_size) override {
 		if (p_size >= sizeof(float)) memcpy(&prev, p_buffer, sizeof(float));
 	}
@@ -45,6 +52,7 @@ public:
 		desc.type_name = "OnePole";
 		desc.category = "Filters";
 		desc.inputs.push_back({ "input", SymphonyPinType::AUDIO, true });
+		desc.inputs.push_back({ "cutoff", SymphonyPinType::FLOAT, false });
 		desc.outputs.push_back({ "output", SymphonyPinType::AUDIO, false });
 		desc.params.push_back({ "cutoff", 100.0f, 1.0f, 20000.0f, 1.0f });
 		desc.state_size = sizeof(SymphonyOnePole);

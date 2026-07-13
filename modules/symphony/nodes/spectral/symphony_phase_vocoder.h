@@ -15,7 +15,12 @@
 //        phase accumulate → IFFT → window → overlap-add.
 //   3. Read output from the overlap-add buffer at normal rate.
 //
-// Time-stretch ratio controls how fast we advance through the analysis timeline.
+// Time-stretch ratio controls output duration relative to input:
+//   time_stretch = 2.0 → output is 2× longer (half-speed playback).
+//   time_stretch = 0.5 → output is half as long (double-speed playback).
+//   time_stretch = 1.0 → normal speed.
+// This matches the DAW convention (Ableton, Pro Tools, etc.).
+//
 // Pitch-shift (in semitones) re-maps frequency bins before resynthesis.
 //
 // NOTE: PFFFT_Setup* is heap-allocated by pffft_new_setup() and cannot live in
@@ -85,11 +90,14 @@ private:
 
 		// --- Step 1: Determine analysis read position ---
 		// analysis_pos tracks where we are in the input timeline (in samples from start).
-		// We advance by (time_stretch * hop_size) each synthesis frame.
+		// We advance by (1/time_stretch * hop_size) each synthesis frame.
+		// Convention: time_stretch > 1.0 = longer output (slower playback),
+		//             time_stretch < 1.0 = shorter output (faster playback).
+		//             1.0 = normal speed. Range: [0.5, 2.0].
 		int32_t analysis_center = (int32_t)analysis_pos;
 
 		// Advance analysis position for next frame
-		analysis_pos += p_time_stretch * (float)hop_size;
+		analysis_pos += (1.0f / p_time_stretch) * (float)hop_size;
 
 		// --- Step 2: Extract analysis frame from input ring buffer ---
 		// Read fft_size samples starting at analysis_center.

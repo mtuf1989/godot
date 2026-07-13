@@ -6,22 +6,27 @@
 #include "core/math/math_funcs.h"
 
 // Saturator: soft clip (tanh) or hard clip. Drive parameter controls input gain before clipping.
+// Drive can be modulated at runtime via the "drive" input pin (FLOAT).
 class SymphonySaturator : public SymphonyOperator {
 private:
-	const float *input = nullptr;
-	float *output = nullptr;
-	float drive = 1.0f;
+	const float *SYMPHONY_RESTRICT input = nullptr;
+	const float *SYMPHONY_RESTRICT drive_input = nullptr;
+	float *SYMPHONY_RESTRICT output = nullptr;
+	float default_drive = 2.0f;
 	int32_t mode = 0; // 0=soft(tanh), 1=hard
 
 public:
-	SymphonySaturator(float p_drive, int32_t p_mode) : drive(p_drive), mode(p_mode) {}
+	SymphonySaturator(float p_drive, int32_t p_mode) : default_drive(p_drive), mode(p_mode) {}
 
 	virtual void bind_pins(void **p_input_ptrs, void **p_output_ptrs) override {
 		input = (const float *)p_input_ptrs[0];
+		drive_input = (const float *)p_input_ptrs[1];
 		output = (float *)p_output_ptrs[0];
 	}
 
 	virtual void execute(int32_t p_num_frames) override {
+		float drive = drive_input ? *drive_input : default_drive;
+
 		if (mode == 0) {
 			for (int32_t i = 0; i < p_num_frames; i++) {
 				output[i] = tanhf(input[i] * drive);
@@ -38,6 +43,7 @@ public:
 		desc.type_name = "Saturator";
 		desc.category = "Filters";
 		desc.inputs.push_back({ "input", SymphonyPinType::AUDIO, true });
+		desc.inputs.push_back({ "drive", SymphonyPinType::FLOAT, false });
 		desc.outputs.push_back({ "output", SymphonyPinType::AUDIO, false });
 		desc.params.push_back({ "drive", 2.0f, 0.1f, 20.0f, 0.1f });
 		desc.params.push_back({ "mode", 0.0f, 0.0f, 1.0f, 1.0f }); // 0=soft, 1=hard
