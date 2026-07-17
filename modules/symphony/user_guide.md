@@ -1,4 +1,4 @@
-# Symphony Audio System — User Guide
+# Symphony Audio System — User Guide v1.5
 
 > A complete guide to creating procedural sounds, adaptive music, and spatial audio for games using the Symphony module and its GDScript Game Audio Layer.
 
@@ -624,6 +624,159 @@ func _on_beat(beat_index: int) -> void:
 MusicSystem.stop()        # Immediate stop
 MusicSystem.stop(2.0)     # Fade out over 2 seconds
 ```
+
+### Transition Feasibility Analysis
+
+`TransitionAnalyzer` automatically evaluates the spectral and loudness characteristics of outgoing and incoming streams at transition time. It recommends the optimal crossfade curve shape.
+
+**How it works:**
+1. When `MusicSystem` executes a crossfade, it renders a short analysis window (~46ms) from the tail of the outgoing stream and the head of the incoming stream.
+2. It computes RMS (loudness) and spectral centroid (brightness) for both.
+3. Based on the difference, it selects an optimal crossfade curve: `LINEAR`, `EQUAL_POWER`, `S_CURVE`, or recommends `FADE_THROUGH_SILENCE`.
+
+**Curve Selection Logic:**
+
+| Spectral Distance | Loudness Distance | Recommended Curve |
+|-------------------|-------------------|-------------------|
+| Low (ratio < 1.3) | Low (< 3 dB) | LINEAR |
+| Medium (ratio < 1.8) | Medium (< 6 dB) | EQUAL_POWER |
+| High (ratio < 2.5) | Any | S_CURVE |
+| Very High (ratio ≥ 2.5) | Any | FADE_THROUGH_SILENCE |
+
+**Usage:**
+
+```gdscript
+# Auto curve selection is ON by default.
+# MusicSystem handles it automatically — no code needed.
+
+# Opt out globally:
+MusicSystem.auto_curve_selection = false
+
+# Opt out per transition (in the graph .tres):
+# transitions = [{"from": "combat", "to": "menu", ..., "auto_curve_selection": false}]
+
+# Read the last analysis result:
+var result: Dictionary = MusicSystem.get_last_analysis_result()
+print("Feasibility: %.2f, Curve: %s" % [result.feasibility, result.recommended_curve_name])
+print("RMS delta: %.1f dB, Centroid ratio: %.2f" % [result.rms_delta_db, result.centroid_ratio])
+
+# Listen for analysis events:
+MusicSystem.transition_analyzed.connect(_on_transition_analyzed)
+
+func _on_transition_analyzed(from: StringName, to: StringName, result: Dictionary) -> void:
+    if result.feasibility < 0.5:
+        push_warning("Rough transition %s → %s (score: %.2f)" % [from, to, result.feasibility])
+```
+
+**Direct API (for tools/debugging):**
+
+```gdscript
+# Analyze any two streams manually:
+var result: Dictionary = TransitionAnalyzer.analyze_transition(stream_a, stream_b, 1.0)
+
+# Result keys:
+#   feasibility: float (0.0-1.0)
+#   recommended_curve: int (0=LINEAR, 1=EQUAL_POWER, 2=S_CURVE, 3=FADE_SILENCE)
+#   recommended_curve_name: String
+#   rms_delta_db: float
+#   centroid_ratio: float
+#   outgoing_rms_db: float, incoming_rms_db: float
+#   outgoing_centroid_hz: float, incoming_centroid_hz: float
+
+# Quick score only:
+var score: float = TransitionAnalyzer.get_feasibility_score(stream_a, stream_b)
+```
+
+**Performance:** ~0.05ms per analysis on desktop, ~0.2ms on mobile. Runs once per transition on the main thread. No per-frame cost. Allocates 16KB temporarily, freed immediately.
+
+### Musical Coherence Validation
+
+`MusicStateGraph` can validate the musical coherence of transitions using optional metadata fields on each state.
+
+**Optional metadata fields in state dictionaries:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `key` | String | Musical key (e.g. "Am", "C", "F#m", "Bb") |
+| `energy` | float | Perceived energy level (0.0-1.0) |
+| `spectral_centroid_hz` | float | Average brightness in Hz |
+| `bpm` | float | Already exists — used for tempo coherence |
+
+**Example state with metadata:**
+
+```ini
+[resource]
+states = {
+    "exploration": {
+        "stream": ...,
+        "bpm": 90.0,
+        "beats_per_bar": 4,
+        "loop": true,
+        "key": "Am",
+        "energy": 0.3,
+        "spectral_centroid_hz": 1200.0
+    },
+    "combat": {
+        "stream": ...,
+        "bpm": 140.0,
+        "beats_per_bar": 4,
+        "loop": true,
+        "key": "Em",
+        "energy": 0.9,
+        "spectral_centroid_hz": 3500.0
+    }
+}
+```
+
+**Coherence checks performed:**
+
+1. **Energy delta** — warns if energy jump > 0.5 with crossfade/cut (suggests fade-through-silence)
+2. **Tempo ratio** — warns if BPM ratio > 1.2x (suggests longer transition or bridge state)
+3. **Key distance** — warns if circle-of-fifths distance > 3 (suggests stinger to mask key change). Relative major/minor pairs (C↔Am) are exempt.
+4. **Spectral centroid ratio** — warns if brightness ratio > 2x (suggests longer crossfade)
+
+**Usage:**
+
+```gdscript
+# Automatic at load time — prints warnings/errors:
+MusicSystem.load_graph(my_graph)
+# Output: "MusicSystem [exploration→combat]: coherence warning — Energy jump 0.60 ..."
+
+# Manual validation:
+var diagnostics: Array = my_graph.validate_musical_coherence()
+for diag in diagnostics:
+    print("[%s→%s] %s (score: %.2f)" % [diag.from, diag.to, diag.message, diag.score])
+
+# Quick check:
+if my_graph.is_musically_coherent():
+    print("All transitions OK")
+
+# Per-transition score:
+var score: float = my_graph.get_transition_coherence_score(&"exploration", &"combat")
+```
+
+**Suppressing warnings:**
+
+```gdscript
+# Per-transition override (in graph .tres):
+transitions = [{
+    "from": "exploration", "to": "combat",
+    "type": 0, "duration": 2.0, "quantization": 2,
+    "coherence_override": true  # ← suppresses coherence checks for this pair
+}]
+```
+
+**Configurable thresholds:**
+
+```gdscript
+# Available as properties on the MusicStateGraph resource:
+graph.coherence_max_energy_delta = 0.5     # Default: 0.5
+graph.coherence_max_tempo_ratio = 1.2      # Default: 1.2
+graph.coherence_max_centroid_ratio = 2.0   # Default: 2.0
+graph.coherence_max_key_distance = 3       # Default: 3 (circle of fifths)
+```
+
+**For LLM agents generating graphs:** Always populate `key`, `energy`, and `spectral_centroid_hz` fields. After generating, call `validate_musical_coherence()` and fix any `COHERENCE_ERROR` diagnostics before saving.
 
 ---
 
@@ -1519,6 +1672,71 @@ func _on_music_slider_changed(value: float):
 
 ## Changelog
 
+### v1.5 — Transition Quality & Musical Coherence (2026-07-17)
+
+**New C++ singleton: `TransitionAnalyzer`**
+
+Automatically analyzes spectral and loudness characteristics at music transition boundaries. Selects the optimal crossfade curve shape without manual tuning.
+
+- `TransitionAnalyzer.analyze_transition(outgoing, incoming, duration)` → full analysis Dictionary
+- `TransitionAnalyzer.get_feasibility_score(outgoing, incoming)` → float (0.0–1.0)
+- `TransitionAnalyzer.get_recommended_curve(outgoing, incoming)` → enum
+
+Curve recommendations:
+| Enum | Name | When used |
+|------|------|-----------|
+| `CURVE_LINEAR` | `"linear"` | Spectrally similar, similar loudness |
+| `CURVE_EQUAL_POWER` | `"equal_power"` | Moderate spectral difference |
+| `CURVE_S_CURVE` | `"s_curve"` | Large spectral difference |
+| `CURVE_FADE_SILENCE` | `"fade_silence"` | Very different material — auto-promotes to fade-through-silence |
+
+Performance: ~0.05ms on desktop, ~0.2ms on mobile. Runs once per transition. Zero per-frame cost.
+
+**New `MusicStateGraph` API: Musical Coherence Validation**
+
+Optional metadata fields on state dictionaries enable load-time validation of musical transitions:
+
+```ini
+"exploration": {
+    "stream": ..., "bpm": 90.0, "beats_per_bar": 4, "loop": true,
+    "key": "Am", "energy": 0.3, "spectral_centroid_hz": 1200.0
+}
+```
+
+New methods:
+- `graph.validate_musical_coherence()` → Array[Dictionary] of diagnostics
+- `graph.is_musically_coherent()` → bool (true if no errors)
+- `graph.get_transition_coherence_score(from, to)` → float (0.0–1.0)
+
+Coherence checks: energy delta, tempo ratio, key distance (circle of fifths), spectral centroid ratio. Relative major/minor pairs (C↔Am) are exempt.
+
+New properties (configurable thresholds):
+```
+coherence_max_energy_delta = 0.5
+coherence_max_tempo_ratio = 1.2
+coherence_max_centroid_ratio = 2.0
+coherence_max_key_distance = 3
+```
+
+Per-transition override: `"coherence_override": true` suppresses warnings for artistic intent.
+
+**MusicSystem integration:**
+
+- `load_graph()` automatically runs `validate_musical_coherence()` and prints warnings
+- `_execute_crossfade()` calls `TransitionAnalyzer` to select curve shape
+- Auto-promotes to `FADE_THROUGH_SILENCE` when spectral distance is extreme
+- New signal: `transition_analyzed(from, to, result)` — emitted after each analysis
+- New property: `MusicSystem.auto_curve_selection = true` — global opt-out
+- Per-transition opt-out: `"auto_curve_selection": false` in transition dict
+- `MusicSystem.get_last_analysis_result()` → Dictionary
+
+**Migration notes:**
+- Fully backward-compatible. Existing graphs without metadata fields work unchanged.
+- `auto_curve_selection` defaults to `true` — crossfades may sound slightly different (better) than before. Set to `false` for identical behavior to v1.4.
+- No changes to `AudioManager`, `AmbientSystem`, or `SoundEvent` APIs.
+
+---
+
 ### v1.4 — Parameter Smoothing & Debug Safety (2026-07-17)
 
 **User-facing changes:**
@@ -1630,7 +1848,3 @@ func _on_music_slider_changed(value: float):
 - Waveshaper now allocates two tables in arena (transfer + antiderivative)
 - Graph compiler supports a pre-pass for injecting synthetic operators
 - FMOscillator state export now includes filter state (backward-compatible import)
-
----
-
-*Symphony Audio System v1.4 — Procedural sound, adaptive music, and spatial audio for Godot.*

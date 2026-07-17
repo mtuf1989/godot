@@ -114,6 +114,41 @@ playback.set_parameter("time_stretch", BeatClock.calculate_duration_stretch_for_
 | G4 | Dialogue & Bus — DialogueAudioPipeline, BusController snapshots, auto-ducking | ✅ |
 | G5 | Ambient & Spatial — AudioZone2D, scatter layers, distance attenuation | ✅ |
 | G6 | Profiling & Debug — performance monitors, debug overlay | ✅ |
+| M1 | Music Quality — TransitionAnalyzer, Musical Coherence Validation | ✅ |
+
+---
+
+### M1: Transition Quality & Musical Coherence
+
+**Motivation:** Based on Luo & Reiss (AES 2025) Procedural Music Evaluation metrics — Feasibility (transition quality) and Coherence (overall musical consistency). Applied to improve the Music System's transition smoothness and validate LLM-generated graph resources.
+
+#### TransitionAnalyzer (C++ Singleton)
+- **File:** `runtime/transition_analyzer.h/.cpp`
+- Renders short analysis windows from outgoing tail + incoming head using PFFFT
+- Computes RMS (loudness continuity) and spectral centroid (brightness continuity)
+- Returns feasibility score (0.0-1.0) and curve recommendation
+- 4 curve types: `LINEAR`, `EQUAL_POWER`, `S_CURVE`, `FADE_SILENCE`
+- Temporary 16KB allocation, freed immediately. Zero per-frame cost.
+- Registered as singleton, accessible from GDScript
+
+#### Musical Coherence Validation (MusicStateGraph extension)
+- **File:** `runtime/music_state_graph.h/.cpp`
+- Optional metadata on states: `key`, `energy`, `spectral_centroid_hz`
+- `validate_musical_coherence()` → Array of diagnostic dictionaries
+- Checks: energy delta, tempo ratio, key distance (circle of fifths), centroid ratio
+- Relative major/minor exemption (C↔Am = no penalty)
+- `coherence_override` flag per transition to suppress warnings
+- Configurable thresholds exposed as Resource properties
+- Zero runtime cost — only evaluated at load time or on explicit call
+
+#### MusicSystem Integration
+- `load_graph()` auto-runs `validate_musical_coherence()`, prints warnings
+- `_execute_crossfade()` calls `TransitionAnalyzer.analyze_transition()` for curve selection
+- Auto-switches to `FADE_THROUGH_SILENCE` when analyzer recommends it
+- `_crossfade_in_player()` applies `LINEAR`/`EQUAL_POWER`/`S_CURVE` via Tween ease types
+- `transition_analyzed` signal emitted with full analysis dict
+- `auto_curve_selection` flag (global + per-transition opt-out)
+- `get_last_analysis_result()` public API
 
 ## Operator Registry (36 total)
 

@@ -12,6 +12,7 @@
 #include "runtime/beat_clock.h"
 #include "runtime/rtpc_engine.h"
 #include "runtime/bus_controller.h"
+#include "runtime/transition_analyzer.h"
 
 #include "nodes/generators/symphony_oscillator.h"
 #include "nodes/generators/symphony_constant.h"
@@ -152,6 +153,7 @@ void initialize_symphony_module(ModuleInitializationLevel p_level) {
 		GDREGISTER_CLASS(SymphonyEventDispatcher);
 		GDREGISTER_CLASS(RTPCEngine);
 		GDREGISTER_CLASS(BusController);
+		GDREGISTER_CLASS(TransitionAnalyzer);
 
 		// Create voice manager singleton (DSP graph tracking)
 		memnew(SymphonyVoiceManager);
@@ -176,6 +178,10 @@ void initialize_symphony_module(ModuleInitializationLevel p_level) {
 		// Create bus controller singleton
 		memnew(BusController);
 		Engine::get_singleton()->add_singleton(Engine::Singleton("BusController", BusController::get_singleton(), "BusController"));
+
+		// Create transition analyzer singleton
+		memnew(TransitionAnalyzer);
+		Engine::get_singleton()->add_singleton(Engine::Singleton("TransitionAnalyzer", TransitionAnalyzer::get_singleton(), "TransitionAnalyzer"));
 #ifdef TOOLS_ENABLED
 	} else if (p_level == MODULE_INITIALIZATION_LEVEL_EDITOR) {
 		GDREGISTER_CLASS(SymphonyNodeInspectorProxy);
@@ -194,6 +200,10 @@ void uninitialize_symphony_module(ModuleInitializationLevel p_level) {
 		if (BusController::get_singleton()) {
 			Engine::get_singleton()->remove_singleton("BusController");
 			memdelete(BusController::get_singleton());
+		}
+		if (TransitionAnalyzer::get_singleton()) {
+			Engine::get_singleton()->remove_singleton("TransitionAnalyzer");
+			memdelete(TransitionAnalyzer::get_singleton());
 		}
 		if (RTPCEngine::get_singleton()) {
 			Engine::get_singleton()->remove_singleton("RTPCEngine");
