@@ -32,6 +32,17 @@ class SymphonyVoiceManager : public Object {
 	std::atomic<int32_t> metric_peak_budget_millipercent{ 0 };
 	std::atomic<int32_t> metric_avg_voice_microseconds_x1000{ 0 };
 
+	// --- Budget-driven auto-LOD demotion ---
+	// Deferred LOD transitions: audio thread identifies which voices to demote,
+	// main thread executes the actual graph compilation + swap (heap allocation).
+	struct PendingLOD {
+		ObjectID voice_id;
+		int32_t target_lod = 0;
+	};
+	static constexpr int32_t MAX_PENDING_LOD = 16;
+	PendingLOD pending_lod_transitions[MAX_PENDING_LOD];
+	std::atomic<int32_t> pending_lod_count{ 0 }; // Written by audio thread, read/cleared by main thread.
+
 	// Mix callback — called once per audio callback cycle.
 	static void _mix_callback(void *p_userdata);
 
@@ -60,6 +71,10 @@ public:
 
 	// Called once per audio callback cycle via mix callback.
 	void enforce_voice_limits();
+
+	// Called from the MAIN thread each frame (e.g., from AudioManager._process).
+	// Executes any deferred LOD transitions queued by the audio thread.
+	void process_deferred_lod();
 
 	SymphonyVoiceManager();
 	~SymphonyVoiceManager();

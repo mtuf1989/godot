@@ -46,6 +46,8 @@ struct OperatorDescriptor {
 	size_t extra_arena_bytes = 0; // Additional arena bytes needed by create_fn (e.g., lookup tables)
 	ExtraArenaBytesFunc extra_arena_bytes_fn = nullptr; // Per-instance override; if set, takes priority over extra_arena_bytes
 	OperatorCreateFunc create_fn = nullptr;
+	bool nonlinear = false; // If true, this operator generates harmonics (saturators, waveshapers).
+	                        // Used by the graph compiler's anti-alias staircase pass (P1b).
 };
 
 // Singleton registry of all known operator types.

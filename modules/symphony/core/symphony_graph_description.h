@@ -38,4 +38,12 @@ struct GraphDescription {
 	Vector<NodeDesc> nodes;
 	Vector<ConnectionDesc> connections;
 	Vector<FrameDesc> frames;
+
+	// --- Compile-time quality options ---
+
+	// When true, the compiler auto-inserts a 2nd-order lowpass filter (18 kHz, Q=0.707)
+	// between consecutive nonlinear operators (those with OperatorDescriptor::nonlinear == true).
+	// This prevents harmonic cascade aliasing in chains like Saturator → Waveshaper → Saturator.
+	// Default: false (opt-in per graph).
+	bool anti_alias_staircase = false;
 };

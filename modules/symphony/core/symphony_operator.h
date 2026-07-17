@@ -8,6 +8,19 @@
 // Execute() is called on the audio thread — must be RT-safe (zero allocations).
 class SymphonyOperator {
 public:
+	// Activity flag for silence propagation (set by execute(), read by CompiledGraph).
+	// 0 = output is silent/zero this block (downstream may skip).
+	// 1 = output is active (default, safe conservative value).
+	// Operators that can produce silence (ADSR in IDLE, Gain at 0, gated signals)
+	// should set this to 0 when their output is all zeros. If unsure, leave at 1.
+	uint8_t activity = 1;
+
+	// If true, this operator can be skipped when all its audio inputs are inactive.
+	// Set by the compiler based on operator category. Generators (oscillators, noise,
+	// wave players) and IO nodes always execute regardless of input activity.
+	// Default: true (most operators are passthrough/processors).
+	uint8_t skippable = 1;
+
 	virtual ~SymphonyOperator() = default;
 
 	// Called by the compiler after construction to wire input/output pin pointers.

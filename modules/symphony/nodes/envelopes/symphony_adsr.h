@@ -95,6 +95,8 @@ public:
 		if (current_frame < p_num_frames) {
 			process_audio(current_frame, p_num_frames);
 		}
+		// Report silence when envelope is fully closed (IDLE state).
+		activity = (state != IDLE) ? 1 : 0;
 	}
 
 	virtual size_t export_state(uint8_t *p_buffer, size_t p_max_size) const override {

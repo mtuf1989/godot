@@ -29,10 +29,25 @@ struct CompiledGraph {
 	Promotion *promotions = nullptr;
 	int32_t promotion_count = 0;
 
+	// --- Silence propagation support ---
+	// For each operator [i], audio_input_ops[audio_input_offsets[i]..audio_input_offsets[i+1])
+	// lists the indices of operators that feed AUDIO pins into operator i.
+	// This allows checking if all audio-producing predecessors are inactive (silent).
+	int32_t *audio_input_ops = nullptr;      // Flat array of operator indices
+	int32_t *audio_input_offsets = nullptr;   // Size: operator_count + 1
+	int32_t audio_input_ops_count = 0;        // Total entries in audio_input_ops
+
+	// Per-operator output buffer pointers for silence zeroing when skipped.
+	// output_buffers[output_buffer_offsets[i]..output_buffer_offsets[i+1])
+	// lists all AUDIO output buffers for operator i.
+	float **output_audio_buffers = nullptr;   // Flat array of buffer pointers
+	int32_t *output_buffer_offsets = nullptr;  // Size: operator_count + 1
+	int32_t output_audio_buffers_count = 0;
+
 	// The single contiguous memory block for all operator states + buffers.
 	ArenaAllocator arena;
 
-	// Execute all operators for one micro-block.
+	// Execute all operators for one micro-block with silence propagation.
 	void execute(int32_t p_num_frames) {
 		// Fill promotion buffers (Float→Audio).
 		for (int32_t i = 0; i < promotion_count; i++) {
@@ -46,9 +61,39 @@ struct CompiledGraph {
 		for (int32_t i = 0; i < trigger_buffer_count; i++) {
 			trigger_buffers[i]->clear();
 		}
-		// Execute operators in topological order
+		// Execute operators in topological order with silence propagation.
 		for (int32_t i = 0; i < operator_count; i++) {
-			operators[i]->execute(p_num_frames);
+			SymphonyOperator *op = operators[i];
+
+			// Silence check: if operator is skippable and ALL audio inputs are inactive,
+			// zero its output buffers and mark it inactive without calling execute().
+			if (op->skippable && audio_input_offsets) {
+				int32_t dep_start = audio_input_offsets[i];
+				int32_t dep_end = audio_input_offsets[i + 1];
+				if (dep_start < dep_end) { // Has audio dependencies
+					bool all_silent = true;
+					for (int32_t d = dep_start; d < dep_end; d++) {
+						if (operators[audio_input_ops[d]]->activity) {
+							all_silent = false;
+							break;
+						}
+					}
+					if (all_silent) {
+						// Zero all audio output buffers for this operator.
+						int32_t buf_start = output_buffer_offsets[i];
+						int32_t buf_end = output_buffer_offsets[i + 1];
+						for (int32_t b = buf_start; b < buf_end; b++) {
+							memset(output_audio_buffers[b], 0, sizeof(float) * p_num_frames);
+						}
+						op->activity = 0;
+						continue; // Skip execute()
+					}
+				}
+			}
+
+			op->execute(p_num_frames);
+			// Note: operators that detect silence set activity = 0 in execute().
+			// Operators that don't override keep activity = 1 (conservative default).
 		}
 	}
 
@@ -69,6 +114,23 @@ struct CompiledGraph {
 		if (node_ids) {
 			memdelete_arr(node_ids);
 			node_ids = nullptr;
+		}
+		// Silence propagation arrays are heap-allocated (not arena).
+		if (audio_input_ops) {
+			memdelete_arr(audio_input_ops);
+			audio_input_ops = nullptr;
+		}
+		if (audio_input_offsets) {
+			memdelete_arr(audio_input_offsets);
+			audio_input_offsets = nullptr;
+		}
+		if (output_audio_buffers) {
+			memdelete_arr(output_audio_buffers);
+			output_audio_buffers = nullptr;
+		}
+		if (output_buffer_offsets) {
+			memdelete_arr(output_buffer_offsets);
+			output_buffer_offsets = nullptr;
 		}
 		operators = nullptr;
 		operator_count = 0;

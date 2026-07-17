@@ -5,7 +5,7 @@
 #include "../../core/symphony_arena_allocator.h"
 #include "core/math/math_funcs.h"
 
-// Phase Modulation (PM) oscillator.
+// Phase Modulation (PM) oscillator with output anti-alias filter.
 // PM is preferred over true FM for real-time parameter changes because the
 // modulation depth is independent of modulator frequency — no spectral blowup
 // when sweeping mod_freq.
@@ -17,6 +17,11 @@
 //
 // If mod_input is connected, uses the external audio signal as modulator
 // instead of the internal sine oscillator.
+//
+// Anti-alias: A one-pole lowpass at 18 kHz is applied to the output.
+// At moderate mod_index this has negligible audible effect, but attenuates
+// the above-Nyquist energy that causes aliased inharmonic artifacts at
+// high modulation indices (mod_index > 3).
 class SymphonyFMOscillator : public SymphonyOperator {
 private:
 	const float *SYMPHONY_RESTRICT carrier_freq_input = nullptr;
@@ -32,12 +37,21 @@ private:
 	float default_mod_freq = 440.0f;
 	float default_mod_index = 1.0f;
 
+	// Output anti-alias one-pole filter state and coefficient.
+	// y[n] = (1-a)*x[n] + a*y[n-1], a = exp(-2π * 18000 / sample_rate)
+	float lp_coeff = 0.0f;
+	float lp_prev = 0.0f;
+
 public:
 	SymphonyFMOscillator(float p_mix_rate, float p_carrier_freq, float p_mod_freq, float p_mod_index)
 			: mix_rate(p_mix_rate),
 			  default_carrier_freq(p_carrier_freq),
 			  default_mod_freq(p_mod_freq),
-			  default_mod_index(p_mod_index) {}
+			  default_mod_index(p_mod_index) {
+		// Pre-compute one-pole coefficient for 18 kHz cutoff.
+		// At 48 kHz: coeff ≈ 0.095, giving -3dB at 18 kHz, -6dB/oct slope above.
+		lp_coeff = expf(-Math::TAU * 18000.0f / mix_rate);
+	}
 
 	virtual void bind_pins(void **p_input_ptrs, void **p_output_ptrs) override {
 		carrier_freq_input = (const float *)p_input_ptrs[0];
@@ -82,12 +96,16 @@ public:
 
 			// Phase modulation: offset carrier phase by scaled modulator
 			float pm_offset = mod_index * modulator;
-			audio_out[i] = Math::sin(carrier_phase * Math::TAU + pm_offset);
+			float raw = Math::sin(carrier_phase * Math::TAU + pm_offset);
+
+			// One-pole anti-alias lowpass (18 kHz)
+			lp_prev = (1.0f - lp_coeff) * raw + lp_coeff * lp_prev;
+			audio_out[i] = lp_prev;
 		}
 	}
 
 	virtual size_t export_state(uint8_t *p_buffer, size_t p_max_size) const override {
-		constexpr size_t needed = sizeof(float) * 2; // carrier_phase + mod_phase
+		constexpr size_t needed = sizeof(float) * 3; // carrier_phase + mod_phase + lp_prev
 		if (!p_buffer) {
 			return needed;
 		}
@@ -96,14 +114,21 @@ public:
 		}
 		memcpy(p_buffer, &carrier_phase, sizeof(float));
 		memcpy(p_buffer + sizeof(float), &mod_phase, sizeof(float));
+		memcpy(p_buffer + sizeof(float) * 2, &lp_prev, sizeof(float));
 		return needed;
 	}
 
 	virtual void import_state(const uint8_t *p_buffer, size_t p_size) override {
-		constexpr size_t needed = sizeof(float) * 2;
+		constexpr size_t needed = sizeof(float) * 3;
 		if (p_size >= needed) {
 			memcpy(&carrier_phase, p_buffer, sizeof(float));
 			memcpy(&mod_phase, p_buffer + sizeof(float), sizeof(float));
+			memcpy(&lp_prev, p_buffer + sizeof(float) * 2, sizeof(float));
+		} else if (p_size >= sizeof(float) * 2) {
+			// Backward-compatible: old state without lp_prev
+			memcpy(&carrier_phase, p_buffer, sizeof(float));
+			memcpy(&mod_phase, p_buffer + sizeof(float), sizeof(float));
+			lp_prev = 0.0f;
 		}
 	}
 

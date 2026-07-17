@@ -27,7 +27,86 @@ GraphCompiler::CompileResult GraphCompiler::compile(const GraphDescription &p_de
 		return result;
 	}
 
-	int32_t node_count = p_desc.nodes.size();
+	// --- Pre-pass: Anti-alias staircase injection ---
+	// If enabled, insert a BiquadFilter (LP, 18kHz, Q=0.707) between consecutive
+	// nonlinear operators on audio connections.
+	GraphDescription effective_desc;
+	if (p_desc.anti_alias_staircase) {
+		effective_desc = p_desc; // Copy — we'll add synthetic nodes and rewire connections.
+
+		// Find the max node ID to generate unique IDs for injected nodes.
+		int32_t max_id = 0;
+		for (int32_t i = 0; i < effective_desc.nodes.size(); i++) {
+			if (effective_desc.nodes[i].id > max_id) {
+				max_id = effective_desc.nodes[i].id;
+			}
+		}
+		int32_t next_synth_id = max_id + 1000; // Synthetic IDs start well above user range.
+
+		// Build a lookup: node_id → is_nonlinear
+		HashMap<int32_t, bool> node_nonlinear;
+		for (int32_t i = 0; i < effective_desc.nodes.size(); i++) {
+			const NodeDesc &nd = effective_desc.nodes[i];
+			const OperatorDescriptor *desc = registry->find(nd.type_name);
+			node_nonlinear.insert(nd.id, desc && desc->nonlinear);
+		}
+
+		// Scan connections: if an audio connection goes FROM a nonlinear node TO a nonlinear node,
+		// inject a BiquadFilter (LP@18kHz) in between.
+		int32_t original_conn_count = effective_desc.connections.size();
+		for (int32_t c = 0; c < original_conn_count; c++) {
+			ConnectionDesc &conn = effective_desc.connections.write[c];
+			if (conn.is_feedback) continue; // Don't inject on feedback edges.
+
+			bool from_nonlinear = node_nonlinear.has(conn.from_node) && node_nonlinear[conn.from_node];
+			bool to_nonlinear = node_nonlinear.has(conn.to_node) && node_nonlinear[conn.to_node];
+
+			if (!from_nonlinear || !to_nonlinear) continue;
+
+			// Verify it's an audio connection by checking output pin type.
+			const NodeDesc *from_nd = nullptr;
+			for (int32_t i = 0; i < effective_desc.nodes.size(); i++) {
+				if (effective_desc.nodes[i].id == conn.from_node) {
+					from_nd = &effective_desc.nodes[i];
+					break;
+				}
+			}
+			if (!from_nd) continue;
+			const OperatorDescriptor *from_desc = registry->find(from_nd->type_name);
+			if (!from_desc) continue;
+			if (conn.from_pin >= from_desc->outputs.size()) continue;
+			if (from_desc->outputs[conn.from_pin].type != SymphonyPinType::AUDIO) continue;
+
+			// Inject a synthetic BiquadFilter node.
+			NodeDesc lpf_node;
+			lpf_node.id = next_synth_id++;
+			lpf_node.type_name = StringName("BiquadFilter");
+			lpf_node.params.insert(StringName("mode"), 0.0f);    // LP
+			lpf_node.params.insert(StringName("cutoff"), 18000.0f);
+			lpf_node.params.insert(StringName("resonance"), 0.707f);
+			effective_desc.nodes.push_back(lpf_node);
+
+			// Rewire: original connection now goes from_node → LPF input (pin 0)
+			//         new connection: LPF output (pin 0) → original to_node/to_pin
+			int32_t orig_to_node = conn.to_node;
+			int32_t orig_to_pin = conn.to_pin;
+
+			conn.to_node = lpf_node.id;
+			conn.to_pin = 0; // BiquadFilter input pin 0 = "input"
+
+			ConnectionDesc new_conn;
+			new_conn.from_node = lpf_node.id;
+			new_conn.from_pin = 0; // BiquadFilter output pin 0 = "output"
+			new_conn.to_node = orig_to_node;
+			new_conn.to_pin = orig_to_pin;
+			new_conn.is_feedback = false;
+			effective_desc.connections.push_back(new_conn);
+		}
+	}
+
+	const GraphDescription &desc_ref = p_desc.anti_alias_staircase ? effective_desc : p_desc;
+
+	int32_t node_count = desc_ref.nodes.size();
 	if (node_count == 0) {
 		result.errors.push_back("Graph has no nodes.");
 		return result;
@@ -40,7 +119,7 @@ GraphCompiler::CompileResult GraphCompiler::compile(const GraphDescription &p_de
 	node_descs.resize(node_count);
 
 	for (int32_t i = 0; i < node_count; i++) {
-		const NodeDesc &nd = p_desc.nodes[i];
+		const NodeDesc &nd = desc_ref.nodes[i];
 		if (id_to_index.has(nd.id)) {
 			result.errors.push_back(vformat("Duplicate node ID: %d", nd.id));
 			return result;
@@ -83,8 +162,8 @@ GraphCompiler::CompileResult GraphCompiler::compile(const GraphDescription &p_de
 		}
 	}
 
-	for (int32_t c = 0; c < p_desc.connections.size(); c++) {
-		const ConnectionDesc &conn = p_desc.connections[c];
+	for (int32_t c = 0; c < desc_ref.connections.size(); c++) {
+		const ConnectionDesc &conn = desc_ref.connections[c];
 
 		if (!id_to_index.has(conn.from_node)) {
 			result.errors.push_back(vformat("Connection %d: source node %d not found.", c, conn.from_node));
@@ -146,7 +225,7 @@ GraphCompiler::CompileResult GraphCompiler::compile(const GraphDescription &p_de
 		for (int32_t p = 0; p < desc->inputs.size(); p++) {
 			if (desc->inputs[p].required && input_sources[i][p].source_node_idx == -1) {
 				result.errors.push_back(vformat("Node %d ('%s'): required input '%s' (pin %d) is not connected.",
-						p_desc.nodes[i].id, String(desc->type_name), String(desc->inputs[p].name), p));
+						desc_ref.nodes[i].id, String(desc->type_name), String(desc->inputs[p].name), p));
 				return result;
 			}
 		}
@@ -195,7 +274,7 @@ GraphCompiler::CompileResult GraphCompiler::compile(const GraphDescription &p_de
 		arena_size += node_descs[i]->state_size + node_descs[i]->state_align;
 		// Per-instance sizing callback takes priority over static worst-case value.
 		if (node_descs[i]->extra_arena_bytes_fn) {
-			arena_size += node_descs[i]->extra_arena_bytes_fn(p_desc.nodes[i].params);
+			arena_size += node_descs[i]->extra_arena_bytes_fn(desc_ref.nodes[i].params);
 		} else {
 			arena_size += node_descs[i]->extra_arena_bytes;
 		}
@@ -279,7 +358,7 @@ GraphCompiler::CompileResult GraphCompiler::compile(const GraphDescription &p_de
 
 	for (int32_t s = 0; s < node_count; s++) {
 		int32_t node_idx = sorted_order[s];
-		const NodeDesc &nd = p_desc.nodes[node_idx];
+		const NodeDesc &nd = desc_ref.nodes[node_idx];
 		const OperatorDescriptor *desc = node_descs[node_idx];
 
 		// Create operator via factory function (placement new inside arena)
@@ -334,6 +413,114 @@ GraphCompiler::CompileResult GraphCompiler::compile(const GraphDescription &p_de
 		}
 
 		op->bind_pins(input_ptrs, output_ptrs);
+	}
+
+	// --- Phase 8: Build silence propagation tables ---
+	// For each operator in execution order, record which other operators (by execution
+	// index) feed AUDIO data into it. This enables the execute() loop to skip operators
+	// whose audio inputs are all inactive (silent).
+
+	// Map from original node_idx → execution order index (sorted position).
+	HashMap<int32_t, int32_t> node_idx_to_exec_order;
+	for (int32_t s = 0; s < node_count; s++) {
+		node_idx_to_exec_order.insert(sorted_order[s], s);
+	}
+
+	// Mark operators as non-skippable based on category.
+	// Generators, IO nodes, and timing nodes produce output regardless of input.
+	for (int32_t s = 0; s < node_count; s++) {
+		int32_t node_idx = sorted_order[s];
+		const OperatorDescriptor *desc = node_descs[node_idx];
+		String cat = desc->category;
+		// Non-skippable categories: they produce output without depending on audio input.
+		if (cat == "Generators" || cat == "IO" || cat == "Timing" || cat == "Synthesis") {
+			compiled->operators[s]->skippable = 0;
+		}
+		// Also never skip if the operator has NO audio inputs (it's a source).
+		bool has_audio_input = false;
+		for (int32_t p = 0; p < desc->inputs.size(); p++) {
+			if (desc->inputs[p].type == SymphonyPinType::AUDIO) {
+				has_audio_input = true;
+				break;
+			}
+		}
+		if (!has_audio_input) {
+			compiled->operators[s]->skippable = 0;
+		}
+	}
+
+	// Build the flat audio dependency array.
+	// First pass: count dependencies per operator.
+	compiled->audio_input_offsets = memnew_arr(int32_t, node_count + 1);
+	compiled->audio_input_offsets[0] = 0;
+
+	for (int32_t s = 0; s < node_count; s++) {
+		int32_t node_idx = sorted_order[s];
+		const OperatorDescriptor *desc = node_descs[node_idx];
+		int32_t audio_dep_count = 0;
+
+		for (int32_t p = 0; p < desc->inputs.size(); p++) {
+			if (desc->inputs[p].type == SymphonyPinType::AUDIO || input_sources[node_idx][p].needs_promotion) {
+				const PinSource &src = input_sources[node_idx][p];
+				if (src.source_node_idx >= 0 && node_idx_to_exec_order.has(src.source_node_idx)) {
+					audio_dep_count++;
+				}
+			}
+		}
+		compiled->audio_input_offsets[s + 1] = compiled->audio_input_offsets[s] + audio_dep_count;
+	}
+
+	compiled->audio_input_ops_count = compiled->audio_input_offsets[node_count];
+	if (compiled->audio_input_ops_count > 0) {
+		compiled->audio_input_ops = memnew_arr(int32_t, compiled->audio_input_ops_count);
+
+		// Second pass: fill the dependency array.
+		int32_t write_idx = 0;
+		for (int32_t s = 0; s < node_count; s++) {
+			int32_t node_idx = sorted_order[s];
+			const OperatorDescriptor *desc = node_descs[node_idx];
+
+			for (int32_t p = 0; p < desc->inputs.size(); p++) {
+				if (desc->inputs[p].type == SymphonyPinType::AUDIO || input_sources[node_idx][p].needs_promotion) {
+					const PinSource &src = input_sources[node_idx][p];
+					if (src.source_node_idx >= 0 && node_idx_to_exec_order.has(src.source_node_idx)) {
+						compiled->audio_input_ops[write_idx++] = node_idx_to_exec_order[src.source_node_idx];
+					}
+				}
+			}
+		}
+	}
+
+	// Build the output audio buffer table for zeroing skipped operators.
+	compiled->output_buffer_offsets = memnew_arr(int32_t, node_count + 1);
+	compiled->output_buffer_offsets[0] = 0;
+
+	for (int32_t s = 0; s < node_count; s++) {
+		int32_t node_idx = sorted_order[s];
+		const OperatorDescriptor *desc = node_descs[node_idx];
+		int32_t audio_out_count = 0;
+		for (int32_t p = 0; p < desc->outputs.size(); p++) {
+			if (desc->outputs[p].type == SymphonyPinType::AUDIO) {
+				audio_out_count++;
+			}
+		}
+		compiled->output_buffer_offsets[s + 1] = compiled->output_buffer_offsets[s] + audio_out_count;
+	}
+
+	compiled->output_audio_buffers_count = compiled->output_buffer_offsets[node_count];
+	if (compiled->output_audio_buffers_count > 0) {
+		compiled->output_audio_buffers = memnew_arr(float *, compiled->output_audio_buffers_count);
+
+		int32_t buf_write_idx = 0;
+		for (int32_t s = 0; s < node_count; s++) {
+			int32_t node_idx = sorted_order[s];
+			const OperatorDescriptor *desc = node_descs[node_idx];
+			for (int32_t p = 0; p < desc->outputs.size(); p++) {
+				if (desc->outputs[p].type == SymphonyPinType::AUDIO) {
+					compiled->output_audio_buffers[buf_write_idx++] = (float *)output_buffers[node_idx][p];
+				}
+			}
+		}
 	}
 
 	result.graph = compiled;

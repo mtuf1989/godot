@@ -20,6 +20,7 @@ void SymphonyVoiceManager::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_warning_threshold"), &SymphonyVoiceManager::get_warning_threshold);
 	ClassDB::bind_method(D_METHOD("set_critical_threshold", "threshold"), &SymphonyVoiceManager::set_critical_threshold);
 	ClassDB::bind_method(D_METHOD("get_critical_threshold"), &SymphonyVoiceManager::get_critical_threshold);
+	ClassDB::bind_method(D_METHOD("process_deferred_lod"), &SymphonyVoiceManager::process_deferred_lod);
 
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "max_voices"), "set_max_voices", "get_max_voices");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "warning_threshold"), "set_warning_threshold", "get_warning_threshold");
@@ -54,6 +55,30 @@ void SymphonyVoiceManager::unregister_voice(AudioStreamPlaybackSymphony *p_voice
 	// Lock-free erase from SafeList. The node is logically removed immediately
 	// but memory is reclaimed later via maybe_cleanup().
 	active_voices.erase(p_voice);
+}
+
+void SymphonyVoiceManager::process_deferred_lod() {
+	// Called from the MAIN thread (e.g., AudioManager._process or after SymphonyVoicePool.process_frame).
+	// Executes LOD transitions that the audio thread identified but couldn't perform
+	// because graph compilation requires heap allocation.
+	int32_t count = pending_lod_count.exchange(0, std::memory_order_acquire);
+	if (count <= 0) {
+		return;
+	}
+
+	for (int32_t i = 0; i < count && i < MAX_PENDING_LOD; i++) {
+		Object *obj = ObjectDB::get_instance(pending_lod_transitions[i].voice_id);
+		if (!obj) {
+			continue;
+		}
+		AudioStreamPlaybackSymphony *v = Object::cast_to<AudioStreamPlaybackSymphony>(obj);
+		if (!v) {
+			continue;
+		}
+		// transition_to_lod compiles the new graph (heap allocation) and publishes
+		// it via the atomic pending_graph slot. Safe on main thread.
+		v->transition_to_lod(pending_lod_transitions[i].target_lod);
+	}
 }
 
 // --- Lock-free getters: read atomic snapshots ---
@@ -113,6 +138,8 @@ void SymphonyVoiceManager::enforce_voice_limits() {
 		float rms = 0.0f;
 		int priority = 50;
 		float microseconds = 0.0f;
+		int current_lod = 0;
+		int max_lod = 0; // Maximum LOD tier available on this voice's stream
 	};
 
 	// Stack-local snapshot array (bounded by a reasonable max).
@@ -140,6 +167,13 @@ void SymphonyVoiceManager::enforce_voice_limits() {
 		snap.rms = v->get_last_rms();
 		snap.priority = v->get_effective_priority();
 		snap.microseconds = v->get_voice_cpu_microseconds();
+		snap.current_lod = v->get_current_lod_tier();
+		// Check if the voice's stream has LOD variants available.
+		if (v->stream.is_valid()) {
+			snap.max_lod = v->stream->get_lod_count() - 1; // 0-based max tier
+		} else {
+			snap.max_lod = 0;
+		}
 
 		total_budget += snap.budget;
 		if (snap.budget > peak_budget) {
@@ -152,7 +186,56 @@ void SymphonyVoiceManager::enforce_voice_limits() {
 
 	float avg_microseconds = (voice_count > 0) ? (total_microseconds / voice_count) : 0.0f;
 
-	// --- Phase 2: Identify victims for voice stealing ---
+	// --- Phase 2: Budget-driven auto-LOD demotion ---
+	// If total budget exceeds warning threshold but hasn't hit critical, demote the
+	// most expensive voices to lower LOD tiers rather than killing them.
+	// This preserves audio continuity while reducing CPU load.
+	// NOTE: transition_to_lod() allocates memory, so we DEFER it to the main thread
+	// via the pending_lod_transitions queue.
+	if (total_budget > warning_threshold * 100.0f && total_budget <= critical_threshold * 100.0f) {
+		// Sort candidates by budget (descending) — demote the most expensive first.
+		// Simple selection: find the most expensive voice that can be demoted.
+		float remaining_budget_lod = total_budget;
+		float target_budget = warning_threshold * 100.0f * 0.85f; // Aim for 85% of warning threshold
+		int32_t lod_queue_count = 0;
+
+		while (remaining_budget_lod > target_budget && lod_queue_count < MAX_PENDING_LOD) {
+			int32_t best_idx = -1;
+			float best_budget = 0.0f;
+
+			for (int32_t i = 0; i < voice_count; i++) {
+				// Only consider voices that have LOD headroom and are expensive enough.
+				if (snapshots[i].current_lod < snapshots[i].max_lod &&
+						snapshots[i].budget > best_budget &&
+						!snapshots[i].voice->is_lod_transitioning()) {
+					best_budget = snapshots[i].budget;
+					best_idx = i;
+				}
+			}
+
+			if (best_idx < 0) {
+				break; // No more voices can be demoted
+			}
+
+			// Queue this LOD transition for the main thread.
+			int32_t new_lod = snapshots[best_idx].current_lod + 1;
+			pending_lod_transitions[lod_queue_count].voice_id = snapshots[best_idx].id;
+			pending_lod_transitions[lod_queue_count].target_lod = new_lod;
+			lod_queue_count++;
+
+			// Update snapshot so we don't pick this voice again.
+			snapshots[best_idx].current_lod = new_lod;
+
+			// Estimate budget reduction: assume ~40% savings per LOD tier.
+			remaining_budget_lod -= snapshots[best_idx].budget * 0.4f;
+			snapshots[best_idx].budget *= 0.6f;
+		}
+
+		// Publish the count atomically. Main thread reads and clears.
+		pending_lod_count.store(lod_queue_count, std::memory_order_release);
+	}
+
+	// --- Phase 3: Identify victims for voice stealing ---
 	Vector<ObjectID> victim_ids;
 
 	// Voice count limit
@@ -242,17 +325,17 @@ void SymphonyVoiceManager::enforce_voice_limits() {
 			}
 		}
 	} else if (remaining_budget > warning_threshold * 100.0f) {
-		WARN_PRINT_ONCE("Symphony: Voice budget exceeds warning threshold.");
+		// LOD demotion already handled in Phase 2 — only warn if LOD couldn't fix it.
 	}
 
-	// --- Phase 3: Publish metrics atomically ---
+	// --- Phase 4: Publish metrics atomically ---
 	metric_active_count.store(voice_count, std::memory_order_relaxed);
 	metric_stolen_this_frame.store(victim_ids.size(), std::memory_order_relaxed);
 	metric_total_budget_millipercent.store(static_cast<int32_t>(total_budget * 1000.0f), std::memory_order_relaxed);
 	metric_peak_budget_millipercent.store(static_cast<int32_t>(peak_budget * 1000.0f), std::memory_order_relaxed);
 	metric_avg_voice_microseconds_x1000.store(static_cast<int32_t>(avg_microseconds * 1000.0f), std::memory_order_relaxed);
 
-	// --- Phase 4: Stop victims via safe ObjectID lookup ---
+	// --- Phase 5: Stop victims via safe ObjectID lookup ---
 	for (int i = 0; i < victim_ids.size(); i++) {
 		Object *obj = ObjectDB::get_instance(victim_ids[i]);
 		if (obj) {
@@ -263,7 +346,7 @@ void SymphonyVoiceManager::enforce_voice_limits() {
 		}
 	}
 
-	// --- Phase 5: Deferred cleanup of erased SafeList nodes ---
+	// --- Phase 6: Deferred cleanup of erased SafeList nodes ---
 	// Safe to call here because we are past the iteration (iterator destructed above).
 	active_voices.maybe_cleanup();
 }

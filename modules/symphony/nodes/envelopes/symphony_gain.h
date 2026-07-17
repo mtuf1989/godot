@@ -25,6 +25,13 @@ public:
 	virtual void execute(int32_t p_num_frames) override {
 		SYMPHONY_ASSUME_FRAMES(p_num_frames);
 		float g = gain_input ? *gain_input : default_gain;
+		// Report silence when gain is negligible (< -80dB equivalent).
+		if (g < 0.0001f && g > -0.0001f) {
+			memset(output, 0, sizeof(float) * p_num_frames);
+			activity = 0;
+			return;
+		}
+		activity = 1;
 		SYMPHONY_UNROLL
 		for (int32_t i = 0; i < p_num_frames; i++) {
 			output[i] = input[i] * g;
