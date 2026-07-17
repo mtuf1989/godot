@@ -18,6 +18,7 @@ RTPCEngine::~RTPCEngine() {
 }
 
 void RTPCEngine::_bind_methods() {
+	// --- Global parameter API ---
 	ClassDB::bind_method(D_METHOD("set_parameter_target", "name", "value"), &RTPCEngine::set_parameter_target);
 	ClassDB::bind_method(D_METHOD("get_parameter_value", "name"), &RTPCEngine::get_parameter_value);
 	ClassDB::bind_method(D_METHOD("register_global_parameter", "name", "default_value", "smooth_ms"), &RTPCEngine::register_global_parameter, DEFVAL(0.0f), DEFVAL(DEFAULT_SMOOTH_TIME_MS));
@@ -26,6 +27,15 @@ void RTPCEngine::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_default_smooth_time", "ms"), &RTPCEngine::set_default_smooth_time);
 	ClassDB::bind_method(D_METHOD("get_default_smooth_time"), &RTPCEngine::get_default_smooth_time);
 	ClassDB::bind_method(D_METHOD("evaluate_curve", "curve", "input", "min_out", "max_out"), &RTPCEngine::evaluate_curve);
+
+	// --- Analysis output API (audio→game) ---
+	ClassDB::bind_method(D_METHOD("register_analysis", "name"), &RTPCEngine::register_analysis);
+	ClassDB::bind_method(D_METHOD("set_analysis", "name", "value"), &RTPCEngine::set_analysis);
+	ClassDB::bind_method(D_METHOD("get_analysis", "name"), &RTPCEngine::get_analysis);
+	ClassDB::bind_method(D_METHOD("has_analysis", "name"), &RTPCEngine::has_analysis);
+	ClassDB::bind_method(D_METHOD("get_analysis_output_count"), &RTPCEngine::get_analysis_output_count);
+	ClassDB::bind_method(D_METHOD("get_analysis_name_at", "index"), &RTPCEngine::get_analysis_name_at);
+	ClassDB::bind_method(D_METHOD("get_analysis_value_at", "index"), &RTPCEngine::get_analysis_value_at);
 }
 
 // --- Mix callback (audio thread) ---
@@ -164,4 +174,83 @@ void RTPCEngine::register_global_parameter(const String &p_name, float p_default
 
 bool RTPCEngine::has_global_parameter(const String &p_name) const {
 	return has_parameter(StringName(p_name));
+}
+
+// --- Analysis Output Bank ---
+
+void RTPCEngine::register_analysis_output(const StringName &p_name) {
+	ERR_FAIL_COND_MSG(analysis_output_count >= MAX_ANALYSIS_OUTPUTS,
+			"RTPCEngine: Maximum analysis output count reached.");
+	ERR_FAIL_COND_MSG(analysis_output_index.has(p_name),
+			"RTPCEngine: Analysis output '" + String(p_name) + "' already registered.");
+
+	int idx = analysis_output_count++;
+	analysis_outputs[idx].name = p_name;
+	analysis_outputs[idx].value.store(0.0f, std::memory_order_relaxed);
+	analysis_outputs[idx].active = true;
+	analysis_output_index[p_name] = idx;
+}
+
+void RTPCEngine::set_analysis_value(const StringName &p_name, float p_value) {
+	const int *idx_ptr = analysis_output_index.getptr(p_name);
+	if (idx_ptr) {
+		analysis_outputs[*idx_ptr].value.store(p_value, std::memory_order_relaxed);
+	} else {
+		// Auto-register on first write (convenience for audio-thread operators).
+		// NOTE: registration involves HashMap insert (not RT-safe on first call).
+		// For production, pre-register all analysis outputs during scene setup.
+		register_analysis_output(p_name);
+		const int *new_idx = analysis_output_index.getptr(p_name);
+		if (new_idx) {
+			analysis_outputs[*new_idx].value.store(p_value, std::memory_order_relaxed);
+		}
+	}
+}
+
+float RTPCEngine::get_analysis_value(const StringName &p_name) const {
+	const int *idx_ptr = analysis_output_index.getptr(p_name);
+	if (idx_ptr) {
+		return analysis_outputs[*idx_ptr].value.load(std::memory_order_relaxed);
+	}
+	return 0.0f;
+}
+
+bool RTPCEngine::has_analysis_output(const StringName &p_name) const {
+	return analysis_output_index.has(p_name);
+}
+
+StringName RTPCEngine::get_analysis_output_name(int p_index) const {
+	ERR_FAIL_INDEX_V(p_index, analysis_output_count, StringName());
+	return analysis_outputs[p_index].name;
+}
+
+float RTPCEngine::get_analysis_output_value_by_index(int p_index) const {
+	ERR_FAIL_INDEX_V(p_index, analysis_output_count, 0.0f);
+	return analysis_outputs[p_index].value.load(std::memory_order_relaxed);
+}
+
+// --- GDScript-friendly analysis wrappers ---
+
+void RTPCEngine::register_analysis(const String &p_name) {
+	register_analysis_output(StringName(p_name));
+}
+
+void RTPCEngine::set_analysis(const String &p_name, float p_value) {
+	set_analysis_value(StringName(p_name), p_value);
+}
+
+float RTPCEngine::get_analysis(const String &p_name) const {
+	return get_analysis_value(StringName(p_name));
+}
+
+bool RTPCEngine::has_analysis(const String &p_name) const {
+	return has_analysis_output(StringName(p_name));
+}
+
+String RTPCEngine::get_analysis_name_at(int p_index) const {
+	return String(get_analysis_output_name(p_index));
+}
+
+float RTPCEngine::get_analysis_value_at(int p_index) const {
+	return get_analysis_output_value_by_index(p_index);
 }

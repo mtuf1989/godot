@@ -10,12 +10,18 @@
 // Real-Time Parameter Control Engine.
 // Owns global parameters, smooths them on the audio thread, evaluates mapping curves.
 // Per-voice local parameters are stored directly in VoiceSlot (fixed array).
+//
+// Also owns the Analysis Output Bank: a separate set of values written by audio-thread
+// operators (e.g., ResonatorAnalyzer) and read by the game thread. This enables
+// audio→game parameter flow (spectral analysis driving gameplay/visuals) without
+// interfering with the game→audio parameter smoothing pipeline.
 class RTPCEngine : public Object {
 	GDCLASS(RTPCEngine, Object);
 
 public:
 	static constexpr int MAX_GLOBAL_PARAMETERS = 128;
 	static constexpr int MAX_LOCAL_PARAMS_PER_VOICE = 8;
+	static constexpr int MAX_ANALYSIS_OUTPUTS = 64;
 	static constexpr float DEFAULT_SMOOTH_TIME_MS = 5.0f;
 
 	// Cache-line size for false-sharing prevention.
@@ -45,6 +51,23 @@ public:
 		StringName name;
 	};
 
+	// Analysis Output: audio-thread writes, game-thread reads.
+	// Used by analysis operators (ResonatorAnalyzer, FrequencyEnvelopeFollower) to
+	// publish spectral/envelope data back to the game thread for reactive visuals,
+	// gameplay logic, or debug overlays.
+	//
+	// No smoothing needed — analysis values are already smoothed by the operator's EWMA.
+	// The audio thread does a single atomic store (relaxed); the game thread does a
+	// single atomic load (relaxed). No mutex, no contention.
+	struct alignas(CACHE_LINE_SIZE) AnalysisOutput {
+		// --- Audio-thread-owned (written every mix callback by analysis operators) ---
+		std::atomic<float> value{0.0f};
+
+		// --- Cold data (set at registration time, read infrequently) ---
+		StringName name;
+		bool active = false;
+	};
+
 private:
 	static RTPCEngine *singleton;
 
@@ -54,6 +77,13 @@ private:
 
 	// Lookup: name → index into global_params
 	HashMap<StringName, int> global_param_index;
+
+	// Analysis output bank — written by audio thread, read by game thread.
+	AnalysisOutput analysis_outputs[MAX_ANALYSIS_OUTPUTS];
+	int analysis_output_count = 0;
+
+	// Lookup: name → index into analysis_outputs
+	HashMap<StringName, int> analysis_output_index;
 
 	// Sample rate for coefficient calculation
 	float sample_rate = 44100.0f;
@@ -96,6 +126,38 @@ public:
 
 	// Evaluate a Godot Curve resource: maps input [0,1] → output [min_out, max_out].
 	[[nodiscard]] float evaluate_curve(const Ref<Curve> &p_curve, float p_input, float p_min_out, float p_max_out) const;
+
+	// --- Analysis Output API (audio→game flow) ---
+
+	// Register an analysis output slot (call during setup, not audio thread).
+	void register_analysis_output(const StringName &p_name);
+
+	// Write an analysis value from the audio thread (lock-free atomic store).
+	// Called by analysis operators (ResonatorAnalyzer, FrequencyEnvelopeFollower).
+	void set_analysis_value(const StringName &p_name, float p_value);
+
+	// Read an analysis value from the game thread (lock-free atomic load).
+	[[nodiscard]] float get_analysis_value(const StringName &p_name) const;
+
+	// Check if an analysis output exists.
+	[[nodiscard]] bool has_analysis_output(const StringName &p_name) const;
+
+	// Get analysis output count for debugging/iteration.
+	int get_analysis_output_count() const { return analysis_output_count; }
+
+	// Get analysis output name by index (for debug overlay iteration).
+	StringName get_analysis_output_name(int p_index) const;
+
+	// Get analysis output value by index (for debug overlay iteration).
+	float get_analysis_output_value_by_index(int p_index) const;
+
+	// GDScript-friendly analysis API
+	void register_analysis(const String &p_name);
+	void set_analysis(const String &p_name, float p_value);
+	float get_analysis(const String &p_name) const;
+	bool has_analysis(const String &p_name) const;
+	String get_analysis_name_at(int p_index) const;
+	float get_analysis_value_at(int p_index) const;
 
 	// --- Configuration ---
 

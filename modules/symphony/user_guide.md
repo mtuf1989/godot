@@ -1,4 +1,4 @@
-# Symphony Audio System — User Guide v1.5
+# Symphony Audio System — User Guide v1.6
 
 > A complete guide to creating procedural sounds, adaptive music, and spatial audio for games using the Symphony module and its GDScript Game Audio Layer.
 
@@ -48,7 +48,7 @@ Symphony is a two-layer audio system:
 
 **C++ Module** (`modules/symphony/`) — The low-level engine:
 - Arena-allocated DSP graph compiler (zero allocation during playback)
-- 36 audio operators (oscillators, filters, envelopes, delays, synthesis, spectral)
+- 38 audio operators (oscillators, filters, envelopes, delays, synthesis, spectral)
 - Runtime singletons: `SymphonyVoicePool`, `SymphonyEventDispatcher`, `BeatClock`, `BusController`, `RTPCEngine`
 - Micro-block processing (32/64 samples per step)
 
@@ -437,6 +437,7 @@ Symphony provides 36 DSP operators organized by category:
 |----------|-------------|----------------|
 | **ParameterSmoother** | Smooths a control signal (prevents clicks) | `smooth_time_ms` |
 | **EnvelopeFollower** | Extracts amplitude envelope from audio | `attack_ms`, `release_ms` |
+| **FrequencyEnvelopeFollower** | Extracts amplitude at a specific frequency (zero latency) | `center_frequency`, `responsiveness` |
 
 ### Synthesis
 
@@ -451,6 +452,7 @@ Symphony provides 36 DSP operators organized by category:
 |----------|-------------|----------------|
 | **PhaseVocoder** | FFT-based time-stretch and pitch-shift | `time_stretch`, `pitch_shift` |
 | **SpectralGate** | Frequency-domain noise gate | `threshold`, `ratio` |
+| **ResonatorAnalyzer** | Zero-latency frequency power detection via resonator bank | `num_bands`, `frequencies[]`, `responsiveness` |
 
 ### I/O (Graph Interface)
 
@@ -520,6 +522,49 @@ Per-voice parameters are resolved first. If none is set, the global value is use
 ### Parameter Smoothing
 
 All global parameters are smoothed on the audio thread using a one-pole filter. The `smooth_time_ms` parameter controls how fast the value converges to the target. Use short times (5-10ms) to prevent clicks, longer times (50-200ms) for gradual transitions.
+
+### Analysis Outputs (Audio → Game)
+
+Analysis outputs are the reverse of RTPC parameters: values written by the **audio thread** (analysis operators) and read by the **game thread**. Use them for reactive visuals, gameplay logic, or adaptive audio routing based on spectral content.
+
+```gdscript
+# Register analysis outputs at startup (optional — auto-registers on first write)
+RTPCEngine.register_analysis("bass_power")
+RTPCEngine.register_analysis("mid_power")
+RTPCEngine.register_analysis("treble_power")
+
+# Read analysis values from gameplay/UI code
+var bass: float = RTPCEngine.get_analysis("bass_power")
+var mid: float = RTPCEngine.get_analysis("mid_power")
+
+# Check if an output exists
+if RTPCEngine.has_analysis("bass_power"):
+    update_bass_visualizer(RTPCEngine.get_analysis("bass_power"))
+
+# Iterate all outputs (useful for debug/visualization)
+for i in RTPCEngine.get_analysis_output_count():
+    var name: String = RTPCEngine.get_analysis_name_at(i)
+    var value: float = RTPCEngine.get_analysis_value_at(i)
+    print("%s = %.4f" % [name, value])
+```
+
+**How analysis operators write values:**
+
+The `ResonatorAnalyzer` and `FrequencyEnvelopeFollower` operators output FLOAT pins. To route these into the analysis output bank, connect their output to a `GraphOutput` or use them as control signals within the graph. For direct audio→game feedback, call `RTPCEngine.set_analysis()` from a script that reads the graph output.
+
+**Key differences from RTPC parameters:**
+
+| | RTPC Parameters | Analysis Outputs |
+|---|---|---|
+| Direction | Game → Audio | Audio → Game |
+| Smoothing | Automatic (one-pole) | None needed (pre-smoothed by EWMA in operator) |
+| Written by | Game thread (`set_parameter_target`) | Audio thread (analysis operators) |
+| Read by | Audio thread (DSP graphs) | Game thread (GDScript) |
+| Typical use | Drive sound from gameplay | Drive visuals/logic from sound |
+
+**Values are power (magnitude²):** Analysis outputs from resonator-based operators represent signal power at the tracked frequency. Convert to dB with `10.0 * log(value) / log(10.0)`. A value of 0.0 = silence, 1.0 = full-scale signal at that frequency.
+
+**Debug overlay:** Press F10 in debug builds to see all registered analysis outputs as real-time bar meters with dB readouts.
 
 ---
 
@@ -1671,6 +1716,80 @@ func _on_music_slider_changed(value: float):
 ---
 
 ## Changelog
+
+### v1.6 — Resonator Spectral Analysis & Analysis Output Bank (2026-07-17)
+
+**New operator: `ResonatorAnalyzer`** (Spectral category)
+
+Zero-latency, per-sample spectral analysis via a bank of independent resonators. Answers "how much of frequency F is present right now?" without FFT buffering delay.
+
+- Up to 32 analysis bands with arbitrary frequency placement (log, mel, musical pitches, custom)
+- Frequencies via `frequencies` PackedFloat32Array param, or default log-spaced 80Hz–12kHz
+- Per-band FLOAT outputs (`band_0`..`band_31`) representing power (magnitude²)
+- `responsiveness` param (0.0=smooth/slow, 1.0=fast/noisy) controls EWMA time constant
+- Zero latency (per-sample), no buffers, no FFT — complements PhaseVocoder/SpectralGate for detection-only use cases
+
+```ini
+# Example .tres graph node
+{"type": "ResonatorAnalyzer", "params": {
+    "num_bands": 8,
+    "frequencies": PackedFloat32Array([80, 160, 320, 640, 1280, 2560, 5120, 10240]),
+    "responsiveness": 0.5
+}}
+```
+
+**New operator: `FrequencyEnvelopeFollower`** (Utility category)
+
+Single-frequency amplitude tracker — lightweight alternative to ResonatorAnalyzer when you only need one band.
+
+- `center_frequency` param (20–20000 Hz) with optional runtime modulation via FLOAT input pin
+- Outputs single FLOAT value (power at target frequency)
+- 14 FLOPs/sample, 32 bytes state, no arena buffers
+- Use for bass detection, pitch tracking feedback, or single-band reactive audio
+
+```ini
+{"type": "FrequencyEnvelopeFollower", "params": {
+    "center_frequency": 200.0,
+    "responsiveness": 0.5
+}}
+```
+
+**New RTPCEngine API: Analysis Output Bank (audio→game flow)**
+
+A separate bank of values written by the audio thread and read by the game thread. Enables spectral analysis to drive gameplay logic, visuals, or adaptive routing.
+
+New GDScript methods on `RTPCEngine`:
+- `register_analysis(name: String)` — pre-register a slot (optional, auto-registers on first write)
+- `set_analysis(name: String, value: float)` — write from audio-side script
+- `get_analysis(name: String) → float` — read from game thread
+- `has_analysis(name: String) → bool`
+- `get_analysis_output_count() → int`
+- `get_analysis_name_at(index: int) → String`
+- `get_analysis_value_at(index: int) → float`
+
+Lock-free design: audio thread does a single atomic store (relaxed), game thread does a single atomic load. No mutex, no contention, sub-nanosecond cost.
+
+**Debug overlay: Analysis Outputs section**
+
+Press F10 to see all registered analysis outputs as real-time bar meters with dB readouts. Auto-rebuilds when new outputs are registered. Color-coded (green→yellow→red by power level).
+
+**When to use which spectral tool:**
+
+| Need | Use |
+|------|-----|
+| Time-stretch or pitch-shift audio | `PhaseVocoder` (needs full FFT) |
+| Remove noise from a signal | `SpectralGate` (needs full FFT) |
+| Detect power at specific frequencies (zero latency) | `ResonatorAnalyzer` |
+| Track amplitude at one frequency | `FrequencyEnvelopeFollower` |
+| Track total broadband amplitude | `EnvelopeFollower` |
+
+**Migration notes:**
+- Fully additive. No existing APIs changed. No breaking changes.
+- Operator count: 36 → 38.
+- Debug overlay now shows an "Analysis Outputs" section (empty by default until analysis outputs are registered).
+- `RTPCEngine` memory: +4KB fixed (64 analysis slots × 64 bytes each). Allocated at engine init regardless of usage.
+
+---
 
 ### v1.5 — Transition Quality & Musical Coherence (2026-07-17)
 

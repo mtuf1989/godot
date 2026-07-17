@@ -214,7 +214,7 @@ int MusicStateGraph::_key_distance_fifths(int p_semi_a, int p_semi_b) {
 	int cof_a = (p_semi_a * 7) % 12;
 	int cof_b = (p_semi_b * 7) % 12;
 
-	int dist = Math::absi(cof_a - cof_b);
+	int dist = Math::abs(cof_a - cof_b);
 	return MIN(dist, 12 - dist); // Minimum wraparound distance
 }
 
@@ -284,7 +284,7 @@ TypedArray<Dictionary> MusicStateGraph::validate_musical_coherence() const {
 		if (has_energy_from && has_energy_to) {
 			float energy_from = from_state.has("energy") ? (float)from_state["energy"] : (float)from_state["intensity"];
 			float energy_to = to_state.has("energy") ? (float)to_state["energy"] : (float)to_state["intensity"];
-			float delta = Math::absf(energy_to - energy_from);
+			float delta = Math::abs(energy_to - energy_from);
 
 			if (delta > coherence_max_energy_delta) {
 				float energy_score = 1.0f - ((delta - coherence_max_energy_delta) / (1.0f - coherence_max_energy_delta));
@@ -450,7 +450,7 @@ float MusicStateGraph::get_transition_coherence_score(const StringName &p_from, 
 			(to_state.has("energy") || to_state.has("intensity"))) {
 		float e_from = from_state.has("energy") ? (float)from_state["energy"] : (float)from_state["intensity"];
 		float e_to = to_state.has("energy") ? (float)to_state["energy"] : (float)to_state["intensity"];
-		float delta = Math::absf(e_to - e_from);
+		float delta = Math::abs(e_to - e_from);
 		if (delta > coherence_max_energy_delta) {
 			float s = 1.0f - ((delta - coherence_max_energy_delta) / (1.0f - coherence_max_energy_delta));
 			score = MIN(score, CLAMP(s, 0.0f, 1.0f));

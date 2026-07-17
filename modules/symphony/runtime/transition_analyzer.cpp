@@ -1,7 +1,7 @@
 #include "transition_analyzer.h"
 #include "core/object/class_db.h"
 #include "core/math/math_funcs.h"
-#include "servers/audio_server.h"
+#include "servers/audio/audio_server.h"
 #include "pffft.h"
 
 #include <cstring>
@@ -125,7 +125,7 @@ float TransitionAnalyzer::_compute_spectral_centroid(const float *p_samples, int
 	// Apply Hanning window to the last N samples of the input.
 	int offset = p_count > N ? p_count - N : 0;
 	for (int i = 0; i < N; i++) {
-		float w = 0.5f * (1.0f - cosf(2.0f * Math_PI * (float)i / (float)(N - 1)));
+		float w = 0.5f * (1.0f - cosf(2.0f * (float)Math::PI * (float)i / (float)(N - 1)));
 		windowed[i] = p_samples[offset + i] * w;
 	}
 
@@ -164,7 +164,7 @@ float TransitionAnalyzer::_compute_spectral_centroid(const float *p_samples, int
 // ============================================================================
 
 TransitionAnalyzer::CurveRecommendation TransitionAnalyzer::_recommend_curve(float p_rms_delta_db, float p_centroid_ratio) const {
-	float abs_rms_delta = Math::absf(p_rms_delta_db);
+	float abs_rms_delta = Math::abs(p_rms_delta_db);
 
 	// Spectral similarity dominates the decision.
 	if (p_centroid_ratio <= centroid_ratio_linear_max && abs_rms_delta <= rms_delta_linear_max_db) {
@@ -187,7 +187,7 @@ float TransitionAnalyzer::_compute_feasibility(float p_rms_delta_db, float p_cen
 	//
 	// Weights: L=0.4, S=0.6 (spectral discontinuity is perceptually more noticeable than level).
 
-	float abs_rms = Math::absf(p_rms_delta_db);
+	float abs_rms = Math::abs(p_rms_delta_db);
 	float L = 1.0f - CLAMP(abs_rms / 12.0f, 0.0f, 1.0f);
 	L = L * L; // Quadratic falloff — small differences are fine, large ones compound
 
@@ -224,17 +224,14 @@ Dictionary TransitionAnalyzer::analyze_transition(const Ref<AudioStream> &p_outg
 	float *incoming_buf = (float *)memalloc(sizeof(float) * analysis_samples);
 
 	// Render tail of outgoing stream and head of incoming stream.
-	int out_rendered = 0;
-	int in_rendered = 0;
-
 	if (p_outgoing.is_valid()) {
-		out_rendered = _render_samples(p_outgoing, outgoing_buf, analysis_samples, true);
+		_render_samples(p_outgoing, outgoing_buf, analysis_samples, true);
 	} else {
 		memset(outgoing_buf, 0, sizeof(float) * analysis_samples);
 	}
 
 	if (p_incoming.is_valid()) {
-		in_rendered = _render_samples(p_incoming, incoming_buf, analysis_samples, false);
+		_render_samples(p_incoming, incoming_buf, analysis_samples, false);
 	} else {
 		memset(incoming_buf, 0, sizeof(float) * analysis_samples);
 	}
