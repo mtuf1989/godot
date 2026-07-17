@@ -24,6 +24,7 @@
 16. [Preset Library](#preset-library)
 17. [Best Practices & Tips](#best-practices--tips)
 18. [Troubleshooting](#troubleshooting)
+19. [Changelog](#changelog)
 
 ---
 
@@ -314,7 +315,7 @@ graph/connection_count = 4
 graph/connections/0/from_node = 1
 graph/connections/0/from_pin = 0
 graph/connections/0/to_node = 2
-graph/connections/0/to_pin = 1
+graph/connections/0/to_pin = 0
 graph/connections/1/from_node = 0
 graph/connections/1/from_pin = 0
 graph/connections/1/to_node = 3
@@ -375,12 +376,12 @@ Symphony provides 36 DSP operators organized by category:
 
 | Operator | Description | Key Parameters |
 |----------|-------------|----------------|
-| **Oscillator** | Classic waveforms (sine, saw, square, triangle) with PolyBLEP anti-aliasing | `waveform`, `frequency`, `phase` |
+| **Oscillator** | Classic waveforms (sine, saw, square, triangle, PWM) with logistic-curve band-limiting | `waveform`, `frequency`, `pulse_width` |
 | **Noise** | White, pink, brown noise | `mode` (0=white, 1=pink, 2=brown) |
-| **LFO** | Low-frequency oscillator for modulation | `frequency`, `waveform`, `amplitude` |
+| **LFO** | Low-frequency oscillator for modulation (polynomial sine) | `frequency`, `waveform`, `amplitude` |
 | **Constant** | Outputs a fixed value | `value` |
 | **WavePlayer** | Plays back a PCM audio buffer | `buffer`, `playback_rate`, `loop` |
-| **FMOscillator** | 2-operator FM synthesis | `carrier_freq`, `mod_freq`, `mod_index` |
+| **FMOscillator** | 2-operator FM synthesis (with output anti-alias filter) | `carrier_freq`, `mod_freq`, `mod_index` |
 | **FormantOsc** | Vowel/formant synthesis | `vowel`, `frequency`, `formant_shift` |
 
 ### Filters (shape the spectrum)
@@ -391,8 +392,8 @@ Symphony provides 36 DSP operators organized by category:
 | **OnePole** | Simple 1-pole LP/HP (6dB/oct) | `mode`, `cutoff` |
 | **SVFilter** | State-variable filter (LP, HP, BP, Notch simultaneously) | `cutoff`, `resonance` |
 | **DCBlocker** | Removes DC offset | — |
-| **Saturator** | Soft-clip saturation/distortion | `drive` |
-| **Waveshaper** | Arbitrary transfer function distortion | `curve`, `drive`, `mix` |
+| **Saturator** | Soft-clip saturation/distortion with ADAA anti-aliasing | `drive`, `mode`, `oversample` |
+| **Waveshaper** | Arbitrary transfer function distortion with ADAA anti-aliasing | `curve`, `drive`, `mix` |
 
 ### Envelopes & Dynamics
 
@@ -1011,6 +1012,40 @@ var current: int = SymphonyVoicePool.get_slot_current_lod(slot)
 var target: int = SymphonyVoicePool.get_slot_target_lod(slot)
 ```
 
+### Budget-Driven Auto-LOD
+
+When the total voice CPU budget exceeds the **warning threshold** (default 70%), Symphony automatically demotes the most expensive voices to lower LOD tiers — starting with the highest-budget voice that has LOD headroom. This happens before voice stealing kicks in (which requires the **critical threshold**, default 90%).
+
+**Escalation ladder under CPU pressure:**
+
+| Budget Level | System Response |
+|--------------|-----------------|
+| < 70% | Normal — all voices at distance-based LOD |
+| 70% – 90% | **Auto-LOD demotion** — expensive voices transition to cheaper LOD tiers |
+| > 90% | **Voice stealing** — lowest-priority voices are killed |
+
+**What this means for users:**
+- Under moderate load, sounds degrade quality gracefully (with crossfade) rather than disappearing
+- You hear simpler audio instead of losing audio entirely
+- Only procedural voices (`AudioStreamSymphony`) with defined LOD graphs are affected
+- Sample-based voices (`AudioStreamOGG`, `AudioStreamWAV`) have no LOD to demote — they can only be stolen
+- Voices currently mid-crossfade are skipped (won't be double-demoted)
+
+**Configuring thresholds:**
+
+```gdscript
+# Adjust when auto-LOD kicks in (0.0 - 1.0, default 0.70)
+SymphonyVoiceManager.warning_threshold = 0.60  # More aggressive demotion
+
+# Adjust when voice stealing kicks in (0.0 - 1.0, default 0.90)
+SymphonyVoiceManager.critical_threshold = 0.85  # Steal earlier
+
+# Disable auto-LOD demotion entirely (rely only on distance + stealing)
+SymphonyVoiceManager.warning_threshold = 1.0
+```
+
+**Design implication:** Always define LOD 1/LOD 2 variants for expensive procedural sounds. If a voice has no LOD graphs, auto-LOD demotion cannot help it — it will be stolen instead.
+
 ### Best Practice: LOD Graph Design
 
 - LOD 0: Full synthesis chain (oscillators, reverb, grain clouds, etc.)
@@ -1067,6 +1102,8 @@ var virtual: int = AudioManager.get_virtual_voice_count()
 | Component | Memory per Voice |
 |-----------|-----------------|
 | Standard graph (10-15 nodes) | ~4-8 KB |
+| Saturator (with oversample=1) | +512 bytes (internal 2× buffer) |
+| Waveshaper (default 512 table) | ~4 KB (transfer + antiderivative tables) |
 | GrainCloud (live-input) | ~384 KB (capture buffer) |
 | GrainCloud (PCM source) | Shared via cache key |
 | FDNReverb | ~16 KB (delay lines) |
@@ -1078,6 +1115,8 @@ var virtual: int = AudioManager.get_virtual_voice_count()
 - Stagger heavy operations (importance update already staggers 1/4 per frame)
 - Use LOD aggressively for distant voices
 - Max 48 simultaneous voices (pool size) — typically 20-30 active is healthy
+- Under budget pressure (>70%), the system auto-demotes expensive voices to lower LOD tiers before resorting to voice stealing (>90%)
+- Place ADSR/Gain gates early in graphs to benefit from silence propagation (skips downstream operators when silent)
 
 ### Testing Utilities
 
@@ -1172,6 +1211,147 @@ Most presets expose a `GraphInput` parameter for real-time control. Common ones:
 - Use `ParameterSmoother` on `GraphInput` values to prevent clicks
 - Use `MathAdd` or `Mix` to combine multiple sources before `GraphOutput`
 - Use `SubGraph` for reusable processing chains (reverb sends, common filters)
+
+### Silence Propagation (Automatic)
+
+Symphony automatically skips DSP execution for operators whose audio inputs are all silent. This cascades through the graph — one silent gate at the front can skip an entire processing chain downstream.
+
+**How it works:**
+- Operators that detect their output is zero report themselves as "inactive"
+- Before executing each operator, the system checks if ALL its audio inputs are inactive
+- If all inputs are silent → output is zeroed, the operator is skipped, and silence propagates further downstream
+- Generators (Oscillator, Noise, WavePlayer, LFO), IO nodes, and Synthesis nodes always execute regardless
+
+**Operators that report silence:**
+| Operator | Reports silent when... |
+|----------|----------------------|
+| `ADSR` | Envelope is in IDLE state (fully released) |
+| `Gain` | Gain value ≈ 0 (< 0.0001) |
+
+**Graph design tips for maximum silence propagation benefit:**
+
+```
+✅ Good: ADSR gates the signal early → everything downstream skips
+   Oscillator → ADSR → Filter → Reverb → GraphOutput
+                  ↑
+          (when IDLE, Filter + Reverb skip execution)
+
+✅ Good: Gain as a gating point
+   WavePlayer → Gain(0) → Delay → Filter → GraphOutput
+                   ↑
+           (when gain=0, Delay + Filter skip)
+
+❌ Less effective: ADSR after heavy processing
+   Oscillator → Reverb → Filter → ADSR → GraphOutput
+                                     ↑
+           (Reverb + Filter still run even when ADSR is idle)
+```
+
+**Key principle:** Place gating operators (ADSR, Gain) as early in the chain as possible. Downstream operators benefit from silence propagation only if they come AFTER the gate.
+
+**Cost:** ~100-150 ns overhead per micro-block when all operators are active (no silence). When operators are skipped, saves 200-500 ns per skipped operator. Net positive for any graph with gated signal paths.
+
+### Anti-Aliasing & Audio Quality
+
+Symphony includes built-in anti-aliasing to prevent digital artifacts from nonlinear operators (Saturator, Waveshaper). These features improve audio quality with minimal performance impact.
+
+#### ADAA (Always-On)
+
+Both `Saturator` and `Waveshaper` use 1st-order Anti-Derivative Anti-Aliasing (ADAA) internally. This eliminates aliasing from distortion processing with zero added latency. No configuration needed — it's always active.
+
+**What this means in practice:**
+- High-frequency content through saturators no longer produces metallic/inharmonic artifacts
+- Waveshaper presets (especially Foldback and Chebyshev) are cleaner at all frequencies
+- The Saturator is slightly more CPU-expensive (~6-8× per sample) but the absolute cost remains negligible for game audio
+
+#### Saturator Oversampling (Opt-In)
+
+For cinematic-quality or music-production patches that need the cleanest possible distortion, the Saturator supports optional 2× oversampling:
+
+```ini
+# In a graph .tres file, set the oversample parameter on a Saturator node:
+graph/nodes/3/type = &"Saturator"
+graph/nodes/3/params = {"drive": 8.0, "mode": 0, "oversample": 1}
+```
+
+| `oversample` value | Behavior | Cost |
+|--------------------|----------|------|
+| `0` (default) | ADAA only | Baseline |
+| `1` | ADAA + 2× oversampling (IIR half-band filters) | ~6.7× per operator |
+
+When `oversample = 0`, there is zero overhead from the oversampling code path. Use this only on critical solo sounds where extreme drive values (>8) push ADAA's limits.
+
+#### Anti-Alias Staircase (Opt-In per Graph)
+
+When a graph chains multiple nonlinear operators (e.g., `Saturator → Waveshaper → Saturator`), harmonics from each stage push the next stage's output higher and higher, causing cascading aliasing. The **anti-alias staircase** automatically inserts a lowpass filter (18 kHz) between consecutive nonlinear operators at compile time.
+
+Enable it per graph:
+
+```ini
+# In a graph .tres file:
+graph/anti_alias_staircase = true
+```
+
+**When to use it:**
+- Graphs with 2+ chained nonlinear operators (Saturator, Waveshaper)
+- Heavy distortion chains (drive > 5 on multiple stages)
+- Any graph where you hear metallic/inharmonic artifacts in the high end
+
+**When NOT to use it:**
+- Simple graphs with only one Saturator/Waveshaper (ADAA alone is sufficient)
+- Graphs where you intentionally want harmonic aliasing as a creative effect
+
+**Cost:** ~160 extra CPU cycles per inserted filter per micro-block. A chain of 3 saturators inserts 2 filters — negligible.
+
+#### FMOscillator Output Filter
+
+The `FMOscillator` includes an always-on one-pole lowpass at 18 kHz on its output. This attenuates above-Nyquist energy that would otherwise alias when using high modulation indices (`mod_index > 3`).
+
+This is transparent for normal use (inaudible below 16 kHz). At extreme settings, the filter prevents the worst digital artifacts while preserving the core FM timbre.
+
+#### Summary: What Requires User Action
+
+| Feature | User action needed? | How to enable |
+|---------|--------------------:|---------------|
+| ADAA (Saturator) | No — always on | Automatic |
+| ADAA (Waveshaper) | No — always on | Automatic |
+| Saturator 2× oversample | Yes — opt-in | Set `oversample: 1` in node params |
+| Anti-alias staircase | Yes — opt-in per graph | Set `graph/anti_alias_staircase = true` |
+| Parameter smoothing | No — on by default | Opt-out with `graph/smooth_parameters = false` |
+| FM output filter | No — always on | Automatic |
+
+#### Parameter Smoothing (On by Default)
+
+When game code changes a `GraphInput` parameter (e.g., filter cutoff, pitch, gain), the new value arrives at 60Hz game frame rate — a stepwise jump that causes clicks and zipper noise on the audio thread.
+
+The compiler now automatically inserts a `ParameterSmoother` node (5ms one-pole filter) between every `GraphInput` node's FLOAT output and its downstream FLOAT input. This eliminates glitches without any user action.
+
+**Properties:**
+
+```ini
+# In a graph .tres file:
+graph/smooth_parameters = true        # Default: true (auto-smooth all GraphInput→FLOAT connections)
+graph/smooth_time_ms = 5.0            # Default: 5.0 ms (time constant for one-pole convergence)
+```
+
+**When to disable it (`graph/smooth_parameters = false`):**
+- One-shot trigger-driven sounds where parameters are set once before play and never change (no smoothing needed → saves ~44 bytes/connection in the arena)
+- Graphs that already use manually-placed `ParameterSmoother` nodes (avoid double-smoothing — though the compiler already prevents injecting a smoother into another smoother)
+- Graphs requiring instant parameter jumps as a creative effect (e.g., a bitcrusher that needs hard frequency steps)
+
+**When to increase `smooth_time_ms`:**
+- Slow, ambient parameter sweeps where 5ms is still too clicky (try 10–20ms)
+- Parameters driven by physics (e.g., vehicle RPM) that update erratically
+
+**When to decrease `smooth_time_ms`:**
+- Fast-responding UI knobs or real-time modulation (try 1–2ms)
+- Parameters that need to track audio-rate changes closely
+
+**Cost:** ~44 bytes arena memory + ~5-10ns CPU per injected smoother per micro-block. A graph with 4 GraphInput parameters adds ~176 bytes and ~20-40ns overhead — negligible.
+
+**Interaction with manual `ParameterSmoother` nodes:**
+- If you connect a `GraphInput` directly to a `ParameterSmoother` node, the compiler will NOT inject an additional smoother (no double-smoothing).
+- If you need different smoothing times per parameter, disable auto-smoothing and place manual `ParameterSmoother` nodes with individual `smooth_time_ms` values.
 
 ### Event Design
 
@@ -1337,4 +1517,120 @@ func _on_music_slider_changed(value: float):
 
 ---
 
-*Symphony Audio System v1.0 — Procedural sound, adaptive music, and spatial audio for Godot.*
+## Changelog
+
+### v1.4 — Parameter Smoothing & Debug Safety (2026-07-17)
+
+**User-facing changes:**
+
+- **Automatic parameter smoothing (on by default)** — The graph compiler now auto-injects `ParameterSmoother` nodes on all `GraphInput` → FLOAT input connections. This eliminates clicks and zipper noise when game code changes parameters at 60Hz frame rate. No manual `ParameterSmoother` nodes needed for typical use.
+
+  New `.tres` properties:
+  ```ini
+  graph/smooth_parameters = true     # Default: true. Set false to disable.
+  graph/smooth_time_ms = 5.0         # Default: 5.0ms one-pole time constant.
+  ```
+
+- **`SmoothedFloat` utility struct** — Available for custom operator development. A 12-byte one-pole smoother with `set_time()`, `set_target()`, `reset()`, `next()`, and `is_settled()`. See `symphony_pin_types.h`.
+
+**Debug-only changes (DEV_ENABLED builds):**
+
+- **NaN/Infinity assertions** — All audio output buffers are validated after each operator executes. Catches float domain errors at the source before they cascade through the graph. Zero cost in release builds.
+- **Float→Audio promotion validation** — Promotion source values are checked for finite-ness before buffer fill.
+- New macros available for custom operators: `SYMPHONY_ASSERT_FINITE(buf, count)`, `SYMPHONY_ASSERT_FINITE_SCALAR(value)`, `SYMPHONY_ASSERT_NOT_NULL(ptr)`.
+
+**Migration notes:**
+- Existing `.tres` graphs without `graph/smooth_parameters` will default to `true` — all `GraphInput` parameters will be smoothed automatically. If you relied on instant parameter jumps, add `graph/smooth_parameters = false` to those graphs.
+- Graphs that already use manually-placed `ParameterSmoother` nodes will NOT be double-smoothed (compiler detects and skips).
+- No API changes to `AudioManager` or any GDScript-facing code.
+- Debug assertions may trigger in dev builds if existing operators produce NaN/Inf — fix the root cause in the operator, don't suppress the assertion.
+
+---
+
+### v1.3 — Branch-Free Oscillators & PWM (2026-07-17)
+
+**User-facing changes:**
+
+- **Oscillator: new PWM waveform** — `waveform = 4` produces a pulse wave with variable duty cycle. Control the duty cycle via the `pulse_width` parameter (0.01–0.99, default 0.5) or modulate it at control rate by connecting to the `pulse_width` input pin (pin index 1).
+
+  ```ini
+  # PWM oscillator in a .tres graph
+  graph/nodes/2/type = &"Oscillator"
+  graph/nodes/2/params = {"waveform": 4, "pulse_width": 0.25}
+  ```
+
+- **Oscillator: new `pulse_width` input pin** — Pin layout is now:
+  | Pin Index | Name | Type | Purpose |
+  |-----------|------|------|---------|
+  | 0 | `frequency` | AUDIO | Per-sample frequency (Hz) |
+  | 1 | `pulse_width` | FLOAT | Duty cycle for PWM waveform (0.01–0.99) |
+
+  Existing graphs connecting to pin 0 (frequency) are unaffected. Pin 1 is optional and defaults to 0.5 when unconnected.
+
+- **Oscillator: upgraded anti-aliasing** — Replaced PolyBLEP with logistic-curve band-limiting. Quality improves from ~-60dB to ~-130dB aliasing rejection (at 2× oversampling). Constant cost per sample regardless of frequency. Minimum useful period: ~20 samples (~2.2 kHz at 44.1 kHz, ~2.4 kHz at 48 kHz) — above this the method gracefully degrades but harmonics are already inaudible.
+
+- **Oscillator waveform enum updated:**
+  | Value | Waveform | Notes |
+  |-------|----------|-------|
+  | 0 | Sine | Polynomial approximation (~-50dB harmonics — sounds warm, not clinical) |
+  | 1 | Saw | Logistic-curve band-limited |
+  | 2 | Square | Two offset band-limited saws |
+  | 3 | Triangle | Leaky-integrated band-limited square |
+  | 4 | **PWM** (new) | Two saws with `pulse_width` offset |
+
+- **LFO & FMOscillator: faster sine** — Both now use polynomial sine approximation (~6 instructions vs ~20-50 for `Math::sin()`). Harmonic error is -50dB — inaudible for modulation and FM carriers where dense spectra mask the difference. Net effect: ~3-5× faster per-sample computation for these operators.
+
+**Migration notes:**
+- Existing `.tres` graphs using Oscillator waveforms 0–3 work unchanged
+- If you relied on the exact PolyBLEP output waveform shape (e.g., compared against a reference recording), the output will sound slightly different — cleaner at high frequencies
+- No API changes to `AudioManager` or any GDScript-facing code
+
+---
+
+### v1.2 — Performance: Silence Propagation & Budget-Driven Auto-LOD (2026-07-17)
+
+**New behaviors (automatic — no user action required):**
+- **Silence propagation** — Operators whose audio inputs are all silent are automatically skipped. Cascades through the graph: a single ADSR in IDLE state can skip an entire downstream chain (filters, delays, reverbs). Zero cost when all operators are active (~100 ns overhead per micro-block).
+- **Budget-driven auto-LOD** — When total voice CPU exceeds the warning threshold (70%), the system automatically transitions the most expensive procedural voices to lower LOD tiers with crossfade. Voices degrade quality gracefully instead of being killed. Stealing only kicks in at the critical threshold (90%).
+- **Batch parameter derivation** — All per-voice volume stack layers (RTPC, attenuation, fade) are now derived in a single coherent pass per frame, reducing GDScript overhead by ~20-30%.
+
+**Operators updated:**
+- `ADSR` — Reports `activity=0` when envelope is in IDLE state (fully released)
+- `Gain` — Reports `activity=0` and fast-paths to memset when gain ≈ 0
+
+**New API:**
+- `SymphonyVoiceManager.process_deferred_lod()` — Called automatically by `AudioManager._process()`. Executes LOD transitions that were identified by the audio thread but require main-thread compilation.
+
+**Graph design guidance:**
+- Place gating operators (ADSR, Gain) as early in the chain as possible for maximum silence propagation benefit
+- Always define LOD 1/2 variants for expensive procedural sounds — without LOD graphs, auto-demotion cannot help and voices will be stolen instead
+
+**Internal changes:**
+- `SymphonyOperator` base class gains `activity` (uint8_t) and `skippable` (uint8_t) fields
+- `CompiledGraph` stores per-operator audio dependency tables for silence checking
+- Graph compiler Phase 8 builds dependency tables and marks generator/IO/timing/synthesis operators as non-skippable
+- `SymphonyVoiceManager` gains deferred LOD transition queue (fixed-size, lock-free)
+- `AudioManager._process()` merges 5 separate iteration loops into one batch derivation pass
+
+---
+
+### v1.1 — Anti-Aliasing & Audio Quality (2026-07-17)
+
+**New features:**
+- **Saturator `oversample` parameter** — Opt-in 2× oversampling for cinematic-quality distortion. Set `"oversample": 1` in node params. Zero cost when disabled (default).
+- **`graph/anti_alias_staircase` property** — Opt-in per-graph. Compiler auto-inserts 18 kHz lowpass between consecutive nonlinear operators to prevent harmonic cascade aliasing. Enable with `graph/anti_alias_staircase = true` in `.tres`.
+
+**Quality improvements (no user action required):**
+- **Saturator ADAA** — 1st-order Anti-Derivative Anti-Aliasing eliminates aliasing from both `tanh` (soft clip) and hard-clip modes. Always active.
+- **Waveshaper ADAA** — Precomputed antiderivative table enables ADAA for all presets (Soft Clip, Hard Clip, Tube, Foldback, Chebyshev 3rd/5th) and custom user tables. Always active.
+- **FMOscillator output filter** — One-pole lowpass at 18 kHz attenuates above-Nyquist energy at high modulation indices. Always active, transparent at normal settings.
+
+**Internal changes:**
+- Added `nonlinear` flag to `OperatorDescriptor` (used by staircase compiler pass)
+- Waveshaper now allocates two tables in arena (transfer + antiderivative)
+- Graph compiler supports a pre-pass for injecting synthetic operators
+- FMOscillator state export now includes filter state (backward-compatible import)
+
+---
+
+*Symphony Audio System v1.4 — Procedural sound, adaptive music, and spatial audio for Godot.*

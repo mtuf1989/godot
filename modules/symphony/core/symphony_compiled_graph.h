@@ -52,6 +52,7 @@ struct CompiledGraph {
 		// Fill promotion buffers (Float→Audio).
 		for (int32_t i = 0; i < promotion_count; i++) {
 			float val = promotions[i].src[0];
+			SYMPHONY_ASSERT_FINITE_SCALAR(val);
 			float *SYMPHONY_RESTRICT dst = promotions[i].dst;
 			for (int32_t s = 0; s < p_num_frames; s++) {
 				dst[s] = val;
@@ -94,6 +95,18 @@ struct CompiledGraph {
 			op->execute(p_num_frames);
 			// Note: operators that detect silence set activity = 0 in execute().
 			// Operators that don't override keep activity = 1 (conservative default).
+
+#ifdef DEV_ENABLED
+			// Debug: validate all audio output buffers for NaN/Inf after execution.
+			// Catches float domain errors at the source operator before they cascade.
+			if (output_buffer_offsets) {
+				int32_t buf_start = output_buffer_offsets[i];
+				int32_t buf_end = output_buffer_offsets[i + 1];
+				for (int32_t b = buf_start; b < buf_end; b++) {
+					SYMPHONY_ASSERT_FINITE(output_audio_buffers[b], p_num_frames);
+				}
+			}
+#endif
 		}
 	}
 

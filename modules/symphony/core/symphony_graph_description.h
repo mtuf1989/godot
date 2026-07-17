@@ -46,4 +46,15 @@ struct GraphDescription {
 	// This prevents harmonic cascade aliasing in chains like Saturator → Waveshaper → Saturator.
 	// Default: false (opt-in per graph).
 	bool anti_alias_staircase = false;
+
+	// When true, the compiler auto-inserts ParameterSmoother nodes on FLOAT output→FLOAT input
+	// connections where the source is a GraphInput node (i.e., runtime-controllable parameters).
+	// Prevents clicks/zipper noise when game code changes parameters at 60Hz frame rate.
+	// Smoothing time defaults to 5ms (one-pole convergence toward target).
+	// Default: true (opt-out per graph). Set false for graphs that need instant parameter response.
+	bool smooth_parameters = true;
+
+	// Smoothing time in milliseconds applied by compiler-injected smoothers.
+	// Only used when smooth_parameters == true.
+	float smooth_time_ms = 5.0f;
 };

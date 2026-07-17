@@ -27,12 +27,136 @@ GraphCompiler::CompileResult GraphCompiler::compile(const GraphDescription &p_de
 		return result;
 	}
 
-	// --- Pre-pass: Anti-alias staircase injection ---
+	// --- Pre-pass A: Parameter smoothing injection ---
+	// If enabled, insert a ParameterSmoother node on every FLOAT→FLOAT connection
+	// where the source is a GraphInput node (runtime-controllable parameter).
+	// This ensures game-side parameter changes (60Hz) are smoothed before reaching
+	// DSP operators, eliminating clicks/zipper noise without manual smoother placement.
+	GraphDescription smoothed_desc;
+	bool did_smooth_pass = false;
+
+	if (p_desc.smooth_parameters) {
+		smoothed_desc = p_desc; // Copy — we'll add synthetic nodes and rewire connections.
+
+		// Find the max node ID to generate unique IDs for injected nodes.
+		int32_t max_id = 0;
+		for (int32_t i = 0; i < smoothed_desc.nodes.size(); i++) {
+			if (smoothed_desc.nodes[i].id > max_id) {
+				max_id = smoothed_desc.nodes[i].id;
+			}
+		}
+		int32_t next_synth_id = max_id + 2000; // Smoothing IDs start at +2000 (anti-alias uses +1000).
+
+		// Identify GraphInput nodes (they produce FLOAT outputs driven by game code).
+		HashMap<int32_t, bool> is_graph_input;
+		for (int32_t i = 0; i < smoothed_desc.nodes.size(); i++) {
+			const NodeDesc &nd = smoothed_desc.nodes[i];
+			is_graph_input.insert(nd.id, nd.type_name == StringName("GraphInput"));
+		}
+
+		// Scan connections: inject a ParameterSmoother between GraphInput FLOAT output
+		// and any FLOAT input pin on a downstream operator.
+		int32_t original_conn_count = smoothed_desc.connections.size();
+		int32_t injected_count = 0;
+
+		for (int32_t c = 0; c < original_conn_count; c++) {
+			ConnectionDesc &conn = smoothed_desc.connections.write[c];
+			if (conn.is_feedback) {
+				continue; // Don't inject on feedback edges.
+			}
+
+			// Only inject for connections FROM a GraphInput node.
+			if (!is_graph_input.has(conn.from_node) || !is_graph_input[conn.from_node]) {
+				continue;
+			}
+
+			// Verify the source output is FLOAT type.
+			const NodeDesc *from_nd = nullptr;
+			for (int32_t i = 0; i < smoothed_desc.nodes.size(); i++) {
+				if (smoothed_desc.nodes[i].id == conn.from_node) {
+					from_nd = &smoothed_desc.nodes[i];
+					break;
+				}
+			}
+			if (!from_nd) {
+				continue;
+			}
+			const OperatorDescriptor *from_desc = registry->find(from_nd->type_name);
+			if (!from_desc) {
+				continue;
+			}
+			if (conn.from_pin >= from_desc->outputs.size()) {
+				continue;
+			}
+			if (from_desc->outputs[conn.from_pin].type != SymphonyPinType::FLOAT) {
+				continue;
+			}
+
+			// Verify the destination input is FLOAT type (don't inject if it's going to AUDIO via promotion).
+			const NodeDesc *to_nd = nullptr;
+			for (int32_t i = 0; i < smoothed_desc.nodes.size(); i++) {
+				if (smoothed_desc.nodes[i].id == conn.to_node) {
+					to_nd = &smoothed_desc.nodes[i];
+					break;
+				}
+			}
+			if (!to_nd) {
+				continue;
+			}
+			const OperatorDescriptor *to_desc = registry->find(to_nd->type_name);
+			if (!to_desc) {
+				continue;
+			}
+			if (conn.to_pin >= to_desc->inputs.size()) {
+				continue;
+			}
+			if (to_desc->inputs[conn.to_pin].type != SymphonyPinType::FLOAT) {
+				continue;
+			}
+
+			// Don't inject a smoother feeding into another ParameterSmoother (avoid double-smoothing).
+			if (to_nd->type_name == StringName("ParameterSmoother")) {
+				continue;
+			}
+
+			// Inject a synthetic ParameterSmoother node.
+			NodeDesc smoother_node;
+			smoother_node.id = next_synth_id++;
+			smoother_node.type_name = StringName("ParameterSmoother");
+			smoother_node.params.insert(StringName("smooth_time_ms"), p_desc.smooth_time_ms);
+			smoothed_desc.nodes.push_back(smoother_node);
+
+			// Rewire: original connection now goes GraphInput → Smoother input (pin 0 = "value")
+			//         new connection: Smoother output (pin 0 = "smoothed") → original destination
+			int32_t orig_to_node = conn.to_node;
+			int32_t orig_to_pin = conn.to_pin;
+
+			conn.to_node = smoother_node.id;
+			conn.to_pin = 0; // ParameterSmoother input pin 0 = "value"
+
+			ConnectionDesc new_conn;
+			new_conn.from_node = smoother_node.id;
+			new_conn.from_pin = 0; // ParameterSmoother output pin 0 = "smoothed"
+			new_conn.to_node = orig_to_node;
+			new_conn.to_pin = orig_to_pin;
+			new_conn.is_feedback = false;
+			smoothed_desc.connections.push_back(new_conn);
+			injected_count++;
+		}
+
+		did_smooth_pass = (injected_count > 0);
+	}
+
+	const GraphDescription &post_smooth_desc = did_smooth_pass ? smoothed_desc : p_desc;
+
+	// --- Pre-pass B: Anti-alias staircase injection ---
 	// If enabled, insert a BiquadFilter (LP, 18kHz, Q=0.707) between consecutive
 	// nonlinear operators on audio connections.
 	GraphDescription effective_desc;
-	if (p_desc.anti_alias_staircase) {
-		effective_desc = p_desc; // Copy — we'll add synthetic nodes and rewire connections.
+	bool did_antialias_pass = false;
+
+	if (post_smooth_desc.anti_alias_staircase) {
+		effective_desc = post_smooth_desc; // Copy — we'll add synthetic nodes and rewire connections.
 
 		// Find the max node ID to generate unique IDs for injected nodes.
 		int32_t max_id = 0;
@@ -102,9 +226,10 @@ GraphCompiler::CompileResult GraphCompiler::compile(const GraphDescription &p_de
 			new_conn.is_feedback = false;
 			effective_desc.connections.push_back(new_conn);
 		}
+		did_antialias_pass = true;
 	}
 
-	const GraphDescription &desc_ref = p_desc.anti_alias_staircase ? effective_desc : p_desc;
+	const GraphDescription &desc_ref = did_antialias_pass ? effective_desc : post_smooth_desc;
 
 	int32_t node_count = desc_ref.nodes.size();
 	if (node_count == 0) {

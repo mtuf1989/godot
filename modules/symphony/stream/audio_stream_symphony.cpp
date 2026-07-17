@@ -33,6 +33,11 @@ void AudioStreamSymphony::_bind_methods() {
 // --- Resource serialization ---
 
 void AudioStreamSymphony::_get_property_list(List<PropertyInfo> *p_list) const {
+	// Graph-level quality options
+	p_list->push_back(PropertyInfo(Variant::BOOL, "graph/anti_alias_staircase", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_STORAGE));
+	p_list->push_back(PropertyInfo(Variant::BOOL, "graph/smooth_parameters", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_STORAGE));
+	p_list->push_back(PropertyInfo(Variant::FLOAT, "graph/smooth_time_ms", PROPERTY_HINT_RANGE, "0.0,100.0,0.1", PROPERTY_USAGE_STORAGE));
+
 	// node_count — so the loader knows how many nodes to expect
 	p_list->push_back(PropertyInfo(Variant::INT, "graph/node_count", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_STORAGE));
 
@@ -73,6 +78,18 @@ void AudioStreamSymphony::_get_property_list(List<PropertyInfo> *p_list) const {
 bool AudioStreamSymphony::_get(const StringName &p_name, Variant &r_ret) const {
 	String name = String(p_name);
 
+	if (name == "graph/anti_alias_staircase") {
+		r_ret = graph_desc.anti_alias_staircase;
+		return true;
+	}
+	if (name == "graph/smooth_parameters") {
+		r_ret = graph_desc.smooth_parameters;
+		return true;
+	}
+	if (name == "graph/smooth_time_ms") {
+		r_ret = graph_desc.smooth_time_ms;
+		return true;
+	}
 	if (name == "graph/node_count") {
 		r_ret = graph_desc.nodes.size();
 		return true;
@@ -197,6 +214,18 @@ bool AudioStreamSymphony::_get(const StringName &p_name, Variant &r_ret) const {
 bool AudioStreamSymphony::_set(const StringName &p_name, const Variant &p_value) {
 	String name = String(p_name);
 
+	if (name == "graph/anti_alias_staircase") {
+		graph_desc.anti_alias_staircase = p_value;
+		return true;
+	}
+	if (name == "graph/smooth_parameters") {
+		graph_desc.smooth_parameters = p_value;
+		return true;
+	}
+	if (name == "graph/smooth_time_ms") {
+		graph_desc.smooth_time_ms = p_value;
+		return true;
+	}
 	if (name == "graph/node_count") {
 		int count = p_value;
 		graph_desc.nodes.resize(count);
