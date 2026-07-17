@@ -50,7 +50,7 @@ private:
 	float *os_buffer = nullptr;
 
 	// --- Half-band allpass section ---
-	static inline float allpass_tick(float input, float coeff, float &x_state, float &y_state) {
+	[[nodiscard]] static inline float allpass_tick(float input, float coeff, float &x_state, float &y_state) {
 		float out = coeff * (input - y_state) + x_state;
 		x_state = input;
 		y_state = out;
@@ -80,7 +80,7 @@ private:
 
 	// Antiderivative of tanh(x): ln(cosh(x))
 	// Numerically stable form: |x| + ln(1 + exp(-2|x|)) - ln(2)
-	static inline float tanh_antideriv(float x) {
+	[[nodiscard]] static inline float tanh_antideriv(float x) {
 		float abs_x = fabsf(x);
 		return abs_x + logf(1.0f + expf(-2.0f * abs_x)) - 0.6931471805599453f;
 	}
@@ -89,7 +89,7 @@ private:
 	// Piecewise: F(x) = -x - 0.5  for x < -1
 	//            F(x) = 0.5 * x^2  for -1 <= x <= 1
 	//            F(x) = x - 0.5    for x > 1
-	static inline float hardclip_antideriv(float x) {
+	[[nodiscard]] static inline float hardclip_antideriv(float x) {
 		if (x < -1.0f) {
 			return -x - 0.5f;
 		} else if (x > 1.0f) {
@@ -99,11 +99,11 @@ private:
 		}
 	}
 
-	static inline float tanh_direct(float x) {
+	[[nodiscard]] static inline float tanh_direct(float x) {
 		return tanhf(x);
 	}
 
-	static inline float hardclip_direct(float x) {
+	[[nodiscard]] static inline float hardclip_direct(float x) {
 		return CLAMP(x, -1.0f, 1.0f);
 	}
 

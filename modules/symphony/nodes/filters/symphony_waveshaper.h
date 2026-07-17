@@ -48,7 +48,7 @@ public:
 	}
 
 	// Lookup with linear interpolation in a table mapped over [-1, 1].
-	inline float table_lookup(const float *p_tbl, float x) const {
+	[[nodiscard]] inline float table_lookup(const float *p_tbl, float x) const {
 		const float table_max = (float)(table_size - 1);
 		float pos = (x + 1.0f) * 0.5f * table_max;
 		int32_t idx = (int32_t)pos;
@@ -138,7 +138,7 @@ public:
 		}
 	}
 
-	static float evaluate_preset(float x, Preset p_preset) {
+	[[nodiscard]] static float evaluate_preset(float x, Preset p_preset) {
 		switch (p_preset) {
 			case PRESET_SOFT_CLIP:
 				return Math::tanh(x * 2.0f);

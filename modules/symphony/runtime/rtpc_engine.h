@@ -60,13 +60,13 @@ public:
 	void register_parameter(const StringName &p_name, float p_default_value = 0.0f, float p_smooth_time_ms = DEFAULT_SMOOTH_TIME_MS);
 
 	// Check if a parameter exists.
-	bool has_parameter(const StringName &p_name) const;
+	[[nodiscard]] bool has_parameter(const StringName &p_name) const;
 
 	// Get current smoothed value (may lag target by smoothing time).
-	float get_current_value(const StringName &p_name) const;
+	[[nodiscard]] float get_current_value(const StringName &p_name) const;
 
 	// Get target value.
-	float get_target_value(const StringName &p_name) const;
+	[[nodiscard]] float get_target_value(const StringName &p_name) const;
 
 	// --- Audio thread API (called from mix callback) ---
 
@@ -75,7 +75,7 @@ public:
 	void smooth_all(int p_num_frames);
 
 	// Evaluate a Godot Curve resource: maps input [0,1] → output [min_out, max_out].
-	float evaluate_curve(const Ref<Curve> &p_curve, float p_input, float p_min_out, float p_max_out) const;
+	[[nodiscard]] float evaluate_curve(const Ref<Curve> &p_curve, float p_input, float p_min_out, float p_max_out) const;
 
 	// --- Configuration ---
 

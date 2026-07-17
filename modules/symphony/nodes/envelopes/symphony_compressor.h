@@ -40,6 +40,11 @@ public:
 	}
 
 	virtual void execute(int32_t p_num_frames) override {
+		// Clamp ratio at DSP level to prevent expansion (exponent must be negative).
+		// ratio < 1.0 would invert the compressor into an expander; float imprecision
+		// near 1.0 makes powf() produce gain > 1 above threshold.
+		float safe_ratio = ratio > 1.001f ? ratio : 1.001f;
+
 		// Peak-based compression
 		for (int32_t i = 0; i < p_num_frames; i++) {
 			float abs_in = fabsf(input[i]);
@@ -51,12 +56,18 @@ public:
 				envelope = release_coeff * envelope + (1.0f - release_coeff) * abs_in;
 			}
 
+			// Kill denormals: on x86 without FTZ/DAZ, decaying envelope produces
+			// denormalized floats that are 10-100x slower to process.
+			if (envelope < 1e-30f) {
+				envelope = 0.0f;
+			}
+
 			// Gain computation
 			float gain = 1.0f;
 			if (envelope > threshold_lin) {
 				// Compress: reduce gain above threshold
 				float over = envelope / threshold_lin;
-				float compressed = powf(over, 1.0f / ratio - 1.0f);
+				float compressed = powf(over, 1.0f / safe_ratio - 1.0f);
 				gain = compressed;
 			}
 

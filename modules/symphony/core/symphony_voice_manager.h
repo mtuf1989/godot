@@ -56,11 +56,11 @@ public:
 	void unregister_voice(AudioStreamPlaybackSymphony *p_voice);
 
 	// Lock-free getters — read atomic metrics snapshot, no mutex.
-	int32_t get_active_voice_count() const;
-	float get_total_budget_percent() const;
-	float get_peak_budget_percent() const;
-	float get_average_voice_microseconds() const;
-	int32_t get_stolen_this_frame() const;
+	[[nodiscard]] int32_t get_active_voice_count() const;
+	[[nodiscard]] float get_total_budget_percent() const;
+	[[nodiscard]] float get_peak_budget_percent() const;
+	[[nodiscard]] float get_average_voice_microseconds() const;
+	[[nodiscard]] int32_t get_stolen_this_frame() const;
 
 	void set_max_voices(int32_t p_max);
 	int32_t get_max_voices() const;

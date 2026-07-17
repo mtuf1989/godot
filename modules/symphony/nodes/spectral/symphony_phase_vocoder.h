@@ -148,7 +148,9 @@ private:
 		for (int32_t k = 1; k < num_bins - 1; k++) {
 			float re = fft_buffer[2 * k];
 			float im = fft_buffer[2 * k + 1];
-			magnitude_buf[k] = Math::sqrt(re * re + im * im);
+			float mag_sq = re * re + im * im;
+			// Denormal-safe sqrt: skip for near-zero bins to avoid x86 penalty.
+			magnitude_buf[k] = mag_sq > 1e-30f ? Math::sqrt(mag_sq) : 0.0f;
 			float phase = Math::atan2(im, re);
 
 			float expected = (float)k * expected_phase_advance;

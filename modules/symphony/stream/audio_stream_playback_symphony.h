@@ -77,18 +77,18 @@ public:
 
 	// LOD transition: initiate parallel crossfade to a new LOD tier (called from main thread).
 	void transition_to_lod(int p_lod_tier);
-	int get_current_lod_tier() const { return current_lod_tier; }
-	bool is_lod_transitioning() const { return lod_crossfade_progress < 1.0f; }
+	[[nodiscard]] int get_current_lod_tier() const { return current_lod_tier; }
+	[[nodiscard]] bool is_lod_transitioning() const { return lod_crossfade_progress < 1.0f; }
 
 	// GDScript API — overrides AudioStreamPlayback virtuals.
 	virtual void set_parameter(const StringName &p_name, const Variant &p_value) override;
 	void trigger(const StringName &p_name, float p_value = 1.0f);
 
 	// Profiling API
-	float get_voice_cpu_microseconds() const;
-	float get_budget_percent() const;
-	float get_last_rms() const;
-	int get_effective_priority() const;
+	[[nodiscard]] float get_voice_cpu_microseconds() const;
+	[[nodiscard]] float get_budget_percent() const;
+	[[nodiscard]] float get_last_rms() const;
+	[[nodiscard]] int get_effective_priority() const;
 
 	~AudioStreamPlaybackSymphony();
 };

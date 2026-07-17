@@ -108,7 +108,10 @@ private:
 		for (int32_t k = 1; k < half_n; k++) {
 			float re = fft_buffer[2 * k];
 			float im = fft_buffer[2 * k + 1];
-			float mag = Math::sqrt(re * re + im * im);
+			float mag_sq = re * re + im * im;
+			// Denormal-safe sqrt: skip expensive sqrt for near-zero bins (silence).
+			// On x86 without FTZ/DAZ, sqrt of denormals incurs 10-100x penalty.
+			float mag = mag_sq > 1e-30f ? Math::sqrt(mag_sq) : 0.0f;
 			float mag_db = (mag > 1e-10f) ? 20.0f * Math::log(mag) / Math::log(10.0f) : -200.0f;
 			if (mag_db < p_threshold_db) {
 				fft_buffer[2 * k] *= reduction_linear;

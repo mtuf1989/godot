@@ -2,7 +2,7 @@
 #include "symphony_pin_types.h"
 #include "symphony_trigger.h"
 
-static size_t pin_buffer_size(SymphonyPinType p_type) {
+[[nodiscard]] static size_t pin_buffer_size(SymphonyPinType p_type) {
 	switch (p_type) {
 		case SymphonyPinType::AUDIO:
 			return sizeof(float) * SYMPHONY_MICRO_BLOCK_SIZE;

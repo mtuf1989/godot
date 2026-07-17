@@ -56,11 +56,11 @@ public:
 	bool is_playing() const { return playing; }
 
 	// Query API (GDScript)
-	float get_current_beat() const;
-	int get_current_bar() const;
-	float get_beat_fraction() const;
-	float get_time_to_next_beat() const;
-	float get_time_to_next_bar() const;
+	[[nodiscard]] float get_current_beat() const;
+	[[nodiscard]] int get_current_bar() const;
+	[[nodiscard]] float get_beat_fraction() const;
+	[[nodiscard]] float get_time_to_next_beat() const;
+	[[nodiscard]] float get_time_to_next_bar() const;
 
 	// Called each frame to detect beat crossings and emit signals
 	void process(double p_delta);
@@ -72,13 +72,13 @@ public:
 	// Returns 1.0 if not playing, if alignment is impossible, or if within tolerance.
 	// tolerance_percent: acceptable deviation (default 5% = within 5% of target is "close enough")
 	// max_stretch: maximum allowed stretch deviation from 1.0 (default 0.1 = ±10%)
-	float calculate_time_stretch_for_alignment(float p_target_time_sec, float p_tolerance_percent = 5.0f, float p_max_stretch = 0.1f) const;
+	[[nodiscard]] float calculate_time_stretch_for_alignment(float p_target_time_sec, float p_tolerance_percent = 5.0f, float p_max_stretch = 0.1f) const;
 
 	// Duration-stretch helper (PhaseVocoder convention).
 	// Returns: duration factor for PhaseVocoder (>1.0 = slower/longer, <1.0 = faster/shorter).
 	// This is the reciprocal of calculate_time_stretch_for_alignment().
 	// Use this when routing the result directly to a PhaseVocoder's time_stretch input.
-	float calculate_duration_stretch_for_alignment(float p_target_time_sec, float p_tolerance_percent = 5.0f, float p_max_stretch = 0.1f) const;
+	[[nodiscard]] float calculate_duration_stretch_for_alignment(float p_target_time_sec, float p_tolerance_percent = 5.0f, float p_max_stretch = 0.1f) const;
 
 	BeatClock();
 	~BeatClock();

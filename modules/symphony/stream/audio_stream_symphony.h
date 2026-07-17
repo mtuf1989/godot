@@ -45,14 +45,14 @@ public:
 
 	CompiledGraph *compile_graph() const;
 	CompiledGraph *compile_lod_graph(int p_lod_tier) const;
-	int get_lod_count() const; // Returns 1 if no LOD graphs, up to 3 (LOD 0 + 2 variants)
+	[[nodiscard]] int get_lod_count() const; // Returns 1 if no LOD graphs, up to 3 (LOD 0 + 2 variants)
 
 	void set_lod_threshold_1(float p_threshold);
-	float get_lod_threshold_1() const;
+	[[nodiscard]] float get_lod_threshold_1() const;
 	void set_lod_threshold_2(float p_threshold);
-	float get_lod_threshold_2() const;
+	[[nodiscard]] float get_lod_threshold_2() const;
 
-	int get_recommended_lod(float p_distance_ratio) const;
+	[[nodiscard]] int get_recommended_lod(float p_distance_ratio) const;
 
 	static GraphDescription build_test_graph_10_nodes();
 	static GraphDescription build_test_graph_30_nodes();

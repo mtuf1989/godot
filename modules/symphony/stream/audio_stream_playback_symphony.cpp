@@ -4,6 +4,8 @@
 #include "core/object/class_db.h"
 #include "core/os/thread.h"
 
+#include <cmath>
+
 void AudioStreamPlaybackSymphony::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("trigger", "name", "value"), &AudioStreamPlaybackSymphony::trigger, DEFVAL(1.0f));
 	ClassDB::bind_method(D_METHOD("get_voice_cpu_microseconds"), &AudioStreamPlaybackSymphony::get_voice_cpu_microseconds);
@@ -173,7 +175,13 @@ int AudioStreamPlaybackSymphony::mix(AudioFrame *p_buffer, float p_rate_scale, i
 	for (int i = 0; i < p_frames; i++) {
 		sum_sq += p_buffer[i].left * p_buffer[i].left + p_buffer[i].right * p_buffer[i].right;
 	}
-	last_rms = sqrtf(sum_sq / (2.0f * (float)p_frames));
+	float rms_candidate = sqrtf(sum_sq / (2.0f * (float)p_frames));
+	// Guard against NaN/Inf from broken upstream operators propagating into
+	// voice manager stealing decisions (Bug 2 pattern: chained math domain errors).
+	if (unlikely(std::isnan(rms_candidate) || std::isinf(rms_candidate))) {
+		rms_candidate = 0.0f;
+	}
+	last_rms = rms_candidate;
 
 	return p_frames;
 }

@@ -36,7 +36,7 @@ private:
 
 	// Fast polynomial sine: phase in [0, 1) → output in [-1, 1].
 	// 5th-order minimax, ~6 instructions, -50dB harmonic error.
-	static inline float fast_sine(float p_phase) {
+	[[nodiscard]] static inline float fast_sine(float p_phase) {
 		float x = 2.0f * p_phase - 1.0f;
 		float x2 = x * x;
 		return x * (1.5707963f + x2 * (-0.6459641f + x2 * 0.0796926f));
@@ -44,7 +44,7 @@ private:
 
 	// Fast 2^x approximation (~8 ops, 16-bit accuracy).
 	// Used in the logistic function denominator.
-	static inline float fast_exp2(float p_x) {
+	[[nodiscard]] static inline float fast_exp2(float p_x) {
 		// Split into integer and fractional parts
 		float i = floorf(p_x);
 		float f = p_x - i;
