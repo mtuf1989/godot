@@ -19,7 +19,7 @@ private:
 	Ref<AudioStreamSymphony> stream;
 	std::atomic<bool> active{ false };
 	bool registered_with_manager = false;
-	bool stop_pending = false; // Deferred stop: graph deletion happens in mix()
+	std::atomic<bool> stop_pending{ false }; // Deferred stop: graph deletion happens in mix()
 
 	// The currently executing graph (owned, freed on audio thread via deferred stop).
 	CompiledGraph *current_graph = nullptr;

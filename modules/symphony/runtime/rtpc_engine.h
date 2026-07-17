@@ -5,6 +5,7 @@
 #include "core/math/math_funcs.h"
 #include "scene/resources/curve.h"
 #include <atomic>
+#include <new> // std::hardware_destructive_interference_size
 
 // Real-Time Parameter Control Engine.
 // Owns global parameters, smooths them on the audio thread, evaluates mapping curves.
@@ -17,12 +18,31 @@ public:
 	static constexpr int MAX_LOCAL_PARAMS_PER_VOICE = 8;
 	static constexpr float DEFAULT_SMOOTH_TIME_MS = 5.0f;
 
-	struct RTPCParameter {
-		StringName name;
-		std::atomic<float> current_value{0.0f}; // Written by audio thread, read by game thread
-		std::atomic<float> target_value{0.0f}; // Written by game thread, read by audio thread
-		float smooth_coeff = 0.0f; // Computed from smooth_time and sample_rate
+	// Cache-line size for false-sharing prevention.
+	// std::hardware_destructive_interference_size is not available on all compilers/platforms,
+	// so we use a conservative 64 bytes (correct for x86-64 and Apple Silicon).
+	static constexpr size_t CACHE_LINE_SIZE = 64;
+
+	// Layout: separate cache lines for audio-thread-owned and game-thread-owned data.
+	// Without this, game thread writing target_value would invalidate the audio thread's
+	// cache line containing current_value (false sharing), causing unnecessary cross-core
+	// traffic on every set_target() call during smooth_all() iteration.
+	struct alignas(CACHE_LINE_SIZE) RTPCParameter {
+		// --- Audio-thread-owned (read/written every mix callback) ---
+		std::atomic<float> current_value{0.0f};
+		float smooth_coeff = 0.0f;
 		bool active = false;
+
+		// --- Padding to push target_value onto a separate cache line ---
+		// current_value(4) + smooth_coeff(4) + active(1) = 9 bytes used.
+		// Pad to 64 bytes so target_value starts on the next cache line.
+		char _pad[CACHE_LINE_SIZE - sizeof(std::atomic<float>) - sizeof(float) - sizeof(bool)];
+
+		// --- Game-thread-owned (written by set_target(), read by audio thread) ---
+		std::atomic<float> target_value{0.0f};
+
+		// --- Cold data (accessed infrequently: registration, debugging) ---
+		StringName name;
 	};
 
 private:

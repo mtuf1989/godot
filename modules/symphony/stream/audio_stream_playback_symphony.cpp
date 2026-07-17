@@ -62,7 +62,7 @@ void AudioStreamPlaybackSymphony::stop() {
 
 	// Defer graph deletion to the next mix() call on the audio thread.
 	// This ensures no one is mid-execution on the graph when we delete it.
-	stop_pending = true;
+	stop_pending.store(true, std::memory_order_relaxed);
 }
 
 bool AudioStreamPlaybackSymphony::is_playing() const {
@@ -84,7 +84,7 @@ int AudioStreamPlaybackSymphony::mix(AudioFrame *p_buffer, float p_rate_scale, i
 	if (!active.load(std::memory_order_acquire)) {
 		// Finalize deferred stop: delete graph safely now that we know
 		// no one is mid-execution (we're the only reader of current_graph).
-		if (stop_pending) {
+		if (stop_pending.load(std::memory_order_relaxed)) {
 			_finalize_stop();
 		}
 		return 0;
@@ -95,7 +95,10 @@ int AudioStreamPlaybackSymphony::mix(AudioFrame *p_buffer, float p_rate_scale, i
 	// Hot-swap check: pick up new graph if available.
 	CompiledGraph *pending = pending_graph.exchange(nullptr, std::memory_order_acquire);
 	if (pending) {
-		bool is_lod = pending_is_lod.exchange(false, std::memory_order_acquire);
+		// pending_is_lod visibility is already guaranteed by the acquire on pending_graph
+		// above (writer stores pending_is_lod with release BEFORE pending_graph with acq_rel,
+		// so acquiring pending_graph transitively publishes pending_is_lod). Relaxed suffices.
+		bool is_lod = pending_is_lod.exchange(false, std::memory_order_relaxed);
 		if (is_lod && current_graph) {
 			// LOD transition: set up parallel crossfade from current → new.
 			// If already in a crossfade, discard the old outgoing graph.
@@ -187,6 +190,21 @@ int AudioStreamPlaybackSymphony::mix(AudioFrame *p_buffer, float p_rate_scale, i
 }
 
 void AudioStreamPlaybackSymphony::swap_graph(CompiledGraph *p_graph) {
+	// STATE MIGRATION SAFETY NOTE:
+	// This reads current_graph->operators[i]->export_state() on the MAIN thread while
+	// the audio thread may be concurrently calling execute() on those same operators.
+	// This is safe IF AND ONLY IF export_state() only reads state that:
+	//   (a) Is updated atomically (e.g., phase as a plain float that converges), OR
+	//   (b) Is a small POD that can be torn-read without catastrophic consequences
+	//       (e.g., reading a slightly stale float phase value is inaudible).
+	//
+	// If any operator's export_state() ever reads dynamically-sized state (vectors,
+	// pointers to resizable buffers) or state where partial reads cause crashes,
+	// this must be redesigned — e.g., by having the audio thread perform the export
+	// into a lock-free mailbox before the swap.
+	//
+	// Current operators (Oscillator, ADSR, filters) only export float state, so
+	// torn reads produce at worst a slight phase discontinuity on the new graph.
 	if (current_graph && p_graph) {
 		uint8_t state_buf[256];
 		for (int32_t old_i = 0; old_i < current_graph->operator_count; old_i++) {
@@ -263,7 +281,7 @@ void AudioStreamPlaybackSymphony::_finalize_stop() {
 	// Called from the audio thread (inside mix()) when stop_pending is true.
 	// Safe to delete the graph here because mix() has already returned early
 	// due to active==false, so no code path is using current_graph.
-	stop_pending = false;
+	stop_pending.store(false, std::memory_order_relaxed);
 
 	cleanup_graveyard();
 	if (current_graph) {
@@ -364,6 +382,18 @@ void AudioStreamPlaybackSymphony::transition_to_lod(int p_lod_tier) {
 	// Publish via the atomic pending_graph slot.
 	// The audio thread will pick this up at the next mix() block boundary
 	// and initiate the crossfade there (thread-safe).
+	//
+	// Memory ordering chain (ensures audio thread sees pending_is_lod correctly):
+	//   Writer (this function, main thread):
+	//     pending_is_lod.store(true, release)   -- sequenced before --
+	//     pending_graph.exchange(ptr, acq_rel)   [release semantics publish pending_is_lod]
+	//   Reader (mix(), audio thread):
+	//     pending_graph.exchange(nullptr, acquire)  [acquires all writes before writer's release]
+	//     pending_is_lod.exchange(false, relaxed)   [already visible via the chain above]
+	//
+	// Do NOT reorder these two stores — pending_is_lod MUST be visible before
+	// pending_graph becomes non-null, or the audio thread may take the wrong
+	// code path (regular hot-swap instead of LOD crossfade).
 	pending_is_lod.store(true, std::memory_order_release);
 	CompiledGraph *old_pending = pending_graph.exchange(new_graph, std::memory_order_acq_rel);
 	if (old_pending) {
