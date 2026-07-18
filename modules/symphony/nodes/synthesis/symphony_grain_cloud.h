@@ -3,6 +3,7 @@
 #include "../../core/symphony_operator.h"
 #include "../../core/symphony_operator_registry.h"
 #include "../../core/symphony_arena_allocator.h"
+#include "../../core/symphony_trigger.h"
 #include "../../core/shared_pcm_cache.h"
 #include "core/math/math_funcs.h"
 #include "core/os/os.h"
@@ -13,9 +14,18 @@
 // Each grain is a windowed (Hanning) segment of the source, with:
 // - configurable size (10-200ms)
 // - stochastic scheduling (Poisson-like based on density)
+// - external trigger-driven spawning (sample-accurate via block-splitting)
 // - per-grain pitch randomization (± semitones)
 // - per-grain amplitude randomization (± dB)
 // - overlap-add output
+//
+// Trigger input:
+// - When trigger_only=false (default): external triggers spawn grains IN ADDITION to
+//   the internal Poisson scheduler. Both sources coexist.
+// - When trigger_only=true: internal scheduler is disabled; grains spawn ONLY from
+//   external trigger events. Use with Clock for beat-synced granular.
+// - Trigger value is currently unused (reserved for future velocity→amplitude mapping).
+// - Sample-accurate: grains spawn at the exact sample offset of the trigger event.
 //
 // Source modes:
 // - Live input: granulates the audio_in signal via an internal capture buffer
@@ -50,6 +60,7 @@ private:
 	};
 
 	const float *SYMPHONY_RESTRICT audio_in = nullptr;
+	const TriggerBuffer *SYMPHONY_RESTRICT trigger_in = nullptr;  // Trigger: external grain spawn
 	const float *SYMPHONY_RESTRICT grain_size_input = nullptr;    // Float: ms
 	const float *SYMPHONY_RESTRICT density_input = nullptr;       // Float: grains/sec
 	const float *SYMPHONY_RESTRICT position_input = nullptr;      // Float: 0-1 buffer position
@@ -93,6 +104,7 @@ private:
 	float default_amp_randomness = 0.0f;     // S4.3: 0 = no amplitude variation
 	float default_position_randomness = 0.1f; // S4.3: configurable (was hardcoded 10%)
 	float default_pitch_tracking = 0.0f;     // S4.3: 0 = no pitch following
+	bool trigger_only = false;               // When true, disable internal Poisson scheduler; spawn grains only from trigger input
 
 	// Pitch detection state (S4.3: YIN-based)
 	float detected_pitch_hz = 0.0f;          // Cached pitch from last detection
@@ -177,13 +189,14 @@ public:
 
 	virtual void bind_pins(void **p_input_ptrs, void **p_output_ptrs) override {
 		audio_in = (const float *)p_input_ptrs[0];
-		grain_size_input = (const float *)p_input_ptrs[1];
-		density_input = (const float *)p_input_ptrs[2];
-		position_input = (const float *)p_input_ptrs[3];
-		pitch_rand_input = (const float *)p_input_ptrs[4];
-		scan_speed_input = (const float *)p_input_ptrs[5];
-		amp_rand_input = (const float *)p_input_ptrs[6];
-		pitch_tracking_input = (const float *)p_input_ptrs[7];
+		trigger_in = (const TriggerBuffer *)p_input_ptrs[1];
+		grain_size_input = (const float *)p_input_ptrs[2];
+		density_input = (const float *)p_input_ptrs[3];
+		position_input = (const float *)p_input_ptrs[4];
+		pitch_rand_input = (const float *)p_input_ptrs[5];
+		scan_speed_input = (const float *)p_input_ptrs[6];
+		amp_rand_input = (const float *)p_input_ptrs[7];
+		pitch_tracking_input = (const float *)p_input_ptrs[8];
 		audio_out = (float *)p_output_ptrs[0];
 	}
 
@@ -228,93 +241,123 @@ public:
 		float avg_interval = (density > 0.001f) ? (mix_rate / density) : 1000000.0f;
 
 		// S4.3: Calculate scan increment per sample
-		// scan_speed=1 means traverse the entire buffer in capture_seconds time
-		// So at speed=1, position advances by 1/(capture_size) per sample
 		int32_t effective_size = source_pcm_loaded ? source_pcm_length : capture_size;
 		float scan_increment = scan_speed / (float)effective_size;
 
-		for (int32_t i = 0; i < p_num_frames; i++) {
-			// Write input to capture buffer (only in live mode, not source PCM mode)
-			if (!source_pcm_loaded) {
-				if (audio_in) {
-					capture_buffer[capture_write] = audio_in[i];
-				} else {
-					capture_buffer[capture_write] = 0.0f;
-				}
-				capture_write = (capture_write + 1) % capture_size;
-			}
+		// --- Block-splitting for trigger-driven grain spawning ---
+		// Process audio in segments split at trigger boundaries for sample-accurate grain spawn.
+		int32_t current_frame = 0;
+		int32_t trigger_idx = 0;
 
-			// S4.3: Auto-advance position
-			if (scan_speed > 0.001f) {
-				auto_position += scan_increment;
-				if (auto_position >= 1.0f) {
-					auto_position -= 1.0f; // Wrap around
-				}
-			}
+		while (current_frame < p_num_frames) {
+			// Determine next segment boundary: either the next trigger or end of block.
+			int32_t segment_end = p_num_frames;
+			bool trigger_at_boundary = false;
+			float trigger_value = 1.0f;
 
-			// Effective position: manual position + auto-scan offset
-			float effective_position = position + auto_position;
-			if (effective_position >= 1.0f) {
-				effective_position -= 1.0f;
-			}
-
-			// S4.3: Periodic pitch detection (YIN)
-			if (pitch_tracking > 0.001f) {
-				pitch_update_counter++;
-				if (pitch_update_counter >= PITCH_UPDATE_INTERVAL) {
-					pitch_update_counter = 0;
-					int32_t analyze_pos = source_pcm_loaded
-						? (int32_t)(effective_position * (float)source_pcm_length)
-						: (capture_write - PITCH_WINDOW_SIZE + capture_size) % capture_size;
-					detected_pitch_hz = detect_pitch(analyze_pos, PITCH_WINDOW_SIZE);
-				}
-			}
-
-			// --- Grain scheduling (Poisson-like) ---
-			schedule_counter -= 1.0f;
-			if (schedule_counter <= 0.0f) {
-				// Spawn a new grain
-				spawn_grain(grain_length, effective_position, pitch_rand, amp_rand, pitch_tracking);
-
-				// Next grain interval with exponential randomization (Poisson process)
-				float u = random_float();
-				if (u < 0.0001f) {
-					u = 0.0001f; // Avoid log(0)
-				}
-				schedule_counter = -Math::log(u) * avg_interval;
-			}
-
-			// --- Grain processing: overlap-add ---
-			float output = 0.0f;
-
-			for (int32_t g = 0; g < MAX_GRAINS; g++) {
-				Grain &grain = grains[g];
-				if (!grain.active) {
+			if (trigger_in && trigger_idx < trigger_in->count) {
+				int32_t trig_offset = trigger_in->events[trigger_idx].sample_offset;
+				if (trig_offset <= current_frame) {
+					// Trigger at or before current position — spawn immediately, advance index.
+					trigger_value = trigger_in->events[trigger_idx].value;
+					trigger_idx++;
+					// Compute effective position at this sample
+					float eff_pos = position + auto_position;
+					if (eff_pos >= 1.0f) eff_pos -= 1.0f;
+					spawn_grain(grain_length, eff_pos, pitch_rand, amp_rand, pitch_tracking);
+					// Don't change segment_end — just continue processing from current_frame.
 					continue;
-				}
-
-				// Grain phase for windowing (0 to 1)
-				float phase = (float)grain.current_sample / (float)grain.length_samples;
-				float window = hanning_window(phase);
-
-				// Read from capture buffer at grain's position
-				float read_sample_pos = (float)grain.start_sample + grain.read_pos;
-				float sample = read_capture(read_sample_pos);
-
-				// Apply per-grain amplitude (S4.3)
-				output += sample * window * grain.amplitude;
-
-				// Advance grain
-				grain.read_pos += grain.playback_rate;
-				grain.current_sample++;
-
-				// Deactivate grain when done
-				if (grain.current_sample >= grain.length_samples) {
-					grain.active = false;
+				} else {
+					segment_end = trig_offset;
+					trigger_at_boundary = true;
+					trigger_value = trigger_in->events[trigger_idx].value;
 				}
 			}
 
-			audio_out[i] = output;
+			// --- Process audio samples in [current_frame, segment_end) ---
+			for (int32_t i = current_frame; i < segment_end; i++) {
+				// Write input to capture buffer (only in live mode)
+				if (!source_pcm_loaded) {
+					if (audio_in) {
+						capture_buffer[capture_write] = audio_in[i];
+					} else {
+						capture_buffer[capture_write] = 0.0f;
+					}
+					capture_write = (capture_write + 1) % capture_size;
+				}
+
+				// S4.3: Auto-advance position
+				if (scan_speed > 0.001f) {
+					auto_position += scan_increment;
+					if (auto_position >= 1.0f) {
+						auto_position -= 1.0f;
+					}
+				}
+
+				// Effective position
+				float effective_position = position + auto_position;
+				if (effective_position >= 1.0f) {
+					effective_position -= 1.0f;
+				}
+
+				// S4.3: Periodic pitch detection (YIN)
+				if (pitch_tracking > 0.001f) {
+					pitch_update_counter++;
+					if (pitch_update_counter >= PITCH_UPDATE_INTERVAL) {
+						pitch_update_counter = 0;
+						int32_t analyze_pos = source_pcm_loaded
+							? (int32_t)(effective_position * (float)source_pcm_length)
+							: (capture_write - PITCH_WINDOW_SIZE + capture_size) % capture_size;
+						detected_pitch_hz = detect_pitch(analyze_pos, PITCH_WINDOW_SIZE);
+					}
+				}
+
+				// --- Internal Poisson scheduling (disabled when trigger_only=true) ---
+				if (!trigger_only) {
+					schedule_counter -= 1.0f;
+					if (schedule_counter <= 0.0f) {
+						spawn_grain(grain_length, effective_position, pitch_rand, amp_rand, pitch_tracking);
+						float u = random_float();
+						if (u < 0.0001f) u = 0.0001f;
+						schedule_counter = -Math::log(u) * avg_interval;
+					}
+				}
+
+				// --- Grain processing: overlap-add ---
+				float output = 0.0f;
+
+				for (int32_t g = 0; g < MAX_GRAINS; g++) {
+					Grain &grain = grains[g];
+					if (!grain.active) {
+						continue;
+					}
+
+					float phase = (float)grain.current_sample / (float)grain.length_samples;
+					float window = hanning_window(phase);
+					float read_sample_pos = (float)grain.start_sample + grain.read_pos;
+					float sample = read_capture(read_sample_pos);
+					output += sample * window * grain.amplitude;
+
+					grain.read_pos += grain.playback_rate;
+					grain.current_sample++;
+
+					if (grain.current_sample >= grain.length_samples) {
+						grain.active = false;
+					}
+				}
+
+				audio_out[i] = output;
+			}
+
+			// If a trigger is at the segment boundary, spawn grain at that exact sample.
+			if (trigger_at_boundary) {
+				float eff_pos = position + auto_position;
+				if (eff_pos >= 1.0f) eff_pos -= 1.0f;
+				spawn_grain(grain_length, eff_pos, pitch_rand, amp_rand, pitch_tracking);
+				trigger_idx++;
+			}
+
+			current_frame = segment_end;
 		}
 	}
 
@@ -429,6 +472,7 @@ public:
 		desc.type_name = "GrainCloud";
 		desc.category = "Synthesis";
 		desc.inputs.push_back({ "audio_in", SymphonyPinType::AUDIO, false });
+		desc.inputs.push_back({ "trigger", SymphonyPinType::TRIGGER, false });
 		desc.inputs.push_back({ "grain_size_ms", SymphonyPinType::FLOAT, false });
 		desc.inputs.push_back({ "density", SymphonyPinType::FLOAT, false });
 		desc.inputs.push_back({ "position", SymphonyPinType::FLOAT, false });
@@ -445,6 +489,7 @@ public:
 		desc.params.push_back({ "amp_randomness", 0.0f, 0.0f, 6.0f, 0.1f });
 		desc.params.push_back({ "position_randomness", 0.1f, 0.0f, 1.0f, 0.01f });
 		desc.params.push_back({ "pitch_tracking", 0.0f, 0.0f, 1.0f, 0.01f });
+		desc.params.push_back({ "trigger_only", 0.0f, 0.0f, 1.0f, 1.0f });
 		desc.params.push_back({ "seed", 1.0f, 1.0f, 999999.0f, 1.0f });
 		desc.params.push_back({ "capture_seconds", 2.0f, 1.0f, 10.0f, 1.0f });
 		desc.state_size = sizeof(SymphonyGrainCloud);
@@ -494,6 +539,7 @@ public:
 		gc->default_amp_randomness = p_params.has("amp_randomness") ? (float)p_params["amp_randomness"] : 0.0f;
 		gc->default_position_randomness = p_params.has("position_randomness") ? (float)p_params["position_randomness"] : 0.1f;
 		gc->default_pitch_tracking = p_params.has("pitch_tracking") ? (float)p_params["pitch_tracking"] : 0.0f;
+		gc->trigger_only = p_params.has("trigger_only") ? ((float)p_params["trigger_only"] >= 0.5f) : false;
 
 		// RNG seed (different per voice for variety)
 		gc->rng_state = p_params.has("seed") ? (uint32_t)(float)p_params["seed"] : 1;

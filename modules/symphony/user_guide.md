@@ -1,4 +1,4 @@
-# Symphony Audio System — User Guide v1.6
+# Symphony Audio System — User Guide v1.7
 
 > A complete guide to creating procedural sounds, adaptive music, and spatial audio for games using the Symphony module and its GDScript Game Audio Layer.
 
@@ -366,6 +366,30 @@ Graphs with `TriggerInput` nodes require an explicit `playback.trigger(&"name")`
 
 Use `SubGraph` operators to embed one graph inside another. This enables modular design — build reusable "building blocks" (e.g., a reverb send, a common filter chain) and reference them.
 
+### Design Decision: Mono-Internal Graph Architecture
+
+Symphony's DSP graph is **mono-internal by design**. All audio pins carry a single channel (`float*` buffer of `SYMPHONY_MICRO_BLOCK_SIZE` samples). The `GraphOutput` node duplicates mono to stereo (`L = R = mono`) for Godot's `AudioFrame` output.
+
+**Why mono?**
+
+1. **Simpler operators** — Filters, envelopes, oscillators, and math nodes all operate on scalar samples. No channel iteration loops, no channel-count conditionals, no multi-channel buffer management.
+
+2. **Predictable memory** — Every audio buffer is exactly `64 × 4 = 256 bytes`. Arena allocation is trivial. No runtime reallocation when channel counts change.
+
+3. **Spatialization at the right level** — Godot's `AudioStreamPlayer3D` handles panning, attenuation, and spatialization at the bus/server level. The graph doesn't need to know if the final output is stereo, 5.1, or binaural — that's Godot's job.
+
+4. **Real-time game audio focus** — Procedural sound effects (impacts, engines, UI, environmental) are inherently mono point sources. Stereo is a spatial property applied downstream, not a synthesis property.
+
+**When would multi-channel matter?**
+
+- Stereo music synthesis (L/R piano, stereo pads) — use two parallel graphs or a future `StereoGraphOutput`
+- Ambisonics encoding inside the graph — future milestone consideration
+- Direct surround panning from DSP operators — not a current use case
+
+**Relationship to Channel-Agnostic Types (CAT):**
+
+The MetaSound-style CAT architecture (polymorphic multi-channel buffers with format metadata) is documented in research but intentionally deferred. It solves a problem we don't have: authoring one graph that outputs to both stereo and 7.1.4 Atmos. Since Godot's audio server handles speaker format at the output stage, our graphs don't need format polymorphism. If we add spatial audio operators (binaural rendering, ambisonics encoding) inside the graph in a future milestone, CAT would be revisited.
+
 ---
 
 ## Operator Reference
@@ -444,7 +468,7 @@ Symphony provides 36 DSP operators organized by category:
 | Operator | Description | Key Parameters |
 |----------|-------------|----------------|
 | **ModalBank** | Resonant modal synthesis (bells, metals, glass) | `frequencies[]`, `decays[]`, `gains[]` |
-| **GrainCloud** | Granular synthesis engine | `grain_size_ms`, `density`, `position`, `pitch_randomness`, `scan_speed`, `amp_randomness`, `pitch_tracking` |
+| **GrainCloud** | Granular synthesis engine | `grain_size_ms`, `density`, `position`, `pitch_randomness`, `scan_speed`, `amp_randomness`, `pitch_tracking`, `trigger_only` |
 
 ### Spectral
 
@@ -1402,6 +1426,49 @@ Most presets expose a `GraphInput` parameter for real-time control. Common ones:
 - For PCM source presets: always pass `source_pcm_cache_key` (resource path) to enable memory sharing across voices.
 - **Never use GrainCloud in LOD 2 graphs** — replace with `Noise → Filter → Gain`.
 - Live-input granulation allocates 384KB per voice — budget accordingly.
+- **Trigger input** (optional): connect a `Clock`, `StochasticTrigger`, or `TriggerInput` to spawn grains at exact sample positions.
+- **`trigger_only` = true**: disables internal Poisson scheduler — grains spawn ONLY from trigger events. Ideal for beat-synced granular textures.
+- When both density scheduling and trigger input are active (default), external triggers spawn additional grains on top of internal scheduling. Watch for MAX_GRAINS (8) saturation at very high density + trigger rates.
+
+### Clock Subdivision
+
+Clock's `subdivision` parameter controls how many triggers fire per beat:
+
+| Subdivision | Musical Value | Use Case |
+|-------------|--------------|----------|
+| 0.5 | Half notes | Slow pulsing |
+| 1.0 (default) | Quarter notes | Standard beat |
+| 2.0 | 8th notes | Faster rhythms |
+| 3.0 | Triplets | Swing/shuffle feel |
+| 4.0 | 16th notes | Hi-hats, rapid patterns |
+
+The trigger **value** encodes beat strength:
+- `1.0` on downbeats (subdivision index 0)
+- Fractional values on off-beats (e.g., `0.25`, `0.5`, `0.75` for subdivision=4)
+
+Use this to drive velocity-sensitive downstream nodes — e.g., ADSR with stronger attack on downbeats.
+
+**Example: Beat-synced granular texture**
+```ini
+# Clock (120 BPM, 16th notes) → GrainCloud (trigger-only mode)
+graph/nodes/0/type = &"Clock"
+graph/nodes/0/params = {"bpm": 120.0, "subdivision": 4.0}
+
+graph/nodes/1/type = &"GrainCloud"
+graph/nodes/1/params = {
+    "grain_size_ms": 60.0,
+    "trigger_only": 1.0,
+    "position": 0.5,
+    "pitch_randomness": 0.1,
+    "source_pcm_cache_key": "res://audio/samples/texture.wav"
+}
+
+# Connection: Clock trigger → GrainCloud trigger input (pin 1)
+graph/connections/0/from_node = 0
+graph/connections/0/from_pin = 0
+graph/connections/0/to_node = 1
+graph/connections/0/to_pin = 1
+```
 
 ### Graph Design
 
@@ -1716,6 +1783,44 @@ func _on_music_slider_changed(value: float):
 ---
 
 ## Changelog
+
+### v1.7 — Clock Subdivision & Triggered Granular (2026-07-18)
+
+**Clock operator: `subdivision` parameter**
+
+New parameter controls how many triggers fire per beat. Enables musical rhythms without BPM hacks or multiple Clock nodes.
+
+- `subdivision` (0.25–16.0, default 1.0): triggers per beat
+- Trigger value now encodes beat strength: `1.0` on downbeats, fractional on off-beats
+- Backward compatible: `subdivision=1.0` produces identical output to previous version
+- State export updated to include tick index (hot-swap preserves rhythm position)
+
+**GrainCloud operator: trigger input pin**
+
+External trigger-driven grain spawning with sample-accurate placement (block-splitting pattern).
+
+- New input pin: `trigger` (TRIGGER type, pin index 1) — optional, null-safe
+- New parameter: `trigger_only` (0.0 or 1.0, default 0.0) — when 1.0, disables internal Poisson scheduler
+- Sample-accurate: grains spawn at exact trigger sample offset within the micro-block
+- Composable: connect Clock, StochasticTrigger, TriggerInput, or TriggerDelay to drive grain spawning
+- When `trigger_only=false` (default): triggers spawn additional grains alongside density-based scheduling
+
+**⚠️ Breaking change for custom graph compilers/tools:**
+GrainCloud input pin indices shifted by +1 (trigger inserted at index 1). Pin order is now:
+`[0] audio_in, [1] trigger, [2] grain_size_ms, [3] density, [4] position, [5] pitch_randomness, [6] scan_speed, [7] amp_randomness, [8] pitch_tracking`
+
+Existing `.tres` graphs that connect to GrainCloud by **pin name** (the standard authoring method) are unaffected — the graph compiler resolves pins by name, not index. Only hand-crafted connections using raw pin indices need updating.
+
+**Documentation: Mono-Internal Design Decision**
+
+Added architectural rationale for mono-only graph buffers to the DSP Graphs section. Explains why CAT (Channel-Agnostic Types) is deferred and how spatialization is handled at the Godot bus/server level.
+
+**Migration notes:**
+- Fully additive for name-based graph authoring (99% of use cases)
+- Index-based pin connections to GrainCloud must add +1 offset to all pins after `audio_in`
+- No API removals, no behavioral changes to existing graphs
+
+---
 
 ### v1.6 — Resonator Spectral Analysis & Analysis Output Bank (2026-07-17)
 
