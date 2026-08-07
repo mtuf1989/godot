@@ -2236,28 +2236,12 @@ void Tree::update_item_cell(TreeItem *p_item, int p_col) const {
 
 	p_item->cells.write[p_col].text_buf->clear();
 	if (p_item->cells[p_col].mode == TreeItem::CELL_MODE_RANGE) {
+		if (!p_item->cells[p_col].text.is_empty() && !p_item->cells[p_col].editable) {
+			return;
+		}
+		valtext = _get_range_cell_text(p_item->cells[p_col]);
 		if (!p_item->cells[p_col].text.is_empty()) {
-			if (!p_item->cells[p_col].editable) {
-				return;
-			}
-
-			int option = (int)p_item->cells[p_col].val;
-
-			valtext = p_item->atr(p_col, ETR("(Other)"));
-			Vector<String> strings = p_item->cells[p_col].text.split(",");
-			for (int j = 0; j < strings.size(); j++) {
-				int value = j;
-				if (!strings[j].get_slicec(':', 1).is_empty()) {
-					value = strings[j].get_slicec(':', 1).to_int();
-				}
-				if (option == value) {
-					valtext = p_item->atr(p_col, strings[j].get_slicec(':', 0));
-					break;
-				}
-			}
-
-		} else {
-			valtext = String::num(p_item->cells[p_col].val, Math::range_step_decimals(p_item->cells[p_col].step));
+			valtext = p_item->atr(p_col, valtext);
 		}
 	} else {
 		// Don't auto translate if it's in string mode and editable, as the text can be changed to anything by the user.
@@ -3329,7 +3313,6 @@ int Tree::propagate_mouse_event(const Point2i &p_pos, int x_ofs, int y_ofs, int 
 
 		// Editing.
 		bool bring_up_editor = allow_reselect ? (c.selected && already_selected) : c.selected;
-		String editor_text = c.text;
 
 		switch (c.mode) {
 			case TreeItem::CELL_MODE_STRING: {
@@ -3408,7 +3391,6 @@ int Tree::propagate_mouse_event(const Point2i &p_pos, int x_ofs, int y_ofs, int 
 						bring_up_editor = false;
 
 					} else {
-						editor_text = String::num(p_item->cells[col].val, Math::range_step_decimals(p_item->cells[col].step));
 						if (select_mode == SELECT_MULTI && get_viewport()->get_processed_events_count() == focus_in_id) {
 							bring_up_editor = false;
 						}
@@ -3644,6 +3626,28 @@ void Tree::_update_value_editor(const TreeItem::Cell &p_cell) {
 	value_editor->set_value(p_cell.val);
 	value_editor->set_exp_ratio(p_cell.expr);
 	updating_value_editor = false;
+}
+
+String Tree::_get_range_cell_text(const TreeItem::Cell &p_cell) const {
+	if (p_cell.text.is_empty()) {
+		return String::num(p_cell.val, Math::range_step_decimals(p_cell.step));
+	}
+
+	int option = (int)p_cell.val;
+	String valtext = ETR("(Other)");
+	Vector<String> strings = p_cell.text.split(",");
+
+	for (int j = 0; j < strings.size(); j++) {
+		int value = j;
+		if (!strings[j].get_slicec(':', 1).is_empty()) {
+			value = strings[j].get_slicec(':', 1).to_int();
+		}
+		if (option == value) {
+			valtext = strings[j].get_slicec(':', 0);
+			break;
+		}
+	}
+	return valtext;
 }
 
 void Tree::popup_select(int p_option) {
@@ -5254,8 +5258,12 @@ void Tree::_notification(int p_what) {
 		case NOTIFICATION_DRAG_BEGIN: {
 			single_select_defer = nullptr;
 			if (theme_cache.scroll_speed > 0) {
-				scrolling = true;
-				set_process_internal(true);
+				const Dictionary drag_data = get_viewport()->gui_get_drag_data();
+				// Enable scrolling, unless dragging a tab.
+				if (drag_data.get("type", "").operator String() != "tab") {
+					scrolling = true;
+					set_process_internal(true);
+				}
 			}
 		} break;
 
@@ -5641,7 +5649,7 @@ void Tree::_notification(int p_what) {
 			}
 
 			sticky_stack_end = 0;
-			if (root) {
+			if (root && !drop_mode_flags) {
 				sticky_list.clear();
 				Vector2 stick_ofs;
 				Vector2 last_ofs = stick_ofs;
@@ -7275,6 +7283,9 @@ String Tree::get_tooltip(const Point2 &p_pos) const {
 	if (it) {
 		const String item_tooltip = it->get_tooltip_text(col);
 		if (enable_auto_tooltip && item_tooltip.is_empty()) {
+			if (it->cells[col].mode == TreeItem::CELL_MODE_RANGE) {
+				return _get_range_cell_text(it->cells[col]);
+			}
 			return it->get_text(col);
 		}
 		return item_tooltip;
@@ -7726,9 +7737,7 @@ Tree::Tree() {
 }
 
 Tree::~Tree() {
-	if (root) {
-		memdelete(root);
-	}
+	memdelete(root);
 	RenderingServer::get_singleton()->free_rid(drop_indicator_ci);
 	RenderingServer::get_singleton()->free_rid(content_ci);
 	RenderingServer::get_singleton()->free_rid(custom_ci);

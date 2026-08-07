@@ -37,6 +37,7 @@
 #include "scene/main/scene_tree.h"
 #include "scene/resources/3d/concave_polygon_shape_3d.h"
 #include "scene/resources/mesh.h"
+#include "servers/physics_3d/physics_server_3d.h"
 #include "servers/rendering/rendering_server.h"
 
 void ShapeCast3D::_notification(int p_what) {
@@ -100,6 +101,14 @@ void ShapeCast3D::_notification(int p_what) {
 				if (is_inside_tree() && debug_instance.is_valid()) {
 					RenderingServer::get_singleton()->instance_set_transform(debug_instance, get_global_transform());
 				}
+			}
+		} break;
+
+		case NOTIFICATION_DEBUG_COLLISIONS_HINT_CHANGED: {
+			if (get_tree()->is_debugging_collisions_hint()) {
+				_update_debug_shape();
+			} else {
+				_clear_debug_shape();
 			}
 		} break;
 	}

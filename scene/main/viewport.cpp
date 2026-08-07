@@ -72,10 +72,12 @@ STATIC_ASSERT_INCOMPLETE_TYPE(class, RenderingServer);
 #ifndef PHYSICS_2D_DISABLED
 #include "scene/2d/physics/collision_object_2d.h"
 #include "servers/physics_2d/direct_states/physics_direct_space_state_2d.h"
+#include "servers/physics_2d/physics_server_2d.h"
 #endif // PHYSICS_2D_DISABLED
 
 #ifndef PHYSICS_3D_DISABLED
 #include "scene/3d/physics/collision_object_3d.h"
+#include "servers/physics_3d/physics_server_3d.h"
 #endif // PHYSICS_3D_DISABLED
 
 #ifndef XR_DISABLED
@@ -2522,9 +2524,7 @@ void Viewport::_gui_set_drag_preview(Control *p_base, Control *p_control) {
 	ERR_FAIL_COND(p_control->get_parent() != nullptr);
 
 	Control *drag_preview = _gui_get_drag_preview();
-	if (drag_preview) {
-		memdelete(drag_preview);
-	}
+	memdelete(drag_preview);
 	p_control->set_as_top_level(true);
 	p_control->set_position(gui.last_mouse_pos);
 	p_base->get_root_parent_control()->add_child(p_control); // Add as child of viewport.
@@ -4904,7 +4904,12 @@ void Viewport::set_world_3d(const Ref<World3D> &p_world_3d) {
 	}
 
 	if (is_inside_tree()) {
-		RenderingServer::get_singleton()->viewport_set_scenario(viewport, find_world_3d()->get_scenario());
+		const Ref<World3D> found_world_3d = find_world_3d();
+		if (found_world_3d.is_valid()) {
+			RenderingServer::get_singleton()->viewport_set_scenario(viewport, found_world_3d->get_scenario());
+		} else {
+			RenderingServer::get_singleton()->viewport_set_scenario(viewport, RID());
+		}
 	}
 
 	_update_audio_listener_3d();
@@ -4925,7 +4930,12 @@ void Viewport::_own_world_3d_changed() {
 	}
 
 	if (is_inside_tree()) {
-		RenderingServer::get_singleton()->viewport_set_scenario(viewport, find_world_3d()->get_scenario());
+		const Ref<World3D> found_world_3d = find_world_3d();
+		if (found_world_3d.is_valid()) {
+			RenderingServer::get_singleton()->viewport_set_scenario(viewport, found_world_3d->get_scenario());
+		} else {
+			RenderingServer::get_singleton()->viewport_set_scenario(viewport, RID());
+		}
 	}
 
 	_update_audio_listener_3d();
@@ -4960,7 +4970,12 @@ void Viewport::set_use_own_world_3d(bool p_use_own_world_3d) {
 	}
 
 	if (is_inside_tree()) {
-		RenderingServer::get_singleton()->viewport_set_scenario(viewport, find_world_3d()->get_scenario());
+		const Ref<World3D> found_world_3d = find_world_3d();
+		if (found_world_3d.is_valid()) {
+			RenderingServer::get_singleton()->viewport_set_scenario(viewport, found_world_3d->get_scenario());
+		} else {
+			RenderingServer::get_singleton()->viewport_set_scenario(viewport, RID());
+		}
 	}
 
 	_update_audio_listener_3d();
