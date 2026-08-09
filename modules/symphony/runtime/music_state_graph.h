@@ -2,7 +2,7 @@
 #define MUSIC_STATE_GRAPH_H
 
 #include "core/io/resource.h"
-#include "servers/audio/audio_stream.h"
+#include "scene/resources/audio/audio_stream.h"
 
 class MusicStateGraph : public Resource {
 	GDCLASS(MusicStateGraph, Resource);

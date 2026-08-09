@@ -1,6 +1,6 @@
 #pragma once
 
-#include "servers/audio/audio_stream.h"
+#include "scene/resources/audio/audio_stream.h"
 #include "audio_stream_symphony.h"
 #include "../core/symphony_pin_types.h"
 #include "../core/symphony_compiled_graph.h"

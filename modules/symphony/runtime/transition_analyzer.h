@@ -3,7 +3,7 @@
 
 #include "core/object/object.h"
 #include "core/object/class_db.h"
-#include "servers/audio/audio_stream.h"
+#include "scene/resources/audio/audio_stream.h"
 
 /// TransitionAnalyzer — Spectral/loudness analysis for music transitions.
 ///

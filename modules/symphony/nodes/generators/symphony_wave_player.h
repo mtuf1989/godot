@@ -4,7 +4,7 @@
 #include "../../core/symphony_operator_registry.h"
 #include "../../core/symphony_arena_allocator.h"
 #include "../../core/symphony_trigger.h"
-#include "scene/resources/audio_stream_wav.h"
+#include "scene/resources/audio/audio_stream_wav.h"
 #include "core/io/resource_loader.h"
 
 // Plays AudioStreamWAV samples with pitch control and loop points.

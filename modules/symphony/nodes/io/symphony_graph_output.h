@@ -3,7 +3,7 @@
 #include "../../core/symphony_operator.h"
 #include "../../core/symphony_operator_registry.h"
 #include "../../core/symphony_arena_allocator.h"
-#include "servers/audio/audio_stream.h"
+#include "scene/resources/audio/audio_stream.h"
 
 // Final output node: copies mono input to stereo AudioFrame buffer (L = R = mono).
 // pin_type param controls the input type (only AUDIO functional in Slice 1).

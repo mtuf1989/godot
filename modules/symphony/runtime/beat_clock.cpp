@@ -2,7 +2,7 @@
 #include "core/object/class_db.h"
 #include "core/os/os.h"
 #include "core/config/engine.h"
-#include "servers/audio/audio_stream.h"
+#include "scene/resources/audio/audio_stream.h"
 #include "servers/audio/audio_server.h"
 
 BeatClock *BeatClock::singleton = nullptr;

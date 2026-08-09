@@ -2,7 +2,7 @@
 #define SOUND_EVENT_H
 
 #include "core/io/resource.h"
-#include "servers/audio/audio_stream.h"
+#include "scene/resources/audio/audio_stream.h"
 #include "scene/resources/curve.h"
 
 class SoundEvent : public Resource {
