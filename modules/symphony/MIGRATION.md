@@ -38,9 +38,18 @@ bin/godot.macos.editor.arm64 --headless --test --test-case='*Symphony*'
   Unit-test setup does not create `AudioServer` except for `[Audio]` cases.
   Mix callback registration is skipped when the server is null; default
   sample rate falls back to 48 kHz until audio is available.
+### ExtraArenaBytesFunc is rate-aware
+
+- Signature is now `ExtraArenaBytesFunc(params, mix_rate)`.
+- DelayLine, PitchShifter, FDNReverb, and GrainCloud use shared
+  `resolve_config(params, mix_rate)` for estimation and construction.
+- Graph compiler Phase 5 uses checked alignment-aware planning (no 25% headroom).
+- `CompileResult` exposes `arena_bytes`, `arena_used_bytes`, `non_arena_bytes`,
+  `trigger_buffer_bytes`, `route_metadata_bytes`, and `total_package_bytes`.
+
 ## Planned (from improve_plan_1_7.md)
 
-- `ExtraArenaBytesFunc(params, mix_rate)` — rate-dependent sizing
+- Central memory budget service (8 MiB/graph; 128/64/32 MiB global by platform)
 - `trigger(name, value)` returns `bool`; dropped-trigger metrics
 - RTPCEngine registration returns stable handles; no audio-thread auto-create
 - `acquire_slot()` free-only; EventDispatcher owns stealing; `set_slot_rms()`

@@ -188,11 +188,34 @@ public:
 		desc.params.push_back({ "buffer_ms", 85.0f, 20.0f, 200.0f, 1.0f });
 		desc.state_size = sizeof(SymphonyPitchShifter);
 		desc.state_align = alignof(SymphonyPitchShifter);
-		// Max buffer: buffer_ms=200 at 48kHz = (200*48000/1000)+4 = 9604 floats.
-		// Use 9604 to cover worst case (highest common sample rate).
-		desc.extra_arena_bytes = sizeof(float) * 9604 + 32;
+		desc.extra_arena_bytes = 0;
+		desc.extra_arena_bytes_fn = &SymphonyPitchShifter::calculate_arena_bytes;
 		desc.create_fn = &SymphonyPitchShifter::create;
 		OperatorRegistry::get_singleton()->register_operator(desc);
+	}
+
+	struct Config {
+		float shift_semitones = 0.0f;
+		float buffer_ms = 85.0f;
+		int32_t buffer_size = 0;
+	};
+
+	[[nodiscard]] static Config resolve_config(const HashMap<StringName, Variant> &p_params, float p_mix_rate) {
+		Config cfg;
+		cfg.shift_semitones = p_params.has("pitch_shift") ? (float)p_params["pitch_shift"] : 0.0f;
+		cfg.buffer_ms = p_params.has("buffer_ms") ? (float)p_params["buffer_ms"] : 85.0f;
+		cfg.buffer_ms = CLAMP(cfg.buffer_ms, 20.0f, 200.0f);
+		float rate = p_mix_rate > 1.0f ? p_mix_rate : 48000.0f;
+		cfg.buffer_size = (int32_t)(cfg.buffer_ms * rate * 0.001f) + 4;
+		if (cfg.buffer_size < 4) {
+			cfg.buffer_size = 4;
+		}
+		return cfg;
+	}
+
+	static size_t calculate_arena_bytes(const HashMap<StringName, Variant> &p_params, float p_mix_rate) {
+		Config cfg = resolve_config(p_params, p_mix_rate);
+		return sizeof(float) * (size_t)cfg.buffer_size;
 	}
 
 	static SymphonyOperator *create(ArenaAllocator &p_arena, const HashMap<StringName, Variant> &p_params, float p_mix_rate) {
@@ -200,13 +223,11 @@ public:
 		if (!mem) return nullptr;
 		SymphonyPitchShifter *ps = new (mem) SymphonyPitchShifter();
 
+		Config cfg = resolve_config(p_params, p_mix_rate);
 		ps->mix_rate = p_mix_rate;
-		ps->default_shift_semitones = p_params.has("pitch_shift") ? (float)p_params["pitch_shift"] : 0.0f;
+		ps->default_shift_semitones = cfg.shift_semitones;
 
-		float buffer_ms = p_params.has("buffer_ms") ? (float)p_params["buffer_ms"] : 85.0f;
-		buffer_ms = CLAMP(buffer_ms, 20.0f, 200.0f);
-
-		ps->buffer_size = (int32_t)(buffer_ms * p_mix_rate * 0.001f) + 4;
+		ps->buffer_size = cfg.buffer_size;
 		ps->buffer = (float *)p_arena.alloc(sizeof(float) * ps->buffer_size, 32);
 		if (!ps->buffer) return nullptr;
 		memset(ps->buffer, 0, sizeof(float) * ps->buffer_size);

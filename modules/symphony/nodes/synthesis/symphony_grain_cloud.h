@@ -3,10 +3,13 @@
 #include "../../core/symphony_operator.h"
 #include "../../core/symphony_operator_registry.h"
 #include "../../core/symphony_arena_allocator.h"
+#include "../../core/symphony_checked_math.h"
 #include "../../core/symphony_trigger.h"
 #include "../../core/shared_pcm_cache.h"
 #include "core/math/math_funcs.h"
 #include "core/os/os.h"
+
+#include <limits>
 
 // GrainCloud: Internal micro-scheduler managing overlapping grains.
 // Supports both live audio input granulation and source buffer mode.
@@ -503,24 +506,29 @@ public:
 	// Per-instance arena sizing: returns only what this specific instance needs.
 	// - Shared PCM mode (source_pcm_cache_key present): only the hanning table.
 	// - Live/copy mode: full capture buffer + hanning table.
-	static size_t calculate_arena_bytes(const HashMap<StringName, Variant> &p_params) {
-		static constexpr size_t HANNING_BYTES = sizeof(float) * 1024 + 64; // 1024-entry table + alignment
+	static size_t calculate_arena_bytes(const HashMap<StringName, Variant> &p_params, float p_mix_rate) {
+		static constexpr size_t HANNING_BYTES = sizeof(float) * 1024;
+		size_t offset = 0;
 
-		// If source_pcm_cache_key is provided AND source PCM data will be available,
-		// the capture buffer is not needed — we'll point to SharedPCMCache data.
+		bool shared_only = false;
 		if (p_params.has("source_pcm_cache_key") && p_params.has("source_pcm_ptr") && p_params.has("source_pcm_length")) {
 			String key = p_params.has("source_pcm_cache_key") ? String(p_params["source_pcm_cache_key"]) : "";
-			if (!key.is_empty()) {
-				return HANNING_BYTES;
-			}
+			shared_only = !key.is_empty();
 		}
 
-		// Live-input or copy mode: need the full capture buffer.
-		float capture_sec = p_params.has("capture_seconds") ? (float)p_params["capture_seconds"] : 2.0f;
-		capture_sec = CLAMP(capture_sec, 1.0f, 10.0f);
-		// Use 48000 as worst-case sample rate for budget calculation.
-		int32_t capture_samples = (int32_t)(capture_sec * 48000.0f);
-		return sizeof(float) * capture_samples + HANNING_BYTES;
+		if (!shared_only) {
+			float capture_sec = p_params.has("capture_seconds") ? (float)p_params["capture_seconds"] : 2.0f;
+			capture_sec = CLAMP(capture_sec, 1.0f, 10.0f);
+			float rate = p_mix_rate > 1.0f ? p_mix_rate : 48000.0f;
+			int32_t capture_samples = (int32_t)(capture_sec * rate);
+			if (!SymphonyCheckedMath::bump(offset, sizeof(float) * (size_t)capture_samples, 32)) {
+				return std::numeric_limits<size_t>::max();
+			}
+		}
+		if (!SymphonyCheckedMath::bump(offset, HANNING_BYTES, 32)) {
+			return std::numeric_limits<size_t>::max();
+		}
+		return offset;
 	}
 
 	static SymphonyOperator *create(ArenaAllocator &p_arena, const HashMap<StringName, Variant> &p_params, float p_mix_rate) {
@@ -614,7 +622,7 @@ public:
 
 		// Hanning window lookup table (1024 entries)
 		gc->hanning_size = 1024;
-		gc->hanning_table = (float *)p_arena.alloc(sizeof(float) * gc->hanning_size, alignof(float));
+		gc->hanning_table = (float *)p_arena.alloc(sizeof(float) * gc->hanning_size, 32);
 		if (!gc->hanning_table) {
 			return nullptr;
 		}

@@ -101,23 +101,56 @@ public:
 		desc.params.push_back({ "delay_ms", 10.0f, 0.0f, 2000.0f, 0.1f });
 		desc.state_size = sizeof(SymphonyDelayLine);
 		desc.state_align = alignof(SymphonyDelayLine);
-		// Max buffer: max_delay_ms=2000 at 48kHz = (2000*48000/1000)+4 = 96004 floats.
-		desc.extra_arena_bytes = sizeof(float) * 96004 + 32;
+		desc.extra_arena_bytes = 0;
+		desc.extra_arena_bytes_fn = &SymphonyDelayLine::calculate_arena_bytes;
 		desc.create_fn = &SymphonyDelayLine::create;
 		OperatorRegistry::get_singleton()->register_operator(desc);
 	}
 
+	struct Config {
+		float max_ms = 1000.0f;
+		float delay_ms = 10.0f;
+		int32_t buffer_size = 0;
+	};
+
+	[[nodiscard]] static Config resolve_config(const HashMap<StringName, Variant> &p_params, float p_mix_rate) {
+		Config cfg;
+		cfg.max_ms = p_params.has("max_delay_ms") ? (float)p_params["max_delay_ms"] : 1000.0f;
+		if (cfg.max_ms > 2000.0f) {
+			cfg.max_ms = 2000.0f;
+		}
+		if (cfg.max_ms < 1.0f) {
+			cfg.max_ms = 1.0f;
+		}
+		cfg.delay_ms = p_params.has("delay_ms") ? (float)p_params["delay_ms"] : 10.0f;
+		float rate = p_mix_rate > 1.0f ? p_mix_rate : 48000.0f;
+		cfg.buffer_size = (int32_t)(cfg.max_ms * rate * 0.001f) + 4; // +4 for interpolation
+		if (cfg.buffer_size < 4) {
+			cfg.buffer_size = 4;
+		}
+		return cfg;
+	}
+
+	static size_t calculate_arena_bytes(const HashMap<StringName, Variant> &p_params, float p_mix_rate) {
+		Config cfg = resolve_config(p_params, p_mix_rate);
+		return sizeof(float) * (size_t)cfg.buffer_size;
+	}
+
 	static SymphonyOperator *create(ArenaAllocator &p_arena, const HashMap<StringName, Variant> &p_params, float p_mix_rate) {
 		void *mem = p_arena.alloc(sizeof(SymphonyDelayLine), alignof(SymphonyDelayLine));
+		if (!mem) {
+			return nullptr;
+		}
 		SymphonyDelayLine *dl = new (mem) SymphonyDelayLine();
 
+		Config cfg = resolve_config(p_params, p_mix_rate);
 		dl->mix_rate = p_mix_rate;
-		float max_ms = p_params.has("max_delay_ms") ? (float)p_params["max_delay_ms"] : 1000.0f;
-		if (max_ms > 2000.0f) max_ms = 2000.0f; // Clamp to arena budget
-		if (max_ms < 1.0f) max_ms = 1.0f;
-		dl->default_delay_ms = p_params.has("delay_ms") ? (float)p_params["delay_ms"] : 10.0f;
-		dl->buffer_size = (int32_t)(max_ms * p_mix_rate * 0.001f) + 4; // +4 for interpolation
+		dl->default_delay_ms = cfg.delay_ms;
+		dl->buffer_size = cfg.buffer_size;
 		dl->buffer = (float *)p_arena.alloc(sizeof(float) * dl->buffer_size, 32);
+		if (!dl->buffer) {
+			return nullptr;
+		}
 		dl->write_pos = 0;
 
 		return dl;

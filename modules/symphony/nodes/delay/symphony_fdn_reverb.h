@@ -3,7 +3,10 @@
 #include "../../core/symphony_operator.h"
 #include "../../core/symphony_operator_registry.h"
 #include "../../core/symphony_arena_allocator.h"
+#include "../../core/symphony_checked_math.h"
 #include "core/math/math_funcs.h"
+
+#include <limits>
 
 // Feedback Delay Network (FDN) reverb operator.
 // Produces a wet reverb signal from an audio input without needing an AudioEffect bus.
@@ -248,40 +251,74 @@ public:
 		// State size is the operator struct only — delay buffers are arena-allocated separately
 		desc.state_size = sizeof(SymphonyFDNReverb);
 		desc.state_align = alignof(SymphonyFDNReverb);
-		desc.extra_arena_bytes = sizeof(float) * 100000 + 32; // Delay + pre-delay memory
+		desc.extra_arena_bytes = 0;
+		desc.extra_arena_bytes_fn = &SymphonyFDNReverb::calculate_arena_bytes;
 		desc.create_fn = &SymphonyFDNReverb::create;
 		OperatorRegistry::get_singleton()->register_operator(desc);
 	}
 
+	struct Config {
+		int num_lines = 4;
+		float max_delay_ms = 100.0f;
+		float room_size = 0.5f;
+		float decay_time = 2.0f;
+		float damping = 0.5f;
+		float pre_delay_ms = 20.0f;
+		int max_delay_samples = 0;
+		int max_pre_delay_samples = 0;
+	};
+
+	[[nodiscard]] static Config resolve_config(const HashMap<StringName, Variant> &p_params, float p_mix_rate) {
+		Config cfg;
+		cfg.num_lines = p_params.has("num_lines") ? (int)(float)p_params["num_lines"] : 4;
+		cfg.num_lines = (cfg.num_lines >= 8) ? 8 : 4;
+		cfg.max_delay_ms = p_params.has("max_delay_ms") ? (float)p_params["max_delay_ms"] : 100.0f;
+		cfg.max_delay_ms = CLAMP(cfg.max_delay_ms, 10.0f, 200.0f);
+		cfg.room_size = p_params.has("room_size") ? (float)p_params["room_size"] : 0.5f;
+		cfg.decay_time = p_params.has("decay_time") ? (float)p_params["decay_time"] : 2.0f;
+		cfg.damping = p_params.has("damping") ? (float)p_params["damping"] : 0.5f;
+		cfg.pre_delay_ms = p_params.has("pre_delay_ms") ? (float)p_params["pre_delay_ms"] : 20.0f;
+		float rate = p_mix_rate > 1.0f ? p_mix_rate : 48000.0f;
+		cfg.max_delay_samples = (int)(cfg.max_delay_ms * rate / 1000.0f) + 1;
+		cfg.max_pre_delay_samples = (int)(200.0f * rate / 1000.0f) + 1;
+		return cfg;
+	}
+
+	static size_t calculate_arena_bytes(const HashMap<StringName, Variant> &p_params, float p_mix_rate) {
+		Config cfg = resolve_config(p_params, p_mix_rate);
+		size_t offset = 0;
+		if (!SymphonyCheckedMath::bump(offset, sizeof(float) * (size_t)cfg.num_lines * (size_t)cfg.max_delay_samples, 32)) {
+			return std::numeric_limits<size_t>::max();
+		}
+		if (!SymphonyCheckedMath::bump(offset, sizeof(float) * (size_t)cfg.max_pre_delay_samples, 32)) {
+			return std::numeric_limits<size_t>::max();
+		}
+		return offset;
+	}
+
 	static SymphonyOperator *create(ArenaAllocator &p_arena, const HashMap<StringName, Variant> &p_params, float p_mix_rate) {
-		int num_lines = p_params.has("num_lines") ? (int)(float)p_params["num_lines"] : 4;
-		num_lines = (num_lines >= 8) ? 8 : 4; // Only allow 4 or 8
+		Config cfg = resolve_config(p_params, p_mix_rate);
 
-		float max_delay_ms = p_params.has("max_delay_ms") ? (float)p_params["max_delay_ms"] : 100.0f;
-		max_delay_ms = CLAMP(max_delay_ms, 10.0f, 200.0f);
-
-		float room_size = p_params.has("room_size") ? (float)p_params["room_size"] : 0.5f;
-		float decay_time = p_params.has("decay_time") ? (float)p_params["decay_time"] : 2.0f;
-		float damping = p_params.has("damping") ? (float)p_params["damping"] : 0.5f;
-		float pre_delay_ms = p_params.has("pre_delay_ms") ? (float)p_params["pre_delay_ms"] : 20.0f;
-
-		// Calculate buffer sizes
-		int max_delay_samples = (int)(max_delay_ms * p_mix_rate / 1000.0f) + 1;
-		int max_pre_delay_samples = (int)(200.0f * p_mix_rate / 1000.0f) + 1; // Always support up to 200ms pre-delay
-
-		// Allocate contiguous delay memory: num_lines * max_delay_samples floats
-		size_t delay_mem_size = sizeof(float) * num_lines * max_delay_samples;
-		float *delay_memory = (float *)p_arena.alloc(delay_mem_size, alignof(float));
-
-		// Allocate pre-delay buffer
-		size_t pre_delay_mem_size = sizeof(float) * max_pre_delay_samples;
-		float *pre_delay_memory = (float *)p_arena.alloc(pre_delay_mem_size, alignof(float));
-
-		// Allocate and construct operator
 		void *mem = p_arena.alloc(sizeof(SymphonyFDNReverb), alignof(SymphonyFDNReverb));
-		return new (mem) SymphonyFDNReverb(p_mix_rate, num_lines, max_delay_samples, max_pre_delay_samples,
+		if (!mem) {
+			return nullptr;
+		}
+
+		size_t delay_mem_size = sizeof(float) * cfg.num_lines * cfg.max_delay_samples;
+		float *delay_memory = (float *)p_arena.alloc(delay_mem_size, 32);
+		if (!delay_memory) {
+			return nullptr;
+		}
+
+		size_t pre_delay_mem_size = sizeof(float) * cfg.max_pre_delay_samples;
+		float *pre_delay_memory = (float *)p_arena.alloc(pre_delay_mem_size, 32);
+		if (!pre_delay_memory) {
+			return nullptr;
+		}
+
+		return new (mem) SymphonyFDNReverb(p_mix_rate, cfg.num_lines, cfg.max_delay_samples, cfg.max_pre_delay_samples,
 				delay_memory, pre_delay_memory,
-				room_size, decay_time, damping, pre_delay_ms);
+				cfg.room_size, cfg.decay_time, cfg.damping, cfg.pre_delay_ms);
 	}
 
 private:

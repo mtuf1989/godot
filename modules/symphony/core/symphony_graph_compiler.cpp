@@ -1,6 +1,9 @@
 #include "symphony_graph_compiler.h"
 #include "symphony_pin_types.h"
 #include "symphony_trigger.h"
+#include "symphony_checked_math.h"
+
+#include <limits>
 
 [[nodiscard]] static size_t pin_buffer_size(SymphonyPinType p_type) {
 	switch (p_type) {
@@ -16,6 +19,13 @@
 			return sizeof(TriggerBuffer);
 	}
 	return 0;
+}
+
+[[nodiscard]] static size_t operator_extra_bytes(const OperatorDescriptor *p_desc, const HashMap<StringName, Variant> &p_params, float p_mix_rate) {
+	if (p_desc->extra_arena_bytes_fn) {
+		return p_desc->extra_arena_bytes_fn(p_params, p_mix_rate);
+	}
+	return p_desc->extra_arena_bytes;
 }
 
 GraphCompiler::CompileResult GraphCompiler::compile(const GraphDescription &p_desc, float p_mix_rate) {
@@ -388,38 +398,35 @@ GraphCompiler::CompileResult GraphCompiler::compile(const GraphDescription &p_de
 		return result;
 	}
 
-	// --- Phase 5: Calculate arena size ---
-	size_t arena_size = 0;
+	// --- Phase 5: Exact alignment-aware arena size (no 25% headroom) ---
+	// Simulate ArenaAllocator bump order used in Phases 6–7 so planned capacity
+	// matches actual consumption (within per-operator create() alloc order).
+	size_t planned_offset = 0;
+	size_t trigger_buffer_bytes = 0;
+	auto plan_fail = [&](const String &p_msg) -> GraphCompiler::CompileResult {
+		result.errors.push_back(p_msg);
+		result.arena_bytes = planned_offset;
+		result.trigger_buffer_bytes = trigger_buffer_bytes;
+		result.total_package_bytes = planned_offset;
+		return result;
+	};
 
-	// Space for operator pointer array
-	arena_size += sizeof(SymphonyOperator *) * node_count + 32;
-
-	// Space for each operator's state
-	for (int32_t i = 0; i < node_count; i++) {
-		arena_size += node_descs[i]->state_size + node_descs[i]->state_align;
-		// Per-instance sizing callback takes priority over static worst-case value.
-		if (node_descs[i]->extra_arena_bytes_fn) {
-			arena_size += node_descs[i]->extra_arena_bytes_fn(desc_ref.nodes[i].params);
-		} else {
-			arena_size += node_descs[i]->extra_arena_bytes;
-		}
+	if (!SymphonyCheckedMath::bump(planned_offset, sizeof(SymphonyOperator *) * (size_t)node_count, 8)) {
+		return plan_fail("Arena size overflow while planning operator pointer array.");
 	}
 
-	// Space for output buffers (one per output pin)
 	int32_t total_trigger_buffers = 0;
 	for (int32_t i = 0; i < node_count; i++) {
 		for (int32_t p = 0; p < node_descs[i]->outputs.size(); p++) {
-			arena_size += pin_buffer_size(node_descs[i]->outputs[p].type) + 32;
 			if (node_descs[i]->outputs[p].type == SymphonyPinType::TRIGGER) {
 				total_trigger_buffers++;
 			}
 		}
 	}
+	if (!SymphonyCheckedMath::bump(planned_offset, sizeof(TriggerBuffer *) * (size_t)total_trigger_buffers, 8)) {
+		return plan_fail("Arena size overflow while planning trigger buffer pointer array.");
+	}
 
-	// Space for trigger buffer pointer array
-	arena_size += sizeof(TriggerBuffer *) * total_trigger_buffers + 32;
-
-	// Count Float→Audio promotions needed
 	int32_t total_promotions = 0;
 	for (int32_t i = 0; i < node_count; i++) {
 		for (int32_t p = 0; p < input_sources[i].size(); p++) {
@@ -428,16 +435,64 @@ GraphCompiler::CompileResult GraphCompiler::compile(const GraphDescription &p_de
 			}
 		}
 	}
-	// Space for promotion buffers (64 floats each) and promotion array
-	arena_size += total_promotions * (sizeof(float) * SYMPHONY_MICRO_BLOCK_SIZE + 32);
-	arena_size += sizeof(CompiledGraph::Promotion) * total_promotions + 32;
+	if (!SymphonyCheckedMath::bump(planned_offset, sizeof(CompiledGraph::Promotion) * (size_t)total_promotions, 8)) {
+		return plan_fail("Arena size overflow while planning promotion array.");
+	}
+
+	for (int32_t i = 0; i < node_count; i++) {
+		for (int32_t p = 0; p < node_descs[i]->outputs.size(); p++) {
+			SymphonyPinType type = node_descs[i]->outputs[p].type;
+			size_t pin_bytes = pin_buffer_size(type);
+			if (type == SymphonyPinType::TRIGGER) {
+				size_t next_trig = 0;
+				if (!SymphonyCheckedMath::add(trigger_buffer_bytes, pin_bytes, next_trig)) {
+					return plan_fail("Trigger buffer byte count overflow.");
+				}
+				trigger_buffer_bytes = next_trig;
+			}
+			if (!SymphonyCheckedMath::bump(planned_offset, pin_bytes, 32)) {
+				return plan_fail(vformat("Arena size overflow while planning output pin buffers (node index %d).", i));
+			}
+		}
+	}
+
+	// Operator construction order follows topological sorted_order (Phase 7).
+	// Promotion buffers are allocated during bind_pins wiring for each node.
+	for (int32_t s = 0; s < node_count; s++) {
+		int32_t node_idx = sorted_order[s];
+		const OperatorDescriptor *desc = node_descs[node_idx];
+		if (!SymphonyCheckedMath::bump(planned_offset, desc->state_size, desc->state_align ? desc->state_align : 8)) {
+			return plan_fail(vformat("Arena size overflow while planning operator state '%s'.", String(desc->type_name)));
+		}
+		size_t extra = operator_extra_bytes(desc, desc_ref.nodes[node_idx].params, p_mix_rate);
+		if (extra == std::numeric_limits<size_t>::max()) {
+			return plan_fail(vformat("Arena size overflow while computing extras for '%s'.", String(desc->type_name)));
+		}
+		if (extra > 0) {
+			// Extra payload is itself an alignment-aware span simulated from a
+			// 32-byte-aligned origin (see operator calculate_arena_bytes helpers).
+			size_t aligned = 0;
+			if (!SymphonyCheckedMath::align_up(planned_offset, 32, aligned)) {
+				return plan_fail(vformat("Arena align overflow for '%s' extras.", String(desc->type_name)));
+			}
+			if (!SymphonyCheckedMath::add(aligned, extra, planned_offset)) {
+				return plan_fail(vformat("Arena size overflow while planning extra buffers for '%s'.", String(desc->type_name)));
+			}
+		}
+		for (int32_t p = 0; p < input_sources[node_idx].size(); p++) {
+			if (input_sources[node_idx][p].needs_promotion) {
+				if (!SymphonyCheckedMath::bump(planned_offset, sizeof(float) * SYMPHONY_MICRO_BLOCK_SIZE, 32)) {
+					return plan_fail("Arena size overflow while planning Float→Audio promotion buffers.");
+				}
+			}
+		}
+	}
+
+	size_t arena_size = planned_offset;
+	result.arena_bytes = arena_size;
+	result.trigger_buffer_bytes = trigger_buffer_bytes;
 
 	// --- Phase 6: Allocate arena and build compiled graph ---
-	// Add safety margin: some operators allocate extra buffers (lookup tables, delay
-	// lines, ring buffers) in their create_fn beyond what state_size declares.
-	// extra_arena_bytes covers declared needs; this margin handles alignment overhead.
-	arena_size += arena_size / 4; // 25% headroom for alignment padding
-
 	CompiledGraph *compiled = memnew(CompiledGraph);
 	if (!compiled->arena.init(arena_size)) {
 		result.errors.push_back("Failed to allocate arena.");
@@ -649,5 +704,19 @@ GraphCompiler::CompileResult GraphCompiler::compile(const GraphDescription &p_de
 	}
 
 	result.graph = compiled;
+	result.arena_bytes = compiled->arena.capacity;
+	result.arena_used_bytes = compiled->arena.get_used();
+	result.trigger_buffer_bytes = trigger_buffer_bytes;
+	// Silence tables and node_names/ids live on the heap outside the arena.
+	size_t silence_bytes = 0;
+	SymphonyCheckedMath::add(silence_bytes, sizeof(int32_t) * (size_t)(node_count + 1), silence_bytes); // audio_input_offsets
+	SymphonyCheckedMath::add(silence_bytes, sizeof(int32_t) * (size_t)compiled->audio_input_ops_count, silence_bytes);
+	SymphonyCheckedMath::add(silence_bytes, sizeof(int32_t) * (size_t)(node_count + 1), silence_bytes); // output_buffer_offsets
+	SymphonyCheckedMath::add(silence_bytes, sizeof(float *) * (size_t)compiled->output_audio_buffers_count, silence_bytes);
+	SymphonyCheckedMath::add(silence_bytes, sizeof(StringName) * (size_t)node_count, silence_bytes);
+	SymphonyCheckedMath::add(silence_bytes, sizeof(int32_t) * (size_t)node_count, silence_bytes);
+	result.route_metadata_bytes = silence_bytes;
+	result.non_arena_bytes = silence_bytes;
+	result.total_package_bytes = result.arena_bytes + result.non_arena_bytes;
 	return result;
 }
