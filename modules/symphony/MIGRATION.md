@@ -107,6 +107,15 @@ bin/godot.macos.editor.arm64 --headless --test --test-case='*Symphony*'
 - Admission denied (no token, at/above warning CPU, or already transitioning)
   uses a 64-sample single-graph fade-out → swap → fade-in fallback.
 - At most current + outgoing (+ held incoming during fallback).
+- Transition outcomes are counted (`crossfade_transition_count` /
+  `fallback_transition_count`) and included in `get_debug_metrics()`.
+
+### Read-only debug metrics
+
+- `SymphonyVoiceManager.get_debug_metrics()` returns memory snapshot fields,
+  package lifecycle counts, dropped triggers, spectral underflows (PhaseVocoder
+  incomplete-window skips), retirement pending/peak/destroyed, and transition
+  counters. Individual getters mirror the same atomics.
 
 ### VoiceManager deferral (§6 partial)
 

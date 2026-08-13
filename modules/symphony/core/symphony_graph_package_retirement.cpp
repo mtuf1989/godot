@@ -46,7 +46,8 @@ void GraphPackageRetirement::retire(PreparedGraphPackage *p_package) {
 	do {
 		p_package->retire_next = old_head;
 	} while (!head.compare_exchange_weak(old_head, p_package, std::memory_order_release, std::memory_order_relaxed));
-	pending_count.fetch_add(1, std::memory_order_relaxed);
+	const uint32_t pending = pending_count.fetch_add(1, std::memory_order_relaxed) + 1;
+	symphony_note_retirement_pending(pending);
 }
 
 void GraphPackageRetirement::drain() {
@@ -61,9 +62,18 @@ void GraphPackageRetirement::drain() {
 	}
 	if (destroyed > 0) {
 		pending_count.fetch_sub(destroyed, std::memory_order_relaxed);
+		symphony_note_packages_destroyed(destroyed);
 	}
 }
 
 uint32_t GraphPackageRetirement::get_pending_count() {
 	return pending_count.load(std::memory_order_relaxed);
+}
+
+uint64_t GraphPackageRetirement::get_destroyed_count() {
+	return symphony_packages_destroyed_count().load(std::memory_order_relaxed);
+}
+
+uint32_t GraphPackageRetirement::get_peak_pending_count() {
+	return symphony_retirement_peak_pending().load(std::memory_order_relaxed);
 }

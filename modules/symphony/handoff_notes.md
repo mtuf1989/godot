@@ -15,16 +15,16 @@
 |-----------|--------|
 | **M1** | Done |
 | **M2** | Closed |
-| **M3** | In progress — memory, cost admission, §11 authoring, fingerprints/migrate, control-path race landed; metrics/stress/TSan remain |
+| **M3** | In progress — memory, cost admission, §11 authoring, fingerprints/migrate, control-path, read-only metrics landed; stress/TSan remain |
 
 **HEAD commits from this session (newest first):**
 
-- (pending) — handle-safe set_parameter / trigger via atomic control_package
+- (pending) — read-only transition / trigger / spectral / retirement metrics
+- `5842cf7fce` — Publish an atomic control package for parameter and trigger writes
 - `0fb5639861` — Migrate compatible graph state at the audio boundary with package fingerprints
 - `24ba26e7e6` — Update Symphony handoff notes for the next M3 session
-- `c2b648d787` — LOD/feedback serialization, authoring APIs, editor cues
 
-**Tests (last run):** rebuild after control-path slice
+**Tests (last run):** rebuild after metrics slice
 
 ```bash
 scons platform=macos target=editor arch=arm64 tests=yes module_raycast_enabled=no -j$(sysctl -n hw.ncpu)
@@ -81,18 +81,21 @@ bin/godot.macos.editor.arm64 --headless --test --source-file='*symphony*'
 - Atomic `control_package` published from `_install_package`
 - `set_parameter` / `trigger` load-check-act with one retry on swap race
 
+### Read-only metrics
+- `SymphonyVoiceManager.get_debug_metrics()` + individual getters
+- Transition / dropped-trigger / spectral-underflow / retirement destroyed+peak
+
 ---
 
 ## Suggested Next (priority)
 
 Still open from `improve_plan_1_7.md` M3 / deferred leftovers:
 
-1. **Full read-only metrics** — transition / trigger / spectral-underflow beyond package counts
-2. **Memory stress + release benchmarks** — many 96 kHz heavy voices; ≤5% median / ≤10% p99 gates
-3. **TSan + RT-scope assertions** (§6 gate)
-4. **Spectral suite depth** — PhaseVocoder hop/COLA/PFFFT
-5. **Wire `extra_cost_fn`** for FFT `N·logN` if admission needs tighter calibration
-6. **game-template** — implement documented API migration in that repo when ready (not this repo)
+1. **Memory stress + release benchmarks** — many 96 kHz heavy voices; ≤5% median / ≤10% p99 gates
+2. **TSan + RT-scope assertions** (§6 gate)
+3. **Spectral suite depth** — PhaseVocoder hop/COLA/PFFFT
+4. **Wire `extra_cost_fn`** for FFT `N·logN` if admission needs tighter calibration
+5. **game-template** — implement documented API migration in that repo when ready (not this repo)
 
 Ask user which slice to take first if unclear.
 
@@ -102,6 +105,7 @@ Ask user which slice to take first if unclear.
 
 - Package fingerprints + audio-boundary migrate — **landed**
 - Handle-safe `set_parameter` / `trigger` — **landed**
+- Read-only metrics — **landed**
 - `extra_cost_fn` unused (fixed `cost_per_sample` only)
 - Editor LOD tier switch auto-creates empty variants if missing — authors should remove unused LODs before shipping (noted in user_guide)
 - Oscillator high-freq AA can overshoot ~±3 (tests allow ±3.1)
@@ -113,7 +117,7 @@ Ask user which slice to take first if unclear.
 
 1. Read this file + skim `improve_plan_1_7.md` remaining M3 gates
 2. Checkout `features/symphony_fixed`; confirm clean + rebuild if needed
-3. Prefer next: read-only metrics, then stress/TSan
+3. Prefer next: memory stress + release benchmarks, then TSan/RT-scope
 4. Keep updating `MIGRATION.md` / `user_guide.md` when APIs change; do not edit `review_version_1_7.md`
 5. Prefer focused commits
 

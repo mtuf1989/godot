@@ -10,6 +10,11 @@ TEST_FORCE_LINK(test_symphony_voice)
 #include "modules/symphony/core/symphony_trigger.h"
 #include "modules/symphony/nodes/io/symphony_trigger_input.h"
 #include "modules/symphony/core/symphony_arena_allocator.h"
+#include "modules/symphony/core/symphony_graph_package_retirement.h"
+#include "modules/symphony/core/symphony_prepared_graph_package.h"
+#include "modules/symphony/core/symphony_graph_compiler.h"
+#include "modules/symphony/core/symphony_graph_description.h"
+#include "modules/symphony/core/symphony_runtime_metrics.h"
 #include "modules/symphony/runtime/rtpc_engine.h"
 #include "modules/symphony/runtime/voice_manager.h"
 #include "modules/symphony/runtime/event_dispatcher.h"
@@ -144,6 +149,62 @@ TEST_CASE("[Symphony][Voice] transition cost estimate scales with units") {
 	const float heavy = mgr->estimate_cpu_fraction_for_cost(64.0f * 48.0f, 48000.0f, 512);
 	CHECK(light > 0.0f);
 	CHECK(heavy > light);
+}
+
+TEST_CASE("[Symphony][Voice] get_debug_metrics exposes transition trigger retirement memory") {
+	SymphonyVoiceManager *mgr = SymphonyVoiceManager::get_singleton();
+	REQUIRE(mgr != nullptr);
+
+	const uint64_t destroyed_before = mgr->get_packages_destroyed_count();
+	const uint64_t crossfade_before = mgr->get_crossfade_transition_count();
+	const uint64_t fallback_before = mgr->get_fallback_transition_count();
+	const uint64_t underflow_before = mgr->get_spectral_underflow_count();
+
+	mgr->note_crossfade_transition();
+	mgr->note_fallback_transition();
+	symphony_note_spectral_underflow();
+
+	GraphDescription desc;
+	NodeDesc gin;
+	gin.id = 1;
+	gin.type_name = "GraphInput";
+	gin.params.insert("parameter_name", "x");
+	gin.params.insert("default_value", 0.0f);
+	desc.nodes.push_back(gin);
+	NodeDesc out;
+	out.id = 2;
+	out.type_name = "GraphOutput";
+	desc.nodes.push_back(out);
+	ConnectionDesc c;
+	c.from_node = 1;
+	c.from_pin = 0;
+	c.to_node = 2;
+	c.to_pin = 0;
+	desc.connections.push_back(c);
+
+	GraphCompiler::CompileResult compiled = GraphCompiler::compile(desc, 48000.0f);
+	REQUIRE(compiled.success());
+	PreparedGraphPackage *pkg = PreparedGraphPackage::create_from_graph(compiled.graph, compiled.arena_bytes, compiled.total_package_bytes);
+	REQUIRE(pkg != nullptr);
+	GraphPackageRetirement::retire(pkg);
+	CHECK(GraphPackageRetirement::get_pending_count() >= 1);
+	GraphPackageRetirement::drain();
+
+	CHECK(mgr->get_crossfade_transition_count() == crossfade_before + 1);
+	CHECK(mgr->get_fallback_transition_count() == fallback_before + 1);
+	CHECK(mgr->get_spectral_underflow_count() == underflow_before + 1);
+	CHECK(mgr->get_packages_destroyed_count() == destroyed_before + 1);
+
+	Dictionary metrics = mgr->get_debug_metrics();
+	CHECK(metrics.has("dropped_trigger_count"));
+	CHECK(metrics.has("spectral_underflow_count"));
+	CHECK(metrics.has("crossfade_transition_count"));
+	CHECK(metrics.has("fallback_transition_count"));
+	CHECK(metrics.has("retirement_pending"));
+	CHECK(metrics.has("packages_destroyed"));
+	CHECK(metrics.has("memory_global_used_bytes"));
+	CHECK(metrics.has("packages_active"));
+	CHECK((int64_t)metrics["packages_destroyed"] == (int64_t)mgr->get_packages_destroyed_count());
 }
 
 } // namespace TestSymphonyVoice

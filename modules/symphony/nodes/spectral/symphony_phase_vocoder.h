@@ -3,6 +3,7 @@
 #include "../../core/symphony_operator.h"
 #include "../../core/symphony_operator_registry.h"
 #include "../../core/symphony_arena_allocator.h"
+#include "../../core/symphony_runtime_metrics.h"
 #include "core/math/math_funcs.h"
 #include "pffft.h"
 
@@ -102,6 +103,7 @@ private:
 		}
 		if (analysis_abs + (uint64_t)fft_size > input_abs_write) {
 			// Incomplete FFT window — skip this hop (do not read unwritten/overwritten data).
+			symphony_note_spectral_underflow();
 			return;
 		}
 

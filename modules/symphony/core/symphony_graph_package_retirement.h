@@ -5,6 +5,7 @@
 #pragma once
 
 #include "symphony_prepared_graph_package.h"
+#include "symphony_runtime_metrics.h"
 
 #include <atomic>
 #include <cstdint>
@@ -29,4 +30,6 @@ public:
 	static void drain();
 
 	[[nodiscard]] static uint32_t get_pending_count();
+	[[nodiscard]] static uint64_t get_destroyed_count();
+	[[nodiscard]] static uint32_t get_peak_pending_count();
 };

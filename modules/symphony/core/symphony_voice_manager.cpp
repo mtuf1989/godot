@@ -1,8 +1,12 @@
 #include "symphony_voice_manager.h"
 #include "../stream/audio_stream_playback_symphony.h"
 #include "symphony_trigger.h"
+#include "symphony_runtime_metrics.h"
+#include "symphony_memory_budget.h"
+#include "symphony_graph_package_retirement.h"
 #include "core/object/class_db.h"
 #include "core/object/object.h"
+#include "core/variant/dictionary.h"
 #include "servers/audio/audio_server.h"
 
 #include <cfloat>
@@ -24,6 +28,13 @@ void SymphonyVoiceManager::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_critical_threshold"), &SymphonyVoiceManager::get_critical_threshold);
 	ClassDB::bind_method(D_METHOD("process_deferred_lod"), &SymphonyVoiceManager::process_deferred_lod);
 	ClassDB::bind_method(D_METHOD("get_dropped_trigger_count"), &SymphonyVoiceManager::get_dropped_trigger_count);
+	ClassDB::bind_method(D_METHOD("get_spectral_underflow_count"), &SymphonyVoiceManager::get_spectral_underflow_count);
+	ClassDB::bind_method(D_METHOD("get_crossfade_transition_count"), &SymphonyVoiceManager::get_crossfade_transition_count);
+	ClassDB::bind_method(D_METHOD("get_fallback_transition_count"), &SymphonyVoiceManager::get_fallback_transition_count);
+	ClassDB::bind_method(D_METHOD("get_packages_destroyed_count"), &SymphonyVoiceManager::get_packages_destroyed_count);
+	ClassDB::bind_method(D_METHOD("get_retirement_pending_count"), &SymphonyVoiceManager::get_retirement_pending_count);
+	ClassDB::bind_method(D_METHOD("get_retirement_peak_pending_count"), &SymphonyVoiceManager::get_retirement_peak_pending_count);
+	ClassDB::bind_method(D_METHOD("get_debug_metrics"), &SymphonyVoiceManager::get_debug_metrics);
 
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "max_voices"), "set_max_voices", "get_max_voices");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "warning_threshold"), "set_warning_threshold", "get_warning_threshold");
@@ -119,6 +130,70 @@ int32_t SymphonyVoiceManager::get_stolen_this_frame() const {
 
 uint64_t SymphonyVoiceManager::get_dropped_trigger_count() const {
 	return symphony_dropped_trigger_count().load(std::memory_order_relaxed);
+}
+
+uint64_t SymphonyVoiceManager::get_spectral_underflow_count() const {
+	return symphony_spectral_underflow_count().load(std::memory_order_relaxed);
+}
+
+uint64_t SymphonyVoiceManager::get_crossfade_transition_count() const {
+	return metric_crossfade_transitions.load(std::memory_order_relaxed);
+}
+
+uint64_t SymphonyVoiceManager::get_fallback_transition_count() const {
+	return metric_fallback_transitions.load(std::memory_order_relaxed);
+}
+
+uint64_t SymphonyVoiceManager::get_packages_destroyed_count() const {
+	return GraphPackageRetirement::get_destroyed_count();
+}
+
+uint32_t SymphonyVoiceManager::get_retirement_pending_count() const {
+	return GraphPackageRetirement::get_pending_count();
+}
+
+uint32_t SymphonyVoiceManager::get_retirement_peak_pending_count() const {
+	return GraphPackageRetirement::get_peak_pending_count();
+}
+
+void SymphonyVoiceManager::note_crossfade_transition() {
+	metric_crossfade_transitions.fetch_add(1, std::memory_order_relaxed);
+}
+
+void SymphonyVoiceManager::note_fallback_transition() {
+	metric_fallback_transitions.fetch_add(1, std::memory_order_relaxed);
+}
+
+Dictionary SymphonyVoiceManager::get_debug_metrics() const {
+	Dictionary d;
+	d["active_voice_count"] = get_active_voice_count();
+	d["total_budget_percent"] = get_total_budget_percent();
+	d["peak_budget_percent"] = get_peak_budget_percent();
+	d["average_voice_microseconds"] = get_average_voice_microseconds();
+	d["stolen_this_frame"] = get_stolen_this_frame();
+	d["dropped_trigger_count"] = (int64_t)get_dropped_trigger_count();
+	d["spectral_underflow_count"] = (int64_t)get_spectral_underflow_count();
+	d["crossfade_transition_count"] = (int64_t)get_crossfade_transition_count();
+	d["fallback_transition_count"] = (int64_t)get_fallback_transition_count();
+	d["crossfade_tokens_available"] = get_crossfade_tokens_available();
+	d["retirement_pending"] = (int)get_retirement_pending_count();
+	d["retirement_peak_pending"] = (int)get_retirement_peak_pending_count();
+	d["packages_destroyed"] = (int64_t)get_packages_destroyed_count();
+
+	if (SymphonyMemoryBudget *budget = SymphonyMemoryBudget::get_singleton()) {
+		const SymphonyMemoryBudget::Snapshot snap = budget->get_snapshot();
+		d["memory_per_graph_limit_bytes"] = (int64_t)snap.per_graph_limit_bytes;
+		d["memory_global_limit_bytes"] = (int64_t)snap.global_limit_bytes;
+		d["memory_reserved_bytes"] = (int64_t)snap.reserved_bytes;
+		d["memory_peak_reserved_bytes"] = (int64_t)snap.peak_reserved_bytes;
+		d["memory_shared_pcm_bytes"] = (int64_t)snap.shared_pcm_bytes;
+		d["memory_global_used_bytes"] = (int64_t)(snap.reserved_bytes + snap.shared_pcm_bytes);
+		d["packages_active"] = (int)snap.active_packages;
+		d["packages_pending"] = (int)snap.pending_packages;
+		d["packages_outgoing"] = (int)snap.outgoing_packages;
+		d["packages_retired"] = (int)snap.retired_packages;
+	}
+	return d;
 }
 
 void SymphonyVoiceManager::set_max_voices(int32_t p_max) {

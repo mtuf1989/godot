@@ -118,6 +118,9 @@ void AudioStreamPlaybackSymphony::_begin_equal_power_crossfade(PreparedGraphPack
 	transition_progress = 0.0f;
 	float samples = mix_rate_cached > 0.0f ? mix_rate_cached * CROSSFADE_SECONDS : 2048.0f;
 	transition_speed = 1.0f / samples;
+	if (SymphonyVoiceManager *mgr = SymphonyVoiceManager::get_singleton()) {
+		mgr->note_crossfade_transition();
+	}
 }
 
 void AudioStreamPlaybackSymphony::_begin_fallback_transition(PreparedGraphPackage *p_new_package) {
@@ -144,6 +147,9 @@ void AudioStreamPlaybackSymphony::_begin_fallback_transition(PreparedGraphPackag
 	}
 	transition_progress = 0.0f;
 	transition_speed = 1.0f / (float)FALLBACK_FADE_SAMPLES;
+	if (SymphonyVoiceManager *mgr = SymphonyVoiceManager::get_singleton()) {
+		mgr->note_fallback_transition();
+	}
 }
 
 void AudioStreamPlaybackSymphony::_cache_stream_metadata() {

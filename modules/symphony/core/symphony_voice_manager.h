@@ -3,6 +3,7 @@
 #include "core/object/object.h"
 #include "core/object/class_db.h"
 #include "core/templates/safe_list.h"
+#include "core/variant/dictionary.h"
 #include <atomic>
 #include <cstdint>
 
@@ -42,6 +43,9 @@ class SymphonyVoiceManager : public Object {
 	std::atomic<int32_t> metric_avg_voice_microseconds_x1000{ 0 };
 	// EWMA of microseconds per cost unit (×1000). Default 50 → 0.05 µs/unit (conservative).
 	std::atomic<int32_t> metric_us_per_cost_x1000{ 50 };
+	// Transition admission outcomes (audio thread increments).
+	std::atomic<uint64_t> metric_crossfade_transitions{ 0 };
+	std::atomic<uint64_t> metric_fallback_transitions{ 0 };
 
 	bool update_callback_registered = false;
 
@@ -64,6 +68,17 @@ public:
 	[[nodiscard]] float get_average_voice_microseconds() const;
 	[[nodiscard]] int32_t get_stolen_this_frame() const;
 	[[nodiscard]] uint64_t get_dropped_trigger_count() const;
+	[[nodiscard]] uint64_t get_spectral_underflow_count() const;
+	[[nodiscard]] uint64_t get_crossfade_transition_count() const;
+	[[nodiscard]] uint64_t get_fallback_transition_count() const;
+	[[nodiscard]] uint64_t get_packages_destroyed_count() const;
+	[[nodiscard]] uint32_t get_retirement_pending_count() const;
+	[[nodiscard]] uint32_t get_retirement_peak_pending_count() const;
+	// Aggregated read-only diagnostics for editor / GDScript (memory + transitions + triggers).
+	[[nodiscard]] Dictionary get_debug_metrics() const;
+
+	void note_crossfade_transition();
+	void note_fallback_transition();
 
 	void set_max_voices(int32_t p_max);
 	int32_t get_max_voices() const;
