@@ -88,6 +88,7 @@ private:
 	// Sample rate for coefficient calculation
 	float sample_rate = 44100.0f;
 	float default_smooth_time_ms = DEFAULT_SMOOTH_TIME_MS;
+	bool mix_callback_registered = false;
 
 	// Mix callback for audio-thread smoothing
 	static void _mix_callback(void *p_userdata);

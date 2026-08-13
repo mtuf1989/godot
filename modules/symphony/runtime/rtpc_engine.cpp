@@ -8,12 +8,21 @@ RTPCEngine *RTPCEngine::singleton = nullptr;
 
 RTPCEngine::RTPCEngine() {
 	singleton = this;
-	sample_rate = AudioServer::get_singleton()->get_mix_rate();
-	AudioServer::get_singleton()->add_mix_callback(_mix_callback, this);
+	// AudioServer may be absent during unit-test setup (created only for [Audio] cases).
+	if (AudioServer::get_singleton()) {
+		sample_rate = AudioServer::get_singleton()->get_mix_rate();
+		AudioServer::get_singleton()->add_mix_callback(_mix_callback, this);
+		mix_callback_registered = true;
+	} else {
+		sample_rate = 48000.0f;
+		mix_callback_registered = false;
+	}
 }
 
 RTPCEngine::~RTPCEngine() {
-	AudioServer::get_singleton()->remove_mix_callback(_mix_callback, this);
+	if (mix_callback_registered && AudioServer::get_singleton()) {
+		AudioServer::get_singleton()->remove_mix_callback(_mix_callback, this);
+	}
 	singleton = nullptr;
 }
 
