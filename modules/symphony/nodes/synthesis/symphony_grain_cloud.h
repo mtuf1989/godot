@@ -499,6 +499,7 @@ public:
 		desc.state_align = alignof(SymphonyGrainCloud);
 		desc.extra_arena_bytes = 0; // Superseded by extra_arena_bytes_fn below.
 		desc.extra_arena_bytes_fn = &SymphonyGrainCloud::calculate_arena_bytes;
+		desc.cost_per_sample = 24.0f;
 		desc.create_fn = &SymphonyGrainCloud::create;
 		OperatorRegistry::get_singleton()->register_operator(desc);
 	}

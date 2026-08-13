@@ -1,4 +1,5 @@
 #include "shared_pcm_cache.h"
+#include "symphony_memory_budget.h"
 #include "core/os/memory.h"
 #include "core/error/error_macros.h"
 #include "core/variant/variant.h"
@@ -12,8 +13,12 @@ SharedPCMCache::SharedPCMCache() {
 
 SharedPCMCache::~SharedPCMCache() {
 	// Free any remaining entries (shouldn't happen in normal flow).
+	SymphonyMemoryBudget *budget = SymphonyMemoryBudget::get_singleton();
 	for (const KeyValue<StringName, Entry> &E : cache) {
 		if (E.value.data) {
+			if (budget) {
+				budget->release_shared(sizeof(float) * (size_t)E.value.length);
+			}
 			memfree(E.value.data);
 		}
 		if (E.value.ref_count > 0) {
@@ -33,16 +38,28 @@ const float *SharedPCMCache::acquire(const StringName &p_key, const float *p_sou
 		return entry.data;
 	}
 
-	// New entry: allocate and copy.
+	// New entry: allocate and copy. Charge unique SharedPCM once against the global budget.
 	ERR_FAIL_COND_V(!p_source_data, nullptr);
 	ERR_FAIL_COND_V(p_length <= 0, nullptr);
+
+	const size_t bytes = sizeof(float) * (size_t)p_length;
+	SymphonyMemoryBudget *budget = SymphonyMemoryBudget::get_singleton();
+	String budget_error;
+	if (budget && !budget->try_reserve_shared(bytes, &budget_error)) {
+		ERR_FAIL_V_MSG(nullptr, budget_error);
+	}
 
 	Entry entry;
 	entry.length = p_length;
 	entry.ref_count = 1;
-	entry.data = (float *)memalloc(sizeof(float) * p_length);
-	ERR_FAIL_COND_V(!entry.data, nullptr);
-	memcpy(entry.data, p_source_data, sizeof(float) * p_length);
+	entry.data = (float *)memalloc(bytes);
+	if (!entry.data) {
+		if (budget) {
+			budget->release_shared(bytes);
+		}
+		ERR_FAIL_V(nullptr);
+	}
+	memcpy(entry.data, p_source_data, bytes);
 
 	cache.insert(p_key, entry);
 	return entry.data;
@@ -60,6 +77,9 @@ void SharedPCMCache::release(const StringName &p_key) {
 
 	if (entry.ref_count <= 0) {
 		if (entry.data) {
+			if (SymphonyMemoryBudget *budget = SymphonyMemoryBudget::get_singleton()) {
+				budget->release_shared(sizeof(float) * (size_t)entry.length);
+			}
 			memfree(entry.data);
 			entry.data = nullptr;
 		}

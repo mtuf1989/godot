@@ -277,6 +277,7 @@ public:
 		// window_lut, fft_workspace, analysis_frame, fft_buffer, ifft_buffer).
 		// Total: 7*8192 = 57344 floats. Plus alignment overhead per alloc (7 allocs × 32 = 224).
 		desc.extra_arena_bytes = sizeof(float) * 57344 + 256;
+		desc.cost_per_sample = 32.0f;
 		desc.create_fn = &SymphonySpectralGate::create;
 		OperatorRegistry::get_singleton()->register_operator(desc);
 	}

@@ -21,6 +21,7 @@ public:
 		size_t trigger_buffer_bytes = 0; // Arena bytes reserved for TriggerBuffer payloads
 		size_t route_metadata_bytes = 0; // Non-arena route/silence table bytes
 		size_t total_package_bytes = 0; // arena_bytes + non_arena_bytes
+		float estimated_cost_units = 0.0f; // Conservative relative CPU estimate
 
 		bool success() const { return graph != nullptr; }
 	};

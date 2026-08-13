@@ -64,7 +64,7 @@ TEST_CASE("[Symphony][Playback] PreparedGraphPackage builds sorted routes") {
 	REQUIRE(result.success());
 	REQUIRE(result.graph != nullptr);
 
-	PreparedGraphPackage *pkg = PreparedGraphPackage::create_from_graph(result.graph, result.arena_bytes, result.total_package_bytes);
+	PreparedGraphPackage *pkg = PreparedGraphPackage::create_from_graph(result.graph, result.arena_bytes, result.total_package_bytes, 0, result.estimated_cost_units);
 	REQUIRE(pkg != nullptr);
 	CHECK(pkg->graph_output != nullptr);
 	CHECK(pkg->param_routes.size() >= 1);
@@ -72,6 +72,8 @@ TEST_CASE("[Symphony][Playback] PreparedGraphPackage builds sorted routes") {
 	CHECK(pkg->find_param(StringName("missing")) == nullptr);
 	CHECK(pkg->find_trigger(StringName("gate")) != nullptr);
 	CHECK(pkg->find_trigger(StringName("missing")) == nullptr);
+	CHECK(result.estimated_cost_units > 0.0f);
+	CHECK(pkg->estimated_cost_units == doctest::Approx(result.estimated_cost_units));
 
 	PreparedGraphPackage::destroy(pkg);
 }

@@ -3,6 +3,7 @@
 #include "symphony_trigger.h"
 #include "symphony_checked_math.h"
 #include "symphony_memory_budget.h"
+#include "symphony_graph_package_retirement.h"
 
 #include <limits>
 
@@ -29,6 +30,14 @@
 	return p_desc->extra_arena_bytes;
 }
 
+[[nodiscard]] static float operator_cost_units(const OperatorDescriptor *p_desc, const HashMap<StringName, Variant> &p_params, float p_mix_rate) {
+	float cost = p_desc->cost_per_sample * (float)SYMPHONY_MICRO_BLOCK_SIZE;
+	if (p_desc->extra_cost_fn) {
+		cost += p_desc->extra_cost_fn(p_params, p_mix_rate);
+	}
+	return cost;
+}
+
 GraphCompiler::CompileResult GraphCompiler::compile(const GraphDescription &p_desc, float p_mix_rate) {
 	CompileResult result;
 	const OperatorRegistry *registry = OperatorRegistry::get_singleton();
@@ -37,6 +46,9 @@ GraphCompiler::CompileResult GraphCompiler::compile(const GraphDescription &p_de
 		result.errors.push_back("OperatorRegistry not initialized.");
 		return result;
 	}
+
+	// Free retired packages before estimating/reserving (plan §2 / M3).
+	GraphPackageRetirement::drain();
 
 	// --- Pre-pass A: Parameter smoothing injection ---
 	// If enabled, insert a ParameterSmoother node on every FLOAT→FLOAT connection
@@ -493,16 +505,58 @@ GraphCompiler::CompileResult GraphCompiler::compile(const GraphDescription &p_de
 	result.arena_bytes = arena_size;
 	result.trigger_buffer_bytes = trigger_buffer_bytes;
 
+	// Exact non-arena estimate from topology (silence tables + node metadata).
+	int32_t planned_audio_ops = 0;
+	int32_t planned_audio_outs = 0;
+	for (int32_t s = 0; s < node_count; s++) {
+		int32_t node_idx = sorted_order[s];
+		const OperatorDescriptor *desc = node_descs[node_idx];
+		for (int32_t p = 0; p < desc->inputs.size(); p++) {
+			if (desc->inputs[p].type == SymphonyPinType::AUDIO || input_sources[node_idx][p].needs_promotion) {
+				if (input_sources[node_idx][p].source_node_idx >= 0) {
+					planned_audio_ops++;
+				}
+			}
+		}
+		for (int32_t p = 0; p < desc->outputs.size(); p++) {
+			if (desc->outputs[p].type == SymphonyPinType::AUDIO) {
+				planned_audio_outs++;
+			}
+		}
+	}
+
+	size_t planned_non_arena = 0;
+	if (!SymphonyCheckedMath::add(planned_non_arena, sizeof(int32_t) * (size_t)(node_count + 1), planned_non_arena) ||
+			!SymphonyCheckedMath::add(planned_non_arena, sizeof(int32_t) * (size_t)planned_audio_ops, planned_non_arena) ||
+			!SymphonyCheckedMath::add(planned_non_arena, sizeof(int32_t) * (size_t)(node_count + 1), planned_non_arena) ||
+			!SymphonyCheckedMath::add(planned_non_arena, sizeof(float *) * (size_t)planned_audio_outs, planned_non_arena) ||
+			!SymphonyCheckedMath::add(planned_non_arena, sizeof(StringName) * (size_t)node_count, planned_non_arena) ||
+			!SymphonyCheckedMath::add(planned_non_arena, sizeof(int32_t) * (size_t)node_count, planned_non_arena)) {
+		return plan_fail("Non-arena package size overflow.");
+	}
+	result.non_arena_bytes = planned_non_arena;
+	result.route_metadata_bytes = planned_non_arena;
+	size_t total_package = 0;
+	if (!SymphonyCheckedMath::add(arena_size, planned_non_arena, total_package)) {
+		return plan_fail("Total package size overflow.");
+	}
+	result.total_package_bytes = total_package;
+
 	String budget_error;
 	SymphonyMemoryBudget *budget = SymphonyMemoryBudget::get_singleton();
-	if (budget && !budget->try_reserve(arena_size, &budget_error)) {
+	if (budget && !budget->try_reserve(total_package, &budget_error)) {
 		result.errors.push_back(budget_error);
 		return result;
 	}
 
 	// --- Phase 6: Allocate arena and build compiled graph ---
 	CompiledGraph *compiled = memnew(CompiledGraph);
-	compiled->budgeted_bytes = budget ? arena_size : 0;
+	compiled->budgeted_bytes = budget ? total_package : 0;
+	compiled->estimated_cost_units = 0.0f;
+	for (int32_t i = 0; i < node_count; i++) {
+		compiled->estimated_cost_units += operator_cost_units(node_descs[i], desc_ref.nodes[i].params, p_mix_rate);
+	}
+	result.estimated_cost_units = compiled->estimated_cost_units;
 	if (!compiled->arena.init(arena_size)) {
 		result.errors.push_back("Failed to allocate arena.");
 		memdelete(compiled);
@@ -775,5 +829,22 @@ GraphCompiler::CompileResult GraphCompiler::compile(const GraphDescription &p_de
 	result.route_metadata_bytes = silence_bytes;
 	result.non_arena_bytes = silence_bytes;
 	result.total_package_bytes = result.arena_bytes + result.non_arena_bytes;
+
+	// Reconcile reservation if actual non-arena differed from the plan (should match).
+	if (budget && compiled->budgeted_bytes != result.total_package_bytes) {
+		if (result.total_package_bytes > compiled->budgeted_bytes) {
+			size_t extra = result.total_package_bytes - compiled->budgeted_bytes;
+			String extra_error;
+			if (!budget->try_reserve(extra, &extra_error)) {
+				result.errors.push_back(extra_error);
+				result.graph = nullptr;
+				memdelete(compiled);
+				return result;
+			}
+		} else {
+			budget->release(compiled->budgeted_bytes - result.total_package_bytes);
+		}
+		compiled->budgeted_bytes = result.total_package_bytes;
+	}
 	return result;
 }

@@ -373,6 +373,7 @@ public:
 		// + 5 buffers of (N/2+1) floats (prev_phase, synth_phase, magnitude_buf, shifted_mag, shifted_phase).
 		// Total: 7*8192 + 5*4097 = 77829 floats + cola_gain N. Plus alignment overhead.
 		desc.extra_arena_bytes = sizeof(float) * (77829 + 8192) + 512;
+		desc.cost_per_sample = 48.0f; // Spectral: roughly N·logN class work
 		desc.create_fn = &SymphonyPhaseVocoder::create;
 		OperatorRegistry::get_singleton()->register_operator(desc);
 	}

@@ -282,6 +282,7 @@ public:
 		desc.state_align = alignof(SymphonyFDNReverb);
 		desc.extra_arena_bytes = 0;
 		desc.extra_arena_bytes_fn = &SymphonyFDNReverb::calculate_arena_bytes;
+		desc.cost_per_sample = 16.0f;
 		desc.create_fn = &SymphonyFDNReverb::create;
 		OperatorRegistry::get_singleton()->register_operator(desc);
 	}

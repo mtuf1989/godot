@@ -35,12 +35,13 @@ struct PreparedGraphPackage {
 
 	size_t arena_bytes = 0;
 	size_t total_package_bytes = 0;
+	float estimated_cost_units = 0.0f;
 	int lod_tier = 0;
 
 	// Intrusive retirement link (filled by retirement queue in a later slice).
 	PreparedGraphPackage *retire_next = nullptr;
 
-	static PreparedGraphPackage *create_from_graph(CompiledGraph *p_graph, size_t p_arena_bytes = 0, size_t p_total_bytes = 0, int p_lod_tier = 0);
+	static PreparedGraphPackage *create_from_graph(CompiledGraph *p_graph, size_t p_arena_bytes = 0, size_t p_total_bytes = 0, int p_lod_tier = 0, float p_estimated_cost_units = 0.0f);
 	static void destroy(PreparedGraphPackage *p_package);
 
 	[[nodiscard]] SymphonyGraphInput *find_param(const StringName &p_name) const;

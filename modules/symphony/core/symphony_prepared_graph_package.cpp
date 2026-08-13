@@ -23,13 +23,14 @@ struct TriggerRouteLess {
 
 } // namespace
 
-PreparedGraphPackage *PreparedGraphPackage::create_from_graph(CompiledGraph *p_graph, size_t p_arena_bytes, size_t p_total_bytes, int p_lod_tier) {
+PreparedGraphPackage *PreparedGraphPackage::create_from_graph(CompiledGraph *p_graph, size_t p_arena_bytes, size_t p_total_bytes, int p_lod_tier, float p_estimated_cost_units) {
 	ERR_FAIL_NULL_V(p_graph, nullptr);
 
 	PreparedGraphPackage *pkg = memnew(PreparedGraphPackage);
 	pkg->graph = p_graph;
 	pkg->arena_bytes = p_arena_bytes ? p_arena_bytes : p_graph->arena.capacity;
 	pkg->total_package_bytes = p_total_bytes ? p_total_bytes : pkg->arena_bytes;
+	pkg->estimated_cost_units = p_estimated_cost_units > 0.0f ? p_estimated_cost_units : p_graph->estimated_cost_units;
 	pkg->lod_tier = p_lod_tier;
 
 	for (int32_t i = 0; i < p_graph->operator_count; i++) {

@@ -10,6 +10,7 @@ TEST_FORCE_LINK(test_symphony_compiler)
 #include "modules/symphony/core/symphony_graph_compiler.h"
 #include "modules/symphony/core/symphony_graph_description.h"
 #include "modules/symphony/core/symphony_memory_budget.h"
+#include "modules/symphony/core/shared_pcm_cache.h"
 #include "modules/symphony/core/symphony_operator_registry.h"
 #include "modules/symphony/core/symphony_pin_types.h"
 #include "modules/symphony/nodes/delay/symphony_delay_line.h"
@@ -111,7 +112,9 @@ TEST_CASE("[Symphony][Compiler] Memory budget rejects oversized graph") {
 
 	GraphCompiler::CompileResult ok = GraphCompiler::compile(desc, 48000.0f);
 	REQUIRE(ok.success());
-	const size_t needed = ok.arena_bytes;
+	CHECK(ok.total_package_bytes == ok.arena_bytes + ok.non_arena_bytes);
+	CHECK(ok.non_arena_bytes > 0);
+	const size_t needed = ok.total_package_bytes;
 	memdelete(ok.graph);
 
 	budget->set_per_graph_limit_bytes(needed > 0 ? needed - 1 : 0);
@@ -339,6 +342,35 @@ TEST_CASE("[Symphony][Compiler] Under-reported extra bytes fail cleanly") {
 	if (budget) {
 		CHECK(budget->get_snapshot().reserved_bytes == before);
 	}
+}
+
+TEST_CASE("[Symphony][Compiler] SharedPCM charges unique entries once") {
+	SharedPCMCache *cache = SharedPCMCache::get_singleton();
+	SymphonyMemoryBudget *budget = SymphonyMemoryBudget::get_singleton();
+	REQUIRE(cache != nullptr);
+	REQUIRE(budget != nullptr);
+
+	const size_t shared_before = budget->get_shared_pcm_bytes();
+	Vector<float> samples;
+	samples.resize(128);
+	for (int i = 0; i < 128; i++) {
+		samples.write[i] = (float)i;
+	}
+
+	const StringName key = StringName("test_shared_pcm_unique");
+	const float *p0 = cache->acquire(key, samples.ptr(), samples.size());
+	REQUIRE(p0 != nullptr);
+	const size_t expected = sizeof(float) * (size_t)samples.size();
+	CHECK(budget->get_shared_pcm_bytes() == shared_before + expected);
+
+	const float *p1 = cache->acquire(key, samples.ptr(), samples.size());
+	REQUIRE(p1 == p0);
+	CHECK(budget->get_shared_pcm_bytes() == shared_before + expected);
+
+	cache->release(key);
+	CHECK(budget->get_shared_pcm_bytes() == shared_before + expected);
+	cache->release(key);
+	CHECK(budget->get_shared_pcm_bytes() == shared_before);
 }
 
 } // namespace TestSymphonyCompiler

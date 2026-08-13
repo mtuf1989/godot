@@ -58,6 +58,12 @@ struct OperatorDescriptor {
 	bool nonlinear = false; // If true, this operator generates harmonics (saturators, waveshapers).
 	                        // Used by the graph compiler's anti-alias staircase pass (P1b).
 	SilenceBehavior silence_behavior = SilenceBehavior::STATEFUL_TAIL;
+
+	// Relative CPU cost units (plan §2). Ordinary ops use cost_per_sample * frames.
+	// Optional extra_cost_fn adds parameter-dependent per-block cost (FFT/granular).
+	float cost_per_sample = 1.0f;
+	using ExtraCostFunc = float (*)(const HashMap<StringName, Variant> &p_params, float p_mix_rate);
+	ExtraCostFunc extra_cost_fn = nullptr;
 };
 
 // Singleton registry of all known operator types.

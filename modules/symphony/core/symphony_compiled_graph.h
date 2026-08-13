@@ -51,6 +51,8 @@ struct CompiledGraph {
 
 	// Bytes reserved in SymphonyMemoryBudget for this package (released on destroy).
 	size_t budgeted_bytes = 0;
+	// Conservative relative CPU estimate (copied onto PreparedGraphPackage).
+	float estimated_cost_units = 0.0f;
 
 	// Execute all operators for one micro-block with silence propagation.
 	void execute(int32_t p_num_frames) {

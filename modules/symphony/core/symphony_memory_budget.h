@@ -49,15 +49,21 @@ public:
 	void set_global_limit_bytes(size_t p_bytes);
 	size_t get_global_limit_bytes() const { return global_limit_bytes; }
 
-	// Reserve bytes for a package about to be compiled. Fails cleanly without
-	// mutating state when per-graph or global limits would be exceeded.
+	// Reserve bytes for a package about to be compiled (arena + non-arena).
+	// Fails cleanly without mutating state when per-graph or global limits
+	// would be exceeded. Global headroom includes SharedPCM cache bytes.
 	bool try_reserve(size_t p_bytes, String *r_error = nullptr);
 
 	// Release previously reserved bytes when a package is destroyed/discarded.
 	void release(size_t p_bytes);
 
+	// Charge unique SharedPCM entries once (not per referencing graph).
+	bool try_reserve_shared(size_t p_bytes, String *r_error = nullptr);
+	void release_shared(size_t p_bytes);
+
 	void set_shared_pcm_bytes(size_t p_bytes);
 	size_t get_shared_pcm_bytes() const { return shared_pcm_bytes; }
+	size_t get_global_used_bytes() const { return reserved_bytes + shared_pcm_bytes; }
 
 	void set_package_counts(uint32_t p_active, uint32_t p_pending, uint32_t p_outgoing, uint32_t p_retired);
 	void adjust_active_packages(int32_t p_delta);

@@ -40,9 +40,10 @@ bool SymphonyMemoryBudget::try_reserve(size_t p_bytes, String *r_error) {
 		}
 		return false;
 	}
-	if (reserved_bytes > global_limit_bytes - p_bytes) {
+	const size_t used = reserved_bytes + shared_pcm_bytes;
+	if (p_bytes > global_limit_bytes || used > global_limit_bytes - p_bytes) {
 		if (r_error) {
-			*r_error = vformat("Global Symphony memory budget exceeded (need %d more bytes, %d/%d used).", (int64_t)p_bytes, (int64_t)reserved_bytes, (int64_t)global_limit_bytes);
+			*r_error = vformat("Global Symphony memory budget exceeded (need %d more bytes, %d/%d used including SharedPCM).", (int64_t)p_bytes, (int64_t)used, (int64_t)global_limit_bytes);
 		}
 		return false;
 	}
@@ -56,6 +57,23 @@ bool SymphonyMemoryBudget::try_reserve(size_t p_bytes, String *r_error) {
 void SymphonyMemoryBudget::release(size_t p_bytes) {
 	ERR_FAIL_COND(p_bytes > reserved_bytes);
 	reserved_bytes -= p_bytes;
+}
+
+bool SymphonyMemoryBudget::try_reserve_shared(size_t p_bytes, String *r_error) {
+	const size_t used = reserved_bytes + shared_pcm_bytes;
+	if (p_bytes > global_limit_bytes || used > global_limit_bytes - p_bytes) {
+		if (r_error) {
+			*r_error = vformat("Global Symphony memory budget exceeded for SharedPCM (need %d more bytes, %d/%d used).", (int64_t)p_bytes, (int64_t)used, (int64_t)global_limit_bytes);
+		}
+		return false;
+	}
+	shared_pcm_bytes += p_bytes;
+	return true;
+}
+
+void SymphonyMemoryBudget::release_shared(size_t p_bytes) {
+	ERR_FAIL_COND(p_bytes > shared_pcm_bytes);
+	shared_pcm_bytes -= p_bytes;
 }
 
 void SymphonyMemoryBudget::set_shared_pcm_bytes(size_t p_bytes) {
