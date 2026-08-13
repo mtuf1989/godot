@@ -5,7 +5,7 @@ Update this file with each commit that changes a public API.
 
 ## Status
 
-- **Milestone:** M1 in progress (§1 baseline)
+- **Milestone:** M1 in progress (§1–§2)
 - **Branch:** `features/symphony_fixed`
 
 ## Completed
@@ -38,6 +38,7 @@ bin/godot.macos.editor.arm64 --headless --test --test-case='*Symphony*'
   Unit-test setup does not create `AudioServer` except for `[Audio]` cases.
   Mix callback registration is skipped when the server is null; default
   sample rate falls back to 48 kHz until audio is available.
+
 ### ExtraArenaBytesFunc is rate-aware
 
 - Signature is now `ExtraArenaBytesFunc(params, mix_rate)`.
@@ -47,9 +48,18 @@ bin/godot.macos.editor.arm64 --headless --test --test-case='*Symphony*'
 - `CompileResult` exposes `arena_bytes`, `arena_used_bytes`, `non_arena_bytes`,
   `trigger_buffer_bytes`, `route_metadata_bytes`, and `total_package_bytes`.
 
+### SymphonyMemoryBudget
+
+- Main-thread budget service with compile-time platform defaults:
+  - Per graph: 8 MiB
+  - Global: 128 MiB desktop / 64 MiB mobile / 32 MiB web
+- Compiler reserves arena bytes before allocation; `CompiledGraph::destroy`
+  releases them. Oversized graphs fail with a compile error (approach A).
+
 ## Planned (from improve_plan_1_7.md)
 
-- Central memory budget service (8 MiB/graph; 128/64/32 MiB global by platform)
+- Charge non-arena + SharedPCM into the same reservation path
+- Package counts (active/pending/outgoing/retired) wired to playback
 - `trigger(name, value)` returns `bool`; dropped-trigger metrics
 - RTPCEngine registration returns stable handles; no audio-thread auto-create
 - `acquire_slot()` free-only; EventDispatcher owns stealing; `set_slot_rms()`

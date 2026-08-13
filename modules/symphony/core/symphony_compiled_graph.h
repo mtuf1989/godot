@@ -4,6 +4,7 @@
 #include "symphony_operator.h"
 #include "symphony_trigger.h"
 #include "symphony_pin_types.h"
+#include "symphony_memory_budget.h"
 #include "core/string/string_name.h"
 
 // The output of the GraphCompiler: a ready-to-execute graph.
@@ -46,6 +47,9 @@ struct CompiledGraph {
 
 	// The single contiguous memory block for all operator states + buffers.
 	ArenaAllocator arena;
+
+	// Bytes reserved in SymphonyMemoryBudget for this package (released on destroy).
+	size_t budgeted_bytes = 0;
 
 	// Execute all operators for one micro-block with silence propagation.
 	void execute(int32_t p_num_frames) {
@@ -111,13 +115,21 @@ struct CompiledGraph {
 	}
 
 	void destroy() {
+		if (budgeted_bytes > 0 && SymphonyMemoryBudget::get_singleton()) {
+			SymphonyMemoryBudget::get_singleton()->release(budgeted_bytes);
+			budgeted_bytes = 0;
+		}
 		// Call cleanup() first to release non-arena heap resources (e.g., PFFFT_Setup).
 		for (int32_t i = 0; i < operator_count; i++) {
-			operators[i]->cleanup();
+			if (operators[i]) {
+				operators[i]->cleanup();
+			}
 		}
 		// Operators were placement-new'd in the arena; call destructors manually.
 		for (int32_t i = 0; i < operator_count; i++) {
-			operators[i]->~SymphonyOperator();
+			if (operators[i]) {
+				operators[i]->~SymphonyOperator();
+			}
 		}
 		arena.free();
 		if (node_names) {

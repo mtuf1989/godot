@@ -9,6 +9,7 @@ TEST_FORCE_LINK(test_symphony_compiler)
 
 #include "modules/symphony/core/symphony_graph_compiler.h"
 #include "modules/symphony/core/symphony_graph_description.h"
+#include "modules/symphony/core/symphony_memory_budget.h"
 #include "modules/symphony/core/symphony_operator_registry.h"
 #include "modules/symphony/nodes/delay/symphony_delay_line.h"
 
@@ -76,6 +77,47 @@ TEST_CASE("[Symphony][Compiler] CompileResult reports arena accounting") {
 	CHECK(result.arena_used_bytes == result.arena_bytes);
 
 	memdelete(result.graph);
+}
+
+TEST_CASE("[Symphony][Compiler] Memory budget rejects oversized graph") {
+	SymphonyMemoryBudget *budget = SymphonyMemoryBudget::get_singleton();
+	REQUIRE(budget != nullptr);
+
+	const size_t old_per = budget->get_per_graph_limit_bytes();
+	const size_t old_global = budget->get_global_limit_bytes();
+
+	GraphDescription desc;
+	NodeDesc osc;
+	osc.id = 1;
+	osc.type_name = "Oscillator";
+	desc.nodes.push_back(osc);
+
+	NodeDesc out;
+	out.id = 2;
+	out.type_name = "GraphOutput";
+	desc.nodes.push_back(out);
+
+	ConnectionDesc conn;
+	conn.from_node = 1;
+	conn.from_pin = 0;
+	conn.to_node = 2;
+	conn.to_pin = 0;
+	desc.connections.push_back(conn);
+
+	GraphCompiler::CompileResult ok = GraphCompiler::compile(desc, 48000.0f);
+	REQUIRE(ok.success());
+	const size_t needed = ok.arena_bytes;
+	memdelete(ok.graph);
+
+	budget->set_per_graph_limit_bytes(needed > 0 ? needed - 1 : 0);
+
+	GraphCompiler::CompileResult result = GraphCompiler::compile(desc, 48000.0f);
+	CHECK_FALSE(result.success());
+	REQUIRE(result.errors.size() > 0);
+	CHECK(result.errors[0].findn("budget") != -1);
+
+	budget->set_per_graph_limit_bytes(old_per);
+	budget->set_global_limit_bytes(old_global);
 }
 
 } // namespace TestSymphonyCompiler

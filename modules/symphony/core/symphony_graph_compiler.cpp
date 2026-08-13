@@ -2,6 +2,7 @@
 #include "symphony_pin_types.h"
 #include "symphony_trigger.h"
 #include "symphony_checked_math.h"
+#include "symphony_memory_budget.h"
 
 #include <limits>
 
@@ -492,8 +493,16 @@ GraphCompiler::CompileResult GraphCompiler::compile(const GraphDescription &p_de
 	result.arena_bytes = arena_size;
 	result.trigger_buffer_bytes = trigger_buffer_bytes;
 
+	String budget_error;
+	SymphonyMemoryBudget *budget = SymphonyMemoryBudget::get_singleton();
+	if (budget && !budget->try_reserve(arena_size, &budget_error)) {
+		result.errors.push_back(budget_error);
+		return result;
+	}
+
 	// --- Phase 6: Allocate arena and build compiled graph ---
 	CompiledGraph *compiled = memnew(CompiledGraph);
+	compiled->budgeted_bytes = budget ? arena_size : 0;
 	if (!compiled->arena.init(arena_size)) {
 		result.errors.push_back("Failed to allocate arena.");
 		memdelete(compiled);
