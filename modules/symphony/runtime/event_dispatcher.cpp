@@ -270,39 +270,38 @@ void SymphonyEventDispatcher::on_voice_stopped(uint64_t p_event_id) {
 
 Dictionary SymphonyEventDispatcher::play_event(const Ref<SoundEvent> &p_event) {
 	Dictionary result;
-	PlayResult pr;
+	PlayResult pr = RESULT_REJECTED_NO_STREAMS;
 	StringName steal_reason;
-	int slot = dispatch(p_event, pr, steal_reason);
+	int slot = -1;
 	int stream_index = -1;
 	float volume_offset_db = 0.0f;
 	float pitch_scale = 1.0f;
 
-	if (slot >= 0) {
+	// Plan §10: resolve/validate the selected stream before reserving or stealing a slot.
+	if (p_event.is_valid() && p_event->get_streams().size() > 0) {
 		stream_index = resolve_variation(p_event);
-
 		TypedArray<AudioStream> streams = p_event->get_streams();
 		if (stream_index < 0 || stream_index >= streams.size() || Variant(streams[stream_index]).get_type() == Variant::NIL) {
-			SymphonyVoicePool *pool = SymphonyVoicePool::get_singleton();
-			if (pool) {
-				pool->release_slot(slot, true);
-			}
-			on_voice_stopped(p_event->get_instance_id());
 			pr = RESULT_REJECTED_NO_STREAMS;
-			slot = -1;
 			stream_index = -1;
 		} else {
-			Vector2 vol_range = p_event->get_volume_range();
-			if (vol_range.x != vol_range.y) {
-				volume_offset_db = vol_range.x + rng.randf() * (vol_range.y - vol_range.x);
-			} else {
-				volume_offset_db = vol_range.x;
-			}
+			slot = dispatch(p_event, pr, steal_reason);
+			if (slot >= 0) {
+				Vector2 vol_range = p_event->get_volume_range();
+				if (vol_range.x != vol_range.y) {
+					volume_offset_db = vol_range.x + rng.randf() * (vol_range.y - vol_range.x);
+				} else {
+					volume_offset_db = vol_range.x;
+				}
 
-			Vector2 pit_range = p_event->get_pitch_range();
-			if (pit_range.x != pit_range.y) {
-				pitch_scale = pit_range.x + rng.randf() * (pit_range.y - pit_range.x);
+				Vector2 pit_range = p_event->get_pitch_range();
+				if (pit_range.x != pit_range.y) {
+					pitch_scale = pit_range.x + rng.randf() * (pit_range.y - pit_range.x);
+				} else {
+					pitch_scale = pit_range.x;
+				}
 			} else {
-				pitch_scale = pit_range.x;
+				stream_index = -1;
 			}
 		}
 	}

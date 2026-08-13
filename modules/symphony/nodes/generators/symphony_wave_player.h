@@ -73,28 +73,29 @@ public:
 	virtual void execute(int32_t p_num_frames) override {
 		SYMPHONY_ASSUME_FRAMES(p_num_frames);
 
-		// Check gate trigger
-		if (gate_input && gate_input->count > 0) {
-			playing = true;
-			read_pos = (loop_mode != 0) ? loop_start : 0.0;
-			direction = 1;
-		}
-
-		if (!playing || !pcm_data) {
-			for (int32_t i = 0; i < p_num_frames; i++) {
-				output[i] = 0.0f;
-			}
-			return;
-		}
-
 		float pitch = base_pitch * source_rate_ratio;
 		if (pitch_input) {
 			pitch *= pitch_input[0];
 		}
 
 		int32_t effective_end = (loop_end > 0) ? loop_end : pcm_length_samples;
+		int32_t next_trig = 0;
 
 		for (int32_t i = 0; i < p_num_frames; i++) {
+			// Honor gate triggers at exact sample offsets (plan §9).
+			while (gate_input && next_trig < gate_input->count &&
+					gate_input->events[next_trig].sample_offset <= i) {
+				playing = true;
+				read_pos = (loop_mode != 0) ? (double)loop_start : 0.0;
+				direction = 1;
+				next_trig++;
+			}
+
+			if (!playing || !pcm_data) {
+				output[i] = 0.0f;
+				continue;
+			}
+
 			output[i] = interpolate(read_pos);
 			read_pos += pitch * direction;
 
@@ -108,10 +109,7 @@ public:
 								symphony_note_dropped_trigger();
 							}
 						}
-						for (int32_t j = i + 1; j < p_num_frames; j++) {
-							output[j] = 0.0f;
-						}
-						return;
+						break;
 					case 1: // Forward loop
 						read_pos = loop_start + (read_pos - effective_end);
 						break;

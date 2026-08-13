@@ -14,6 +14,7 @@ TEST_FORCE_LINK(test_symphony_voice)
 #include "modules/symphony/runtime/voice_manager.h"
 #include "modules/symphony/runtime/event_dispatcher.h"
 #include "modules/symphony/runtime/sound_event.h"
+#include "modules/symphony/core/symphony_voice_manager.h"
 #include "scene/resources/audio/audio_stream_wav.h"
 
 namespace TestSymphonyVoice {
@@ -104,6 +105,45 @@ TEST_CASE("[Symphony][Voice] acquire_slot is free-only; dispatcher steals at eve
 
 	pool->release_slot(slot1, true);
 	dispatcher->on_voice_stopped(event->get_instance_id());
+}
+
+TEST_CASE("[Symphony][Voice] play_event validates stream before steal") {
+	SymphonyVoicePool *pool = SymphonyVoicePool::get_singleton();
+	SymphonyEventDispatcher *dispatcher = SymphonyEventDispatcher::get_singleton();
+	REQUIRE(pool != nullptr);
+	REQUIRE(dispatcher != nullptr);
+
+	for (int i = 0; i < pool->get_pool_size(); i++) {
+		REQUIRE(pool->acquire_slot(10) >= 0);
+	}
+
+	Ref<SoundEvent> event;
+	event.instantiate();
+	event->set_priority(99);
+	event->set_max_voices(0);
+	TypedArray<AudioStream> streams;
+	streams.push_back(Variant()); // nil stream — must reject without stealing
+	event->set_streams(streams);
+
+	const int active_before = pool->get_active_voice_count();
+	Dictionary result = dispatcher->play_event(event);
+	CHECK((int)result["result"] == (int)SymphonyEventDispatcher::RESULT_REJECTED_NO_STREAMS);
+	CHECK((int)result["slot"] == -1);
+	CHECK(pool->get_active_voice_count() == active_before);
+
+	for (int i = 0; i < pool->get_pool_size(); i++) {
+		pool->release_slot(i, true);
+	}
+}
+
+TEST_CASE("[Symphony][Voice] transition cost estimate scales with units") {
+	SymphonyVoiceManager *mgr = SymphonyVoiceManager::get_singleton();
+	REQUIRE(mgr != nullptr);
+
+	const float light = mgr->estimate_cpu_fraction_for_cost(64.0f, 48000.0f, 512);
+	const float heavy = mgr->estimate_cpu_fraction_for_cost(64.0f * 48.0f, 48000.0f, 512);
+	CHECK(light > 0.0f);
+	CHECK(heavy > light);
 }
 
 } // namespace TestSymphonyVoice
