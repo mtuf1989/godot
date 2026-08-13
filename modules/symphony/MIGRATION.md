@@ -117,6 +117,13 @@ bin/godot.macos.editor.arm64 --headless --test --test-case='*Symphony*'
   incomplete-window skips), retirement pending/peak/destroyed, and transition
   counters. Individual getters mirror the same atomics.
 
+### Stress / mix timing
+
+- `tests/modules/test_symphony_stress.cpp` covers global budget rejection without
+  reservation leaks, failed compiles leaving the audible package intact, peak
+  live package caps, retirement teardown, and 10/30/50-node median/p99 mix
+  timings (absolute soft ceiling; release regression baselines still open).
+
 ### VoiceManager deferral (§6 partial)
 
 - Audio `enforce_voice_limits()` only snapshots + writes per-voice atomics
