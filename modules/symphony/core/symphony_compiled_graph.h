@@ -15,9 +15,10 @@ struct CompiledGraph {
 	SymphonyOperator **operators = nullptr;
 	int32_t operator_count = 0;
 
-	// Parallel arrays: routing names and original node IDs for each operator.
+	// Parallel arrays: routing names, original node IDs, and operator type names.
 	StringName *node_names = nullptr;
 	int32_t *node_ids = nullptr;
+	StringName *operator_types = nullptr; // Descriptor type_name per exec index (migrate match).
 
 	// Trigger buffers (one per trigger-type output pin, stored in arena).
 	TriggerBuffer **trigger_buffers = nullptr;
@@ -142,6 +143,10 @@ struct CompiledGraph {
 		if (node_ids) {
 			memdelete_arr(node_ids);
 			node_ids = nullptr;
+		}
+		if (operator_types) {
+			memdelete_arr(operator_types);
+			operator_types = nullptr;
 		}
 		// Silence propagation arrays are heap-allocated (not arena).
 		if (audio_input_ops) {

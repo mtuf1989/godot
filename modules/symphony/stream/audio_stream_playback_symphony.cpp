@@ -96,7 +96,14 @@ AudioStreamPlaybackSymphony::AdmitResult AudioStreamPlaybackSymphony::_try_admit
 	return AdmitResult::AdmittedWithToken;
 }
 
+void AudioStreamPlaybackSymphony::_migrate_into(PreparedGraphPackage *p_destination) {
+	// Audio-thread only: current_package is stable for this mix callback.
+	PreparedGraphPackage::migrate_compatible_state(current_package, p_destination);
+}
+
 void AudioStreamPlaybackSymphony::_begin_equal_power_crossfade(PreparedGraphPackage *p_new_package) {
+	// Migrate bounded state into the incoming graph before dual-graph playback.
+	_migrate_into(p_new_package);
 	// pending → current, current → outgoing
 	_pkg_pending(-1);
 	if (current_package) {
@@ -314,6 +321,8 @@ int AudioStreamPlaybackSymphony::mix(AudioFrame *p_buffer, float p_rate_scale, i
 				}
 			}
 			if (transition_progress >= 1.0f) {
+				// Block boundary: migrate then swap; never run two graphs in one sample.
+				_migrate_into(incoming_package);
 				if (current_package) {
 					_pkg_active(-1);
 					GraphPackageRetirement::retire(current_package);
@@ -369,24 +378,8 @@ void AudioStreamPlaybackSymphony::swap_graph(CompiledGraph *p_graph) {
 		return;
 	}
 
-	if (current_graph && p_graph) {
-		uint8_t state_buf[256];
-		for (int32_t old_i = 0; old_i < current_graph->operator_count; old_i++) {
-			size_t state_size = current_graph->operators[old_i]->export_state(nullptr, 0);
-			if (state_size == 0 || state_size > sizeof(state_buf)) {
-				continue;
-			}
-			current_graph->operators[old_i]->export_state(state_buf, sizeof(state_buf));
-			int32_t old_id = current_graph->node_ids[old_i];
-			for (int32_t new_i = 0; new_i < p_graph->operator_count; new_i++) {
-				if (p_graph->node_ids[new_i] == old_id) {
-					p_graph->operators[new_i]->import_state(state_buf, state_size);
-					break;
-				}
-			}
-		}
-	}
-
+	// Main thread: publish only. Compatible state is migrated on the audio thread
+	// at the block boundary when the pending package is adopted (plan §5).
 	PreparedGraphPackage *pkg = PreparedGraphPackage::create_from_graph(p_graph);
 	if (!pkg) {
 		memdelete(p_graph);

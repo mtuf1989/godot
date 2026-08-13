@@ -70,6 +70,7 @@ private:
 	[[nodiscard]] AdmitResult _try_admit_crossfade(const PreparedGraphPackage *p_incoming);
 	void _begin_equal_power_crossfade(PreparedGraphPackage *p_new_package);
 	void _begin_fallback_transition(PreparedGraphPackage *p_new_package);
+	void _migrate_into(PreparedGraphPackage *p_destination);
 	void _cache_stream_metadata();
 
 protected:

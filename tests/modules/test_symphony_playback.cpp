@@ -11,6 +11,9 @@ TEST_FORCE_LINK(test_symphony_playback)
 #include "modules/symphony/core/symphony_graph_description.h"
 #include "modules/symphony/core/symphony_graph_package_retirement.h"
 #include "modules/symphony/core/symphony_prepared_graph_package.h"
+#include "modules/symphony/core/symphony_operator.h"
+
+#include <cstring>
 
 namespace TestSymphonyPlayback {
 
@@ -91,6 +94,126 @@ TEST_CASE("[Symphony][Playback] GraphPackageRetirement drain destroys packages")
 
 	GraphPackageRetirement::drain();
 	CHECK(GraphPackageRetirement::get_pending_count() == before);
+}
+
+TEST_CASE("[Symphony][Playback] Package fingerprints match node id + type") {
+	GraphCompiler::CompileResult result = GraphCompiler::compile(_make_io_graph(), 48000.0f);
+	REQUIRE(result.success());
+
+	PreparedGraphPackage *pkg = PreparedGraphPackage::create_from_graph(result.graph, result.arena_bytes, result.total_package_bytes);
+	REQUIRE(pkg != nullptr);
+	REQUIRE(pkg->fingerprints.size() == result.graph->operator_count);
+
+	for (int i = 1; i < pkg->fingerprints.size(); i++) {
+		CHECK(pkg->fingerprints[i - 1].node_id <= pkg->fingerprints[i].node_id);
+	}
+
+	const PreparedGraphPackage::OperatorFingerprint *osc_fp = pkg->find_fingerprint(3);
+	REQUIRE(osc_fp != nullptr);
+	CHECK(osc_fp->type_hash == StringName("Oscillator").hash());
+	CHECK(osc_fp->structural_hash != 0);
+	CHECK(pkg->find_fingerprint(999) == nullptr);
+
+	PreparedGraphPackage::destroy(pkg);
+}
+
+TEST_CASE("[Symphony][Playback] migrate_compatible_state copies bounded operator state") {
+	GraphCompiler::CompileResult a = GraphCompiler::compile(_make_io_graph(), 48000.0f);
+	GraphCompiler::CompileResult b = GraphCompiler::compile(_make_io_graph(), 48000.0f);
+	REQUIRE(a.success());
+	REQUIRE(b.success());
+
+	PreparedGraphPackage *from = PreparedGraphPackage::create_from_graph(a.graph, a.arena_bytes, a.total_package_bytes);
+	PreparedGraphPackage *to = PreparedGraphPackage::create_from_graph(b.graph, b.arena_bytes, b.total_package_bytes);
+	REQUIRE(from != nullptr);
+	REQUIRE(to != nullptr);
+
+	const PreparedGraphPackage::OperatorFingerprint *osc_fp = from->find_fingerprint(3);
+	REQUIRE(osc_fp != nullptr);
+	SymphonyOperator *src_osc = from->graph->operators[osc_fp->exec_index];
+	SymphonyOperator *dst_osc = to->graph->operators[to->find_fingerprint(3)->exec_index];
+	REQUIRE(src_osc != nullptr);
+	REQUIRE(dst_osc != nullptr);
+
+	uint8_t seed[16];
+	const size_t seed_size = src_osc->export_state(nullptr, 0);
+	REQUIRE(seed_size > 0);
+	REQUIRE(seed_size <= sizeof(seed));
+	// Drive distinct phase via import of a known buffer, then migrate.
+	for (size_t i = 0; i < seed_size; i++) {
+		seed[i] = (uint8_t)(0xA5 ^ (uint8_t)i);
+	}
+	src_osc->import_state(seed, seed_size);
+
+	uint8_t before_dst[16] = {};
+	dst_osc->export_state(before_dst, sizeof(before_dst));
+
+	PreparedGraphPackage::migrate_compatible_state(from, to);
+
+	uint8_t after_src[16] = {};
+	uint8_t after_dst[16] = {};
+	CHECK(src_osc->export_state(after_src, sizeof(after_src)) == seed_size);
+	CHECK(dst_osc->export_state(after_dst, sizeof(after_dst)) == seed_size);
+	CHECK(memcmp(after_src, seed, seed_size) == 0);
+	CHECK(memcmp(after_dst, seed, seed_size) == 0);
+	CHECK(memcmp(before_dst, after_dst, seed_size) != 0);
+
+	PreparedGraphPackage::destroy(from);
+	PreparedGraphPackage::destroy(to);
+}
+
+TEST_CASE("[Symphony][Playback] migrate skips mismatched structural fingerprints") {
+	GraphDescription desc_a = _make_io_graph();
+	GraphDescription desc_b = _make_io_graph();
+	// Same node id 3, different operator type → type/structural mismatch.
+	for (int i = 0; i < desc_b.nodes.size(); i++) {
+		if (desc_b.nodes[i].id == 3) {
+			desc_b.nodes.write[i].type_name = "LFO";
+			desc_b.nodes.write[i].params.clear();
+			desc_b.nodes.write[i].params.insert("frequency", 1.0f);
+			desc_b.nodes.write[i].params.insert("waveform", 0.0f);
+			break;
+		}
+	}
+	// LFO expects float pin wiring similar enough to compile with GraphInput→LFO→GraphOutput.
+	GraphCompiler::CompileResult a = GraphCompiler::compile(desc_a, 48000.0f);
+	GraphCompiler::CompileResult b = GraphCompiler::compile(desc_b, 48000.0f);
+	REQUIRE(a.success());
+	REQUIRE(b.success());
+
+	PreparedGraphPackage *from = PreparedGraphPackage::create_from_graph(a.graph);
+	PreparedGraphPackage *to = PreparedGraphPackage::create_from_graph(b.graph);
+	REQUIRE(from != nullptr);
+	REQUIRE(to != nullptr);
+
+	const auto *from_fp = from->find_fingerprint(3);
+	const auto *to_fp = to->find_fingerprint(3);
+	REQUIRE(from_fp != nullptr);
+	REQUIRE(to_fp != nullptr);
+	CHECK(from_fp->type_hash != to_fp->type_hash);
+
+	SymphonyOperator *src = from->graph->operators[from_fp->exec_index];
+	SymphonyOperator *dst = to->graph->operators[to_fp->exec_index];
+	uint8_t seed[16];
+	size_t seed_size = src->export_state(nullptr, 0);
+	REQUIRE(seed_size > 0);
+	REQUIRE(seed_size <= sizeof(seed));
+	for (size_t i = 0; i < seed_size; i++) {
+		seed[i] = 0x3C;
+	}
+	src->import_state(seed, seed_size);
+
+	uint8_t dst_before[16] = {};
+	size_t dst_size = dst->export_state(dst_before, sizeof(dst_before));
+
+	PreparedGraphPackage::migrate_compatible_state(from, to);
+
+	uint8_t dst_after[16] = {};
+	CHECK(dst->export_state(dst_after, sizeof(dst_after)) == dst_size);
+	CHECK(memcmp(dst_before, dst_after, dst_size) == 0);
+
+	PreparedGraphPackage::destroy(from);
+	PreparedGraphPackage::destroy(to);
 }
 
 } // namespace TestSymphonyPlayback

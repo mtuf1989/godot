@@ -84,6 +84,10 @@ bin/godot.macos.editor.arm64 --headless --test --test-case='*Symphony*'
   mutation, or `dynamic_cast`.
 - `set_parameter` / `trigger` binary-search sorted routes on the current package.
 - `swap_graph(CompiledGraph*)` still wraps into a package (call sites unchanged).
+- Packages carry per-operator fingerprints (`node_id` + type hash + structural
+  hash of exportable state size). Audio adopts pending packages and migrates
+  ≤256-byte compatible state at the block boundary; large histories are skipped.
+- Main-thread `swap_graph` no longer torn-reads live operator state.
 
 ### GraphPackageRetirement (§6 partial)
 
