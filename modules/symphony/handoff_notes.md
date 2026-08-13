@@ -1,7 +1,7 @@
 # Symphony Handoff Notes — Next Session
 
 **Date:** 2026-08-13  
-**Branch:** `features/symphony_fixed`  
+**Branch:** `features/symphony_fixed` (working tree clean after this note)  
 **Plan source of truth:** `modules/symphony/improve_plan_1_7.md`  
 **Do not edit:** `modules/symphony/review_version_1_7.md`  
 **Migration log:** `modules/symphony/MIGRATION.md`  
@@ -15,15 +15,15 @@
 |-----------|--------|
 | **M1** | Done |
 | **M2** | Closed |
-| **M3** | In progress — functional + spectral/cost gates largely landed; TSan/RT-scope + release baselines remain |
+| **M3** | Nearly complete — remaining: TSan/RT-scope (locked later), release timing baselines, optional SpectralGate polish |
 
-**HEAD commits from this session (newest first):**
+**HEAD (newest first) — this session’s M3 commits:**
 
-- (pending) — spectral suite depth + FFT extra_cost_fn
-- `52cd2e8aaa` — memory stress + 10/30/50 mix timing
-- `93ff25a112` — read-only metrics
-- `5842cf7fce` — atomic control_package
-- `0fb5639861` — fingerprints + audio-boundary migrate
+- `ff4c2235ce` — Spectral suite depth + FFT `extra_cost_fn` (`N·log2(N)·hops`)
+- `52cd2e8aaa` — Memory stress + 10/30/50-node mix timing
+- `93ff25a112` — Read-only transition / trigger / spectral / retirement metrics
+- `5842cf7fce` — Atomic `control_package` for `set_parameter` / `trigger`
+- `0fb5639861` — Package fingerprints + audio-boundary state migrate
 
 **Tests (last run):** `49/49` Symphony cases pass
 
@@ -32,6 +32,14 @@ scons platform=macos target=editor arch=arm64 tests=yes module_raycast_enabled=n
 bin/godot.macos.editor.arm64 --headless --test --source-file='*symphony*'
 # Prefer --test-case='*Symphony*' over '[Symphony]' (doctest char-class trap)
 ```
+
+**Editor-build mix timings (512 frames @ 48 kHz, absolute — not release baselines):**
+
+| Graph | median | p99 |
+|-------|--------|-----|
+| 10-node | ~6 µs | ~7 µs |
+| 30-node | ~40 µs | ~50–70 µs |
+| 50-node | ~75–80 µs | ~90–100 µs |
 
 ---
 
@@ -44,96 +52,62 @@ bin/godot.macos.editor.arm64 --headless --test --source-file='*symphony*'
 - Transitions: 40 ms equal-power when admitted; else 64-sample single-graph fallback
 - Crossfade tokens: 2 desktop / 1 mobile+web
 - Keep auto-LOD; silence −120 dB + 2-block hysteresis; no large-history migration
-- Tests “green enough to iterate”; TSan later
-- **game-template code is out of scope** for this plan; document API migrations before release (done in MIGRATION + user_guide changelog)
+- Tests “green enough to iterate”; **TSan later**
+- State migrate at **audio boundary** (not review mailbox); match node ID + type + structural hash; ≤256 bytes
+- **game-template is out of scope**; API migrations documented in `MIGRATION.md` + user_guide changelog
 
 ---
 
-## Landed and Reliable
+## Landed and Reliable (do not re-litigate)
 
-### M2 close
-- WavePlayer honors gate `sample_offset` in-block
-- `play_event` resolves/validates stream **before** acquire/steal
+### Earlier M3 (pre-this-session, still good)
+- Exact package memory charging; SharedPCM unique charging
+- Calibrated crossfade admission (EWMA µs/cost-unit)
+- §11 LOD/feedback serialization, authoring APIs, editor FB overlay
+- WavePlayer sample offsets; steal validates stream before acquire
 
-### M3 — memory
-- Compiler drains retirement, reserves `total_package_bytes` (arena + non-arena)
-- SharedPCM: `try_reserve_shared` / `release_shared` (unique keys once)
-- Global used = reserved + shared_pcm
-
-### M3 — transition cost
-- `OperatorDescriptor::cost_per_sample` (+ optional `extra_cost_fn`, unused so far)
-- `estimated_cost_units` on CompileResult / CompiledGraph / PreparedGraphPackage
-- Heavy defaults: PhaseVocoder 48, SpectralGate 32, GrainCloud 24, FDN 16
-- VoiceManager EWMA µs/cost-unit; admission adds estimated incoming fraction → deny uses fallback
-
-### §11 LOD/feedback
-- Prefix serializer: `graph/...` + `lod/<tier>/...` + connection `is_feedback`
-- APIs: `add_lod_variant`, `duplicate_main_to_lod`, `set_lod_variant`, `remove_lod_variant`, `get_lod_variant`, `has_lod_variant`, `estimate_tier_memory`, `validate_tier_compile`
-- Editor: LOD tier selector, Dup→LOD, FB Toggle (UndoRedo), memory label
-- Feedback overlay: **amber dashed edges + `FB` badge** (plan §11)
-- Serialization round-trip tests green
-
-### Fingerprints + audio-boundary migrate
-- Package fingerprints: node_id + type hash + structural hash (exportable state size)
-- `migrate_compatible_state` on audio adopt (equal-power start + fallback swap); ≤256 bytes
-- `swap_graph` publish-only on main thread
-
-### Handle-safe control path
-- Atomic `control_package` published from `_install_package`
-- `set_parameter` / `trigger` load-check-act with one retry on swap race
-
-### Read-only metrics
-- `SymphonyVoiceManager.get_debug_metrics()` + individual getters
-- Transition / dropped-trigger / spectral-underflow / retirement destroyed+peak
-
-### Memory stress + mix timing
-- `tests/modules/test_symphony_stress.cpp`: global budget rejection without leak,
-  failed compile preserves audible package, peak live ≤ current+outgoing+pending,
-  retirement/reserved return to baseline, 10/30/50-node median/p99 mix timing
-
-### Spectral suite + FFT cost
-- PhaseVocoder unity (±0.5 dB at stretch=1), stretch=2 finite, underflow counter,
-  cleanup/PFFFT release; SpectralGate finite processing; compile cost scales with FFT size
-- `extra_cost_fn` wires `N·log2(N)·hops` for PhaseVocoder / SpectralGate
+### This session
+1. **Fingerprints + migrate** — `CompiledGraph::operator_types`; package fingerprints; `migrate_compatible_state` on equal-power start + fallback swap; `swap_graph` publish-only
+2. **Control path** — `std::atomic<PreparedGraphPackage*> control_package`; load-check-act + one retry
+3. **Metrics** — `SymphonyVoiceManager::get_debug_metrics()` + getters (memory snapshot, transitions, dropped triggers, spectral underflow, retirement pending/peak/destroyed)
+4. **Stress** — `tests/modules/test_symphony_stress.cpp` (budget reject, audible preserve, live ≤3 delta, retirement teardown, mix timing)
+5. **Spectral** — real suite (replaced scaffold); PV unity ±0.5 dB @ stretch=1; stretch=2 finite; cleanup; cost scales with FFT; `extra_cost_fn` on PV/SG
+6. PFFFT includes use `modules/symphony/thirdparty/pffft/pffft.h` so tests can compile spectral headers
 
 ---
 
 ## Suggested Next (priority)
 
-Still open from `improve_plan_1_7.md` M3 / deferred leftovers:
+1. **Release-mode timing baselines** — rebuild `target=template_release` (or equivalent), record 10/30/50 median/p99, wire ≤5% / ≤10% gates vs stored baseline  
+2. **TSan + RT-scope assertions** (§6) — only when unlocked (currently “TSan later”)  
+3. **SpectralGate polish (optional)** — threshold clamped to ≤0 dB so strong bins rarely attenuate; no COLA table (unlike PhaseVocoder); tests only assert finite/non-NaN  
+4. **GrainCloud / other heavies `extra_cost_fn`** — only if admission still under-calibrated  
+5. **game-template** — separate repo when ready  
 
-1. **TSan + RT-scope assertions** (§6 gate) — locked “later”
-2. **Release-mode baseline comparison** for ≤5% median / ≤10% p99 gates
-3. **SpectralGate COLA / threshold dB scale** — gate threshold clamped to ≤0 dB so strong bins rarely attenuate (test covers finite processing only)
-4. **game-template** — implement documented API migration in that repo when ready (not this repo)
-
-Ask user which slice to take first if unclear.
+Ask user which slice if unclear; default to (1) if continuing M3 close-out.
 
 ---
 
-## Known leftovers / caveats
+## Caveats / footguns
 
-- Package fingerprints + audio-boundary migrate — **landed**
-- Handle-safe `set_parameter` / `trigger` — **landed**
-- Read-only metrics — **landed**
-- Memory stress + mix timing — **landed** (absolute timings; no historical regression baseline yet)
-- Spectral suite + `extra_cost_fn` — **landed**
-- `extra_cost_fn` unused — **resolved** for PhaseVocoder / SpectralGate
-- Editor LOD tier switch auto-creates empty variants if missing — authors should remove unused LODs before shipping (noted in user_guide)
-- Oscillator high-freq AA can overshoot ~±3 (tests allow ±3.1)
+- Stress test that forces `global_limit_bytes=1` prints an expected `ERROR:` from `compile_graph`; `BudgetGuard` restores limits (and recovers tiny leftover limits from aborted runs)
+- Never call `CompiledGraph::execute` with `p_num_frames > SYMPHONY_MICRO_BLOCK_SIZE` (hang/corruption); stress timing loops in micro-blocks
 - Micro-block: 32 on `__EMSCRIPTEN__`, else 64
+- Oscillator high-freq AA can overshoot ~±3 (tests allow ±3.1)
+- Editor LOD tier switch may auto-create empty variants — strip unused before ship
+- Do not edit `review_version_1_7.md`
 
 ---
 
 ## How to Resume
 
-1. Read this file + skim `improve_plan_1_7.md` remaining M3 gates
-2. Checkout `features/symphony_fixed`; confirm clean + rebuild if needed
-3. Prefer next: release-mode timing baselines, or TSan when unlocked; SpectralGate dB/COLA polish optional
-4. Keep updating `MIGRATION.md` / `user_guide.md` when APIs change; do not edit `review_version_1_7.md`
-5. Prefer focused commits
+1. Read this file + skim remaining M3 gates in `improve_plan_1_7.md`  
+2. `git checkout features/symphony_fixed` && `git status` (expect clean)  
+3. Rebuild if binary stale; run Symphony tests (command above)  
+4. Prefer next: **release baselines** (or ask)  
+5. Update `MIGRATION.md` / `user_guide.md` on API changes; focused commits  
 
-## Knowledge / skills
+## Skills / knowledge
 
-- Activate: `godot-gdscript`, `godot-gdextension-cpp` (module uses ClassDB/GDCLASS patterns)
-- Knowledge MCP (`user-rider` / audio-books / stk / faust) may be unavailable — continue from plan + code if so
+- Activate: `godot-gdscript`, `godot-gdextension-cpp`  
+- Knowledge MCP (`user-rider`) may be down — continue from plan + code  
