@@ -122,7 +122,13 @@ bin/godot.macos.editor.arm64 --headless --test --test-case='*Symphony*'
 - `tests/modules/test_symphony_stress.cpp` covers global budget rejection without
   reservation leaks, failed compiles leaving the audible package intact, peak
   live package caps, retirement teardown, and 10/30/50-node median/p99 mix
-  timings (absolute soft ceiling; release regression baselines still open).
+  timings.
+- Editor/debug builds keep a soft absolute ceiling (`p99 < 5000 µs`).
+- `template_release` builds also enforce stored macos-arm64 baselines. Each graph
+  runs 3 trials of `64 × (32 × 512 frames)` @ 48 kHz; the gated median/p99 are the
+  median across trials. Hard fail is strict plan acceptance: median ≤ +5% (min +2 µs),
+  p99 ≤ +10% (min +5 µs). Expect flake under heavy host load; recalibrate constants if
+  the reference machine or graph builders change.
 
 ### Spectral + cost calibration
 

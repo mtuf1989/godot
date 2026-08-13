@@ -16,6 +16,7 @@ TEST_FORCE_LINK(test_symphony_stress)
 #include "modules/symphony/stream/audio_stream_playback_symphony.h"
 #include "modules/symphony/stream/audio_stream_symphony.h"
 
+#include "core/os/os.h"
 #include "core/templates/vector.h"
 
 namespace TestSymphonyStress {
@@ -92,6 +93,36 @@ static void _percentile_us(Vector<uint64_t> &p_samples, uint64_t &r_median, uint
 	r_median = p_samples[p_samples.size() / 2];
 	const int p99_idx = (int)((p_samples.size() - 1) * 99 / 100);
 	r_p99 = p_samples[p99_idx];
+}
+
+// Release regression baselines: macos arm64 template_release.
+// Workload: 3 trials × 64 samples × (32 × 512 frames) @ 48 kHz; gated value = median of trials.
+// Calibrated 2026-08-13 (median of five outer runs; p99 = max observed across those runs).
+// Strict plan gates on template_release: median ≤ +5%, p99 ≤ +10% (plus tiny µs floor).
+struct MixTimingBaseline {
+	const char *label;
+	GraphDescription (*builder)();
+	uint64_t median_us;
+	uint64_t p99_us;
+};
+
+static uint64_t _median_limit_us(uint64_t p_baseline) {
+	const uint64_t pct = (p_baseline * 105ull + 99ull) / 100ull; // ceil(+5%)
+	const uint64_t abs = p_baseline + 2ull;
+	return pct > abs ? pct : abs;
+}
+
+static uint64_t _p99_limit_us(uint64_t p_baseline) {
+	const uint64_t pct = (p_baseline * 110ull + 99ull) / 100ull; // ceil(+10%)
+	const uint64_t abs = p_baseline + 5ull;
+	return pct > abs ? pct : abs;
+}
+
+static void _execute_mix_frames(PreparedGraphPackage *p_pkg, AudioFrame *p_buf, int p_frames) {
+	for (int off = 0; off < p_frames; off += SYMPHONY_MICRO_BLOCK_SIZE) {
+		p_pkg->graph_output->set_output(p_buf, off);
+		p_pkg->graph->execute(SYMPHONY_MICRO_BLOCK_SIZE);
+	}
 }
 
 TEST_CASE("[Symphony][Stress] Global memory budget rejects without leaking reservation") {
@@ -226,22 +257,24 @@ TEST_CASE("[Symphony][Stress] Retirement and reserved bytes return to baseline a
 TEST_CASE("[Symphony][Stress] Mix timing median/p99 for 10/30/50-node graphs") {
 	BudgetGuard guard;
 
-	struct Case {
-		const char *label;
-		GraphDescription (*builder)();
-	};
-	const Case cases[] = {
-		{ "10-node", &AudioStreamSymphony::build_test_graph_10_nodes },
-		{ "30-node", &AudioStreamSymphony::build_test_graph_30_nodes },
-		{ "50-node", &AudioStreamSymphony::build_test_graph_50_nodes },
+	// macos arm64 template_release; each trial = 64 samples × (32 × 512 frames) @ 48 kHz.
+	// Reported/gated values are the median across 3 independent trials.
+	// Calibrated 2026-08-13 (median of five outer runs; p99 = max observed across those runs).
+	const MixTimingBaseline cases[] = {
+		{ "10-node", &AudioStreamSymphony::build_test_graph_10_nodes, 209, 335 },
+		{ "30-node", &AudioStreamSymphony::build_test_graph_30_nodes, 1254, 1747 },
+		{ "50-node", &AudioStreamSymphony::build_test_graph_50_nodes, 2420, 2790 },
 	};
 
 	AudioFrame buf[512];
 	const int frames = 512;
+	const int reps_per_sample = 32; // Amortize scheduler noise on short graphs.
 	const int warmup = 8;
 	const int samples = 64;
+	const int trials = 3;
+	const bool release_gates = OS::get_singleton()->has_feature("template_release");
 
-	for (const Case &c : cases) {
+	for (const MixTimingBaseline &c : cases) {
 		GraphCompiler::CompileResult result = GraphCompiler::compile(c.builder(), 48000.0f);
 		REQUIRE(result.success());
 		PreparedGraphPackage *pkg = PreparedGraphPackage::create_from_graph(result.graph, result.arena_bytes, result.total_package_bytes);
@@ -249,37 +282,60 @@ TEST_CASE("[Symphony][Stress] Mix timing median/p99 for 10/30/50-node graphs") {
 		REQUIRE(pkg->graph_output != nullptr);
 
 		for (int i = 0; i < warmup; i++) {
-			pkg->graph_output->set_output(buf, 0);
-			pkg->graph->execute(SYMPHONY_MICRO_BLOCK_SIZE);
-			// Drain remaining frames in the callback-sized buffer via micro-blocks.
-			for (int off = SYMPHONY_MICRO_BLOCK_SIZE; off < frames; off += SYMPHONY_MICRO_BLOCK_SIZE) {
-				pkg->graph_output->set_output(buf, off);
-				pkg->graph->execute(SYMPHONY_MICRO_BLOCK_SIZE);
+			for (int r = 0; r < reps_per_sample; r++) {
+				_execute_mix_frames(pkg, buf, frames);
 			}
 		}
 
-		Vector<uint64_t> times_us;
-		times_us.resize(samples);
-		for (int i = 0; i < samples; i++) {
-			const uint64_t t0 = symphony_time_usec();
-			for (int off = 0; off < frames; off += SYMPHONY_MICRO_BLOCK_SIZE) {
-				pkg->graph_output->set_output(buf, off);
-				pkg->graph->execute(SYMPHONY_MICRO_BLOCK_SIZE);
+		Vector<uint64_t> trial_medians;
+		Vector<uint64_t> trial_p99s;
+		trial_medians.resize(trials);
+		trial_p99s.resize(trials);
+
+		for (int t = 0; t < trials; t++) {
+			Vector<uint64_t> times_us;
+			times_us.resize(samples);
+			for (int i = 0; i < samples; i++) {
+				const uint64_t t0 = symphony_time_usec();
+				for (int r = 0; r < reps_per_sample; r++) {
+					_execute_mix_frames(pkg, buf, frames);
+				}
+				const uint64_t t1 = symphony_time_usec();
+				times_us.write[i] = t1 >= t0 ? (t1 - t0) : 0;
 			}
-			const uint64_t t1 = symphony_time_usec();
-			times_us.write[i] = t1 >= t0 ? (t1 - t0) : 0;
+
+			uint64_t median = 0;
+			uint64_t p99 = 0;
+			_percentile_us(times_us, median, p99);
+			trial_medians.write[t] = median;
+			trial_p99s.write[t] = p99;
 		}
 
 		uint64_t median = 0;
 		uint64_t p99 = 0;
-		_percentile_us(times_us, median, p99);
+		uint64_t unused = 0;
+		_percentile_us(trial_medians, median, unused);
+		_percentile_us(trial_p99s, p99, unused);
+
 		CHECK(median > 0);
 		CHECK(p99 >= median);
-		CHECK(p99 < 5000);
+		CHECK(p99 < 5000ull * (uint64_t)reps_per_sample); // Soft absolute ceiling scaled by reps.
 
-		MESSAGE(String(c.label), " mix 512f median_us=", median, " p99_us=", p99,
+		MESSAGE(String(c.label), " mix ", reps_per_sample, "x512f median_us=", median, " p99_us=", p99,
+				" baseline_median_us=", c.median_us, " baseline_p99_us=", c.p99_us,
 				" arena_bytes=", (uint64_t)pkg->arena_bytes,
-				" cost_units=", pkg->estimated_cost_units);
+				" cost_units=", pkg->estimated_cost_units,
+				release_gates ? " gates=release" : " gates=soft");
+
+		if (release_gates) {
+			REQUIRE(c.median_us > 0);
+			REQUIRE(c.p99_us > 0);
+			const uint64_t median_limit = _median_limit_us(c.median_us);
+			const uint64_t p99_limit = _p99_limit_us(c.p99_us);
+			MESSAGE(String(c.label), " limits median_us=", median_limit, " p99_us=", p99_limit);
+			CHECK(median <= median_limit);
+			CHECK(p99 <= p99_limit);
+		}
 
 		PreparedGraphPackage::destroy(pkg);
 	}
