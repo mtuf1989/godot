@@ -118,6 +118,14 @@ public:
 	Handle register_global_parameter(const String &p_name, float p_default, float p_smooth_ms);
 	bool has_global_parameter(const String &p_name) const;
 
+	// GDScript handle accessors (ClassDB cannot bind the Handle overloads next to String ones).
+	int find_global_parameter(const String &p_name) const;
+	bool set_parameter_target_by_handle(int p_handle, float p_value);
+	float get_parameter_value_by_handle(int p_handle) const;
+	int find_analysis(const String &p_name) const;
+	bool set_analysis_by_handle(int p_handle, float p_value);
+	float get_analysis_by_handle(int p_handle) const;
+
 	RTPCEngine();
 	~RTPCEngine();
 };

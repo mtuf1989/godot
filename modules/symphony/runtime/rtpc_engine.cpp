@@ -32,6 +32,9 @@ void RTPCEngine::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_parameter_value", "name"), &RTPCEngine::get_parameter_value);
 	ClassDB::bind_method(D_METHOD("register_global_parameter", "name", "default_value", "smooth_ms"), &RTPCEngine::register_global_parameter, DEFVAL(0.0f), DEFVAL(DEFAULT_SMOOTH_TIME_MS));
 	ClassDB::bind_method(D_METHOD("has_global_parameter", "name"), &RTPCEngine::has_global_parameter);
+	ClassDB::bind_method(D_METHOD("find_global_parameter", "name"), &RTPCEngine::find_global_parameter);
+	ClassDB::bind_method(D_METHOD("set_parameter_target_by_handle", "handle", "value"), &RTPCEngine::set_parameter_target_by_handle);
+	ClassDB::bind_method(D_METHOD("get_parameter_value_by_handle", "handle"), &RTPCEngine::get_parameter_value_by_handle);
 	ClassDB::bind_method(D_METHOD("get_parameter_count"), &RTPCEngine::get_parameter_count);
 	ClassDB::bind_method(D_METHOD("get_missing_handle_count"), &RTPCEngine::get_missing_handle_count);
 	ClassDB::bind_method(D_METHOD("set_default_smooth_time", "ms"), &RTPCEngine::set_default_smooth_time);
@@ -42,6 +45,9 @@ void RTPCEngine::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_analysis", "name", "value"), &RTPCEngine::set_analysis);
 	ClassDB::bind_method(D_METHOD("get_analysis", "name"), &RTPCEngine::get_analysis);
 	ClassDB::bind_method(D_METHOD("has_analysis", "name"), &RTPCEngine::has_analysis);
+	ClassDB::bind_method(D_METHOD("find_analysis", "name"), &RTPCEngine::find_analysis);
+	ClassDB::bind_method(D_METHOD("set_analysis_by_handle", "handle", "value"), &RTPCEngine::set_analysis_by_handle);
+	ClassDB::bind_method(D_METHOD("get_analysis_by_handle", "handle"), &RTPCEngine::get_analysis_by_handle);
 	ClassDB::bind_method(D_METHOD("get_analysis_output_count"), &RTPCEngine::get_analysis_output_count);
 	ClassDB::bind_method(D_METHOD("get_analysis_name_at", "index"), &RTPCEngine::get_analysis_name_at);
 	ClassDB::bind_method(D_METHOD("get_analysis_value_at", "index"), &RTPCEngine::get_analysis_value_at);
@@ -284,4 +290,28 @@ String RTPCEngine::get_analysis_name_at(int p_index) const {
 
 float RTPCEngine::get_analysis_value_at(int p_index) const {
 	return get_analysis_output_value_by_index(p_index);
+}
+
+int RTPCEngine::find_global_parameter(const String &p_name) const {
+	return find_parameter(StringName(p_name));
+}
+
+bool RTPCEngine::set_parameter_target_by_handle(int p_handle, float p_value) {
+	return set_target((Handle)p_handle, p_value);
+}
+
+float RTPCEngine::get_parameter_value_by_handle(int p_handle) const {
+	return get_current_value((Handle)p_handle);
+}
+
+int RTPCEngine::find_analysis(const String &p_name) const {
+	return find_analysis_output(StringName(p_name));
+}
+
+bool RTPCEngine::set_analysis_by_handle(int p_handle, float p_value) {
+	return set_analysis_value((Handle)p_handle, p_value);
+}
+
+float RTPCEngine::get_analysis_by_handle(int p_handle) const {
+	return get_analysis_value((Handle)p_handle);
 }

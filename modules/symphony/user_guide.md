@@ -96,7 +96,8 @@ AudioManager.play_event(sfx, position, {"size": 2.0, "debris_amount": 0.8})
 ```gdscript
 # SoundEvent wraps an AudioStreamSymphony graph
 var fire_event: SoundEvent = preload("res://audio/events/fire_loop.tres")
-var handle: int = AudioManager.play_event(fire_event)
+var play: Dictionary = AudioManager.play_event(fire_event)
+var handle: int = int(play.get("slot", -1))
 
 # Modify parameters in real-time
 AudioManager.set_parameter(handle, &"intensity", 0.8)
@@ -185,8 +186,11 @@ Cooldown and voice limits are keyed by the SoundEvent **resource instance**:
 ### Core API
 
 ```gdscript
-# Play a sound. Returns a voice handle (int) or -1 if rejected.
-var handle: int = AudioManager.play_event(event, position, params)
+# Play a sound. Returns {slot, result, steal_reason}. slot is -1 if rejected.
+var play: Dictionary = AudioManager.play_event(event, position, params)
+var handle: int = int(play.get("slot", -1))
+if play.result == SymphonyEventDispatcher.RESULT_STOLEN:
+    print("stole slot %d (%s)" % [handle, play.steal_reason])
 
 # Stop a voice
 AudioManager.stop(handle)              # Immediate
@@ -204,6 +208,9 @@ AudioManager.stop_all(2.0)
 # Check if a voice is still playing
 if AudioManager.is_playing(handle):
     pass
+
+# Retrigger a TriggerInput on a playing Symphony graph (false = dropped)
+AudioManager.trigger(handle, &"fire")
 ```
 
 ### Per-Voice Parameters
@@ -337,13 +344,11 @@ graph/connections/3/to_pin = 0
 var laser_event: SoundEvent = preload("res://audio/events/laser.tres")
 
 # Play and get a handle
-var handle: int = AudioManager.play_event(laser_event, position, {"frequency": 1200.0})
+var play: Dictionary = AudioManager.play_event(laser_event, position, {"frequency": 1200.0})
+var handle: int = int(play.get("slot", -1))
 
-# Trigger the envelope (required for TriggerInput-based graphs!)
-# Access the underlying playback:
-var player: Node = AudioManager._slot_to_player[handle]
-var playback = player.get_stream_playback()
-playback.trigger(&"fire")  # returns false if the 64-entry trigger queue was full
+# Retrigger the envelope (TriggerInput defaults to auto_trigger_on_play=true on first play)
+AudioManager.trigger(handle, &"fire")  # returns false if the 64-entry trigger queue was full
 
 # Modulate parameters in real-time
 AudioManager.set_parameter(handle, &"frequency", 440.0)
@@ -351,7 +356,7 @@ AudioManager.set_parameter(handle, &"frequency", 440.0)
 
 ### TriggerInput — One-Shot Sounds
 
-Graphs with `TriggerInput` nodes require an explicit `playback.trigger(&"name")` call after `play()`. Without it, the graph runs but ADSR/envelope never fires — you'll hear silence.
+Graphs with `TriggerInput` nodes fire automatically on play when `auto_trigger_on_play` is true (the default). Retrigger with `AudioManager.trigger(handle, &"name")`. If auto-trigger is disabled, the graph runs but ADSR/envelope stays silent until you trigger.
 
 ### GraphOutput — Combining Sources
 
@@ -498,13 +503,13 @@ RTPC (Real-Time Parameter Control) connects game state to audio parameters with 
 
 ```gdscript
 # Register a parameter (required at startup — set_* will not auto-create)
-var health_handle: int = RTPCEngine.register_global_parameter("player_health", 1.0, 10.0)
-# health_handle is stable; GDScript set_parameter_target still looks up by name
-RTPCEngine.register_global_parameter("tension", 0.0, 50.0)
-RTPCEngine.register_global_parameter("speed", 0.0, 20.0)
+var health_handle: int = AudioManager.register_global_parameter(&"player_health", 1.0, 10.0)
+AudioManager.register_global_parameter(&"tension", 0.0, 50.0)
+AudioManager.register_global_parameter(&"speed", 0.0, 20.0)
+# Handles are cached inside AudioManager; later sets use RTPCEngine.set_parameter_target_by_handle.
 
-# Update from gameplay code (name lookup). Returns false if unregistered.
-RTPCEngine.set_parameter_target("player_health", player.health / player.max_health)
+# Update from gameplay code. Returns false if unregistered.
+AudioManager.set_global_parameter(&"player_health", player.health / player.max_health)
 AudioManager.set_global_parameter(&"tension", combat_intensity)
 
 # Read current smoothed value
@@ -554,17 +559,17 @@ Analysis outputs are the reverse of RTPC parameters: values written by the **aud
 
 ```gdscript
 # Register analysis outputs at startup (required — set_analysis will not auto-create)
-RTPCEngine.register_analysis("bass_power")
-RTPCEngine.register_analysis("mid_power")
-RTPCEngine.register_analysis("treble_power")
+AudioManager.register_analysis(&"bass_power")
+AudioManager.register_analysis(&"mid_power")
+AudioManager.register_analysis(&"treble_power")
 
 # Read analysis values from gameplay/UI code
-var bass: float = RTPCEngine.get_analysis("bass_power")
-var mid: float = RTPCEngine.get_analysis("mid_power")
+var bass: float = AudioManager.get_analysis(&"bass_power")
+var mid: float = AudioManager.get_analysis(&"mid_power")
 
 # Check if an output exists
 if RTPCEngine.has_analysis("bass_power"):
-    update_bass_visualizer(RTPCEngine.get_analysis("bass_power"))
+    update_bass_visualizer(AudioManager.get_analysis(&"bass_power"))
 
 # Iterate all outputs (useful for debug/visualization)
 for i in RTPCEngine.get_analysis_output_count():
@@ -1683,13 +1688,14 @@ graph/smooth_time_ms = 5.0            # Default: 5.0 ms (time constant for one-p
 
 ### Sound doesn't play
 
-1. **Returns -1 from play_event?**
+1. **`play_event().slot == -1`?**
    - Check `cooldown_ms` — event may be in cooldown
    - Check `max_voices` — voice limit may be reached
    - Check that `streams` array is not empty in the SoundEvent
+   - Inspect `play.result` (`RESULT_REJECTED_COOLDOWN` / `VOICE_LIMIT` / `NO_STREAMS`)
 
 2. **Graph plays but no audio heard?**
-   - If using `TriggerInput`, you must call `playback.trigger(&"name")` after play (`false` = dropped)
+   - If `TriggerInput.auto_trigger_on_play` is off, call `AudioManager.trigger(handle, &"name")` (`false` = dropped)
    - Check `SymphonyVoiceManager.get_dropped_trigger_count()` if one-shots randomly miss
    - Check that all nodes connect to `GraphOutput`
    - Verify the graph has at least one sound source (Oscillator, Noise, WavePlayer, etc.)
@@ -1701,7 +1707,7 @@ graph/smooth_time_ms = 5.0            # Default: 5.0 ms (time constant for one-p
 
 ### Sound cuts out unexpectedly
 
-1. **Voice stolen** — `play_event` / dispatcher returned `RESULT_STOLEN`, or another higher-priority sound took the slot
+1. **Voice stolen** — `play_event` returned `RESULT_STOLEN` (slot still valid), or another higher-priority sound took the slot. Connect `AudioManager.voice_stolen`.
    - Increase `priority` or `importance_weight` on the SoundEvent
    - Check `audio/steals_per_second` monitor
 
@@ -1784,12 +1790,14 @@ graph/smooth_time_ms = 5.0            # Default: 5.0 ms (time constant for one-p
 AudioManager.play_event(sfx_event, position)
 
 # Looping ambient attached to an object
-var h: int = AudioManager.play_event(loop_event, object.global_position)
+var play: Dictionary = AudioManager.play_event(loop_event, object.global_position)
+var h: int = int(play.get("slot", -1))
 # Update position each frame if object moves:
 SymphonyVoicePool.set_slot_position(h, Vector3(object.global_position.x, object.global_position.y, 0.0))
 
 # Reactive sound (engine RPM)
-var engine_handle: int = AudioManager.play_event(engine_event)
+var engine_play: Dictionary = AudioManager.play_event(engine_event)
+var engine_handle: int = int(engine_play.get("slot", -1))
 func _process(_delta):
     AudioManager.set_parameter(engine_handle, &"rpm", current_rpm / max_rpm)
 
@@ -1811,7 +1819,7 @@ func _on_music_slider_changed(value: float):
 
 ### v1.7.1 — Real-time runtime / LOD authoring (2026-08-13)
 
-C++ M3 of `improve_plan_1_7.md` is complete in this module. Apply the Game Audio Layer checklist in `MIGRATION.md` when updating `game-template`.
+C++ M3 of `improve_plan_1_7.md` is complete in this module. Game Audio Layer (`game-template/addons/symphony_audio`) has been migrated.
 
 **Editor / `.tres` authors:**
 - Connections can be marked **feedback** (`is_feedback`). In the Symphony graph editor use **FB Toggle**; feedback edges draw amber dashed with an `FB` badge. Older resources default to non-feedback.
@@ -1820,12 +1828,12 @@ C++ M3 of `improve_plan_1_7.md` is complete in this module. Apply the Game Audio
 - `SpectralGate` COLA-normalizes like `PhaseVocoder` (open threshold ≈ unity gain ±0.5 dB). `threshold_db` is clamped to ≤0 dB.
 - Graph swaps / LOD: 40 ms equal-power crossfade when CPU tokens allow (2 desktop / 1 mobile+web); otherwise a 64-sample single-graph fade-out/swap/fade-in.
 
-**Game Audio Layer / GDScript (migrate `game-template` before release):**
-- Register RTPC / analysis names before `set_*` (no auto-create). `register_*` returns a stable `int` handle; `set_parameter_target` / `set_analysis` return `bool`. Missing names increment `RTPCEngine.get_missing_handle_count()`.
-- `SymphonyVoicePool.acquire_slot()` is free-only (`-1` when full). `SymphonyEventDispatcher.play_event()` may return `RESULT_STOLEN` (slot still valid).
-- `playback.trigger(name, value) -> bool` (`false` if the 64-entry queue dropped the event). Check `SymphonyVoiceManager.get_dropped_trigger_count()`.
-- `SymphonyVoiceManager.process_deferred_lod()` is optional — AudioServer's update callback already runs it (at most one LOD compile per update).
-- `SymphonyVoiceManager.get_debug_metrics()` exposes memory, package, transition, trigger, retirement, and `rt_violations`. `get_rt_violation_count()` / `rt_violations` should stay 0 (dev builds `DEV_ASSERT` on audio-thread alloc/free/lock/compile/ObjectDB/container mutation).
+**Game Audio Layer / GDScript (`game-template`, applied):**
+- Register RTPC / analysis names before `set_*` via `AudioManager.register_global_parameter` / `register_analysis`. AudioManager caches the returned handle and uses `set_parameter_target_by_handle` / `get_parameter_value_by_handle` (and analysis equivalents). Name APIs still work as a cache-backed convenience. Missing names increment `RTPCEngine.get_missing_handle_count()`.
+- `AudioManager.play_event()` returns `{slot, result, steal_reason}` (breaking). `RESULT_STOLEN` keeps a valid slot; the previous Godot player is stopped and `voice_stolen` is emitted. `SymphonyVoicePool.acquire_slot()` is free-only.
+- `AudioManager.trigger(handle, name, value) -> bool` (`false` if the 64-entry queue dropped the event). Check `SymphonyVoiceManager.get_dropped_trigger_count()`.
+- `SymphonyVoiceManager.process_deferred_lod()` is no longer called from GDScript `_process` — AudioServer's update callback already runs it (at most one LOD compile per update).
+- `AudioManager.get_debug_stats()` and the F10 overlay expose `rt_violations`, dropped triggers, missing RTPC handles, and `SymphonyVoiceManager.get_debug_metrics()`. `rt_violations` should stay 0.
 
 Internal engine details (package retirement, SharedPCM unique charging, RT-scope, TSan) do not require gameplay script changes beyond the bullets above.
 

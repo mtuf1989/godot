@@ -311,6 +311,7 @@ Dictionary SymphonyEventDispatcher::play_event(const Ref<SoundEvent> &p_event) {
 	result["stream_index"] = stream_index;
 	result["volume_offset_db"] = volume_offset_db;
 	result["pitch_scale"] = pitch_scale;
+	result["steal_reason"] = steal_reason;
 
 	SymphonyVoicePool *pool = SymphonyVoicePool::get_singleton();
 	if (pool) {

@@ -62,9 +62,20 @@ TEST_CASE("[Symphony][Voice] RTPCEngine register returns handle; no auto-create"
 
 	RTPCEngine::Handle h = engine->register_global_parameter("rtpc_test_param", 0.25f, 5.0f);
 	REQUIRE(h != RTPCEngine::INVALID_HANDLE);
+	CHECK(engine->find_global_parameter("rtpc_test_param") == h);
 	CHECK(engine->set_target(h, 0.75f) == true);
 	CHECK(engine->get_target_value(h) == doctest::Approx(0.75f));
+	CHECK(engine->set_parameter_target_by_handle(h, 0.6f) == true);
+	CHECK(engine->get_target_value(h) == doctest::Approx(0.6f));
+	CHECK(engine->set_parameter_target_by_handle(-1, 1.0f) == false);
 	CHECK(engine->set_parameter_target("rtpc_test_param", 0.5f) == true);
+
+	RTPCEngine::Handle ah = engine->register_analysis("rtpc_test_analysis");
+	REQUIRE(ah != RTPCEngine::INVALID_HANDLE);
+	CHECK(engine->find_analysis("rtpc_test_analysis") == ah);
+	CHECK(engine->set_analysis_by_handle(ah, 0.4f) == true);
+	CHECK(engine->get_analysis_by_handle(ah) == doctest::Approx(0.4f));
+	CHECK(engine->set_analysis_by_handle(-1, 1.0f) == false);
 }
 
 TEST_CASE("[Symphony][Voice] acquire_slot is free-only; dispatcher steals at event cap") {
@@ -107,6 +118,11 @@ TEST_CASE("[Symphony][Voice] acquire_slot is free-only; dispatcher steals at eve
 	CHECK(slot1 == slot0);
 	CHECK(pr == SymphonyEventDispatcher::RESULT_STOLEN);
 	CHECK(reason == StringName("oldest"));
+
+	Dictionary stolen = dispatcher->play_event(event);
+	CHECK((int)stolen["slot"] == slot1);
+	CHECK((int)stolen["result"] == (int)SymphonyEventDispatcher::RESULT_STOLEN);
+	CHECK(StringName(stolen["steal_reason"]) == StringName("oldest"));
 
 	pool->release_slot(slot1, true);
 	dispatcher->on_voice_stopped(event->get_instance_id());

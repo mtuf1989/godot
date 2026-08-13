@@ -5,7 +5,7 @@ Update this file with each commit that changes a public API.
 
 ## Status
 
-- **Milestone:** M3 C++ complete (this repo). Game Audio Layer (`game-template/`) still applies the checklist below.
+- **Milestone:** M3 C++ complete. Game Audio Layer (`game-template/addons/symphony_audio`) migrated (RTPC handles, `play_event` Dictionary, `trigger()`, LOD poll removed).
 - **Branch:** `features/symphony_fixed`
 - **Tests:** 55 Symphony cases; editor TSan (`.san`) reported no data races (2026-08-13).
 
@@ -216,27 +216,33 @@ TSan (2026-08-13, macos arm64 editor `.san`): no data-race reports on the Sympho
 ## Planned (from improve_plan_1_7.md)
 
 C++ M3 items from the plan are landed (exact accounting, packages, retirement,
-transitions, RT-scope, TSan). Remaining work is Game Audio Layer migration in
-`game-template/` (out of this repo).
+transitions, RT-scope, TSan). Game Audio Layer migration lives in `game-template/`.
+
+### RTPC handle accessors (GDScript)
+
+- `find_global_parameter(name) -> int`
+- `set_parameter_target_by_handle(handle, value) -> bool`
+- `get_parameter_value_by_handle(handle) -> float`
+- `find_analysis(name) -> int`
+- `set_analysis_by_handle(handle, value) -> bool`
+- `get_analysis_by_handle(handle) -> float`
+- `SymphonyEventDispatcher.play_event()` Dictionary now includes `steal_reason`.
 
 ## Game Audio Layer (`game-template/`)
 
-C++ APIs have landed. Apply these when migrating `game-template` (still out of
-this repo):
+Applied in `addons/symphony_audio`:
 
-- **RTPC:** call `register_global_parameter` / `register_analysis` at startup.
-  `set_parameter_target` / `set_analysis` return `bool` and do **not** auto-create.
-  Prefer the returned `int` handle for later sets. Missing names increment
-  `get_missing_handle_count()`.
-- **Triggers:** `AudioStreamPlaybackSymphony.trigger(name, value) -> bool`.
-  `false` means the 64-entry queue dropped the event; check
+- **RTPC:** `AudioManager.register_global_parameter` / `register_analysis` at startup.
+  AudioManager caches the `int` handle and sets/gets via `set_parameter_target_by_handle`
+  / `get_parameter_value_by_handle` (and the analysis equivalents). Name APIs remain
+  as a cache-backed convenience. Missing names increment `get_missing_handle_count()`.
+- **Triggers:** `AudioManager.trigger(handle, name, value) -> bool`.
+  `false` means the 64-entry queue dropped the event or the name/slot is invalid; check
   `SymphonyVoiceManager.get_dropped_trigger_count()`.
-- **Voices:** `SymphonyVoicePool.acquire_slot()` is free-only (`-1` when full).
-  `SymphonyEventDispatcher.play_event()` may return `result = RESULT_STOLEN`
-  (`slot` still valid). Steal reason is written to the voice-pool event log
-  (`oldest` / `quietest` / `farthest`). Validate the stream before assuming a
-  slot is occupied.
-- **LOD:** stop calling `process_deferred_lod()` every frame (optional; AudioServer
-  update already runs it). Author LOD variants with `duplicate_main_to_lod` /
-  `add_lod_variant` / `remove_lod_variant`.
-- **Debug:** `SymphonyVoiceManager.get_debug_metrics()`; `rt_violations` must stay 0.
+- **Voices:** `AudioManager.play_event()` returns `{slot, result, steal_reason}` (breaking).
+  `RESULT_STOLEN` still has a valid `slot`; the previous Godot player is stopped and
+  `voice_stolen` is emitted. Stream is validated before occupying a player.
+- **LOD:** `process_deferred_lod()` is no longer called every frame (AudioServer update
+  already runs it). Preset LOD graphs were not authored this pass.
+- **Debug:** F10 overlay shows `rt_violations`, dropped triggers, missing RTPC handles,
+  and package/memory snapshot. `get_debug_stats()` includes the same fields.

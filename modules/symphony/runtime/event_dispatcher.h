@@ -58,7 +58,7 @@ public:
 	void on_voice_started(uint64_t p_event_id);
 	void on_voice_stopped(uint64_t p_event_id);
 
-	// GDScript-friendly dispatch that returns Dictionary {slot, result, stream_index}
+	// GDScript-friendly dispatch that returns Dictionary {slot, result, stream_index, steal_reason}
 	Dictionary play_event(const Ref<SoundEvent> &p_event);
 
 	SymphonyEventDispatcher();
