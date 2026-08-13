@@ -1,4 +1,4 @@
-# Symphony Audio System — User Guide v1.7
+# Symphony Audio System — User Guide v1.7.1
 
 > A complete guide to creating procedural sounds, adaptive music, and spatial audio for games using the Symphony module and its GDScript Game Audio Layer.
 
@@ -343,7 +343,7 @@ var handle: int = AudioManager.play_event(laser_event, position, {"frequency": 1
 # Access the underlying playback:
 var player: Node = AudioManager._slot_to_player[handle]
 var playback = player.get_stream_playback()
-playback.trigger(&"fire")
+playback.trigger(&"fire")  # returns false if the 64-entry trigger queue was full
 
 # Modulate parameters in real-time
 AudioManager.set_parameter(handle, &"frequency", 440.0)
@@ -497,13 +497,14 @@ RTPC (Real-Time Parameter Control) connects game state to audio parameters with 
 ### Global Parameters
 
 ```gdscript
-# Register a parameter (do this at startup)
-RTPCEngine.register_global_parameter("player_health", 1.0, 10.0)  # name, default, smooth_ms
+# Register a parameter (required at startup — set_* will not auto-create)
+var health_handle: int = RTPCEngine.register_global_parameter("player_health", 1.0, 10.0)
+# health_handle is stable; GDScript set_parameter_target still looks up by name
 RTPCEngine.register_global_parameter("tension", 0.0, 50.0)
 RTPCEngine.register_global_parameter("speed", 0.0, 20.0)
 
-# Update from gameplay code
-AudioManager.set_global_parameter(&"player_health", player.health / player.max_health)
+# Update from gameplay code (name lookup). Returns false if unregistered.
+RTPCEngine.set_parameter_target("player_health", player.health / player.max_health)
 AudioManager.set_global_parameter(&"tension", combat_intensity)
 
 # Read current smoothed value
@@ -552,7 +553,7 @@ All global parameters are smoothed on the audio thread using a one-pole filter. 
 Analysis outputs are the reverse of RTPC parameters: values written by the **audio thread** (analysis operators) and read by the **game thread**. Use them for reactive visuals, gameplay logic, or adaptive audio routing based on spectral content.
 
 ```gdscript
-# Register analysis outputs at startup (optional — auto-registers on first write)
+# Register analysis outputs at startup (required — set_analysis will not auto-create)
 RTPCEngine.register_analysis("bass_power")
 RTPCEngine.register_analysis("mid_power")
 RTPCEngine.register_analysis("treble_power")
@@ -1136,12 +1137,15 @@ Symphony manages a fixed pool of voice slots (default: 48) with importance-based
 
 ### How Voice Stealing Works
 
-When the pool is full and a new sound plays:
-1. The event's `steal_mode` determines the victim: `OLDEST`, `QUIETEST`, or `FARTHEST`
-2. The stolen voice fades out over ~64 samples (anti-click)
-3. The new voice takes the slot
+When the pool is full and a new sound plays, `SymphonyVoicePool.acquire_slot()` does **not** steal. `SymphonyEventDispatcher` chooses a victim:
 
-Higher `priority` voices are harder to steal. `importance_weight` further modifies the scoring.
+1. If the same event is at its per-event cap, steal among that event's voices using its `steal_mode`
+2. Otherwise steal globally among voices whose `priority` is no greater than the incoming event
+3. Mode: `OLDEST`, `QUIETEST`, or `FARTHEST` (ties: lower importance, then slot index)
+4. Quietest falls back to importance when RMS is unknown (`set_slot_rms()`)
+5. `play_event()` returns `RESULT_STOLEN` (slot is still valid). The steal reason (`oldest` / `quietest` / `farthest`) is recorded in the voice-pool event log.
+
+The stolen voice fades out over 64 samples (anti-click); the new voice takes the slot.
 
 ### Importance Calculation
 
@@ -1208,7 +1212,22 @@ Transitions use 5% hysteresis to prevent flip-flopping at boundaries.
 
 ### LOD Crossfade
 
-When switching LOD levels, both graphs run in parallel for ~2048 samples (~42ms) to crossfade smoothly.
+Admitted LOD/graph swaps use a **40 ms equal-power** crossfade (both graphs run). Concurrent crossfades are limited to **2 on desktop** and **1 on mobile/web**. If CPU is at/above the warning threshold, no token is available, or a transition is already in progress, Symphony uses a **64-sample** fade-out → swap → fade-in (only one graph audible at a time).
+
+### Authoring LOD variants
+
+```gdscript
+var stream: AudioStreamSymphony = preload("res://audio/graphs/engine.tres")
+# Copy the main graph into the next empty LOD tier (1 then 2)
+var tier: int = stream.duplicate_main_to_lod()
+# Or create an empty variant and edit it in the Symphony graph editor
+stream.add_lod_variant()
+print(stream.estimate_tier_memory(1))  # bytes at the stream mix rate
+print(stream.validate_tier_compile(1))  # empty string if OK
+stream.remove_lod_variant(2)
+```
+
+Older `.tres` files default to no LOD variants. The editor LOD dropdown may auto-create an empty variant — remove unused tiers before shipping.
 
 ### Per-Slot Threshold Override
 
@@ -1317,6 +1336,11 @@ var stats: Dictionary = AudioManager.get_debug_stats()
 
 var active: int = AudioManager.get_active_voice_count()
 var virtual: int = AudioManager.get_virtual_voice_count()
+
+# C++ runtime snapshot (memory, transitions, triggers, retirement)
+var metrics: Dictionary = SymphonyVoiceManager.get_debug_metrics()
+# metrics["rt_violations"] must stay 0
+# metrics["dropped_trigger_count"], ["memory_global_used_bytes"], ["packages_active"], ...
 ```
 
 ### Memory Budget Guidelines
@@ -1665,7 +1689,8 @@ graph/smooth_time_ms = 5.0            # Default: 5.0 ms (time constant for one-p
    - Check that `streams` array is not empty in the SoundEvent
 
 2. **Graph plays but no audio heard?**
-   - If using `TriggerInput`, you must call `playback.trigger(&"name")` after play
+   - If using `TriggerInput`, you must call `playback.trigger(&"name")` after play (`false` = dropped)
+   - Check `SymphonyVoiceManager.get_dropped_trigger_count()` if one-shots randomly miss
    - Check that all nodes connect to `GraphOutput`
    - Verify the graph has at least one sound source (Oscillator, Noise, WavePlayer, etc.)
 
@@ -1676,7 +1701,7 @@ graph/smooth_time_ms = 5.0            # Default: 5.0 ms (time constant for one-p
 
 ### Sound cuts out unexpectedly
 
-1. **Voice stolen** — another higher-priority sound took the slot
+1. **Voice stolen** — `play_event` / dispatcher returned `RESULT_STOLEN`, or another higher-priority sound took the slot
    - Increase `priority` or `importance_weight` on the SoundEvent
    - Check `audio/steals_per_second` monitor
 
@@ -1784,22 +1809,25 @@ func _on_music_slider_changed(value: float):
 
 ## Changelog
 
-### v1.7.1 — Real-time package / LOD authoring (in progress)
+### v1.7.1 — Real-time runtime / LOD authoring (2026-08-13)
+
+C++ M3 of `improve_plan_1_7.md` is complete in this module. Apply the Game Audio Layer checklist in `MIGRATION.md` when updating `game-template`.
 
 **Editor / `.tres` authors:**
-- Connections can be marked **feedback** (`is_feedback`). In the Symphony graph editor use **FB Toggle**; feedback edges draw amber dashed with an `FB` badge.
-- LOD variants serialize under `lod/1/...` and `lod/2/...`. Switching the LOD tier dropdown creates an empty variant if missing — remove unused variants before shipping a resource.
-- Per-tier memory estimate is shown in the editor toolbar (flags budgets over 8 MiB/graph).
-- `SpectralGate` now COLA-normalizes like `PhaseVocoder` (open threshold ≈ unity gain). `threshold_db` is clamped to ≤0 dB.
+- Connections can be marked **feedback** (`is_feedback`). In the Symphony graph editor use **FB Toggle**; feedback edges draw amber dashed with an `FB` badge. Older resources default to non-feedback.
+- LOD variants serialize under `lod/1/...` and `lod/2/...`. APIs: `add_lod_variant()`, `duplicate_main_to_lod()`, `remove_lod_variant(tier)`, `has_lod_variant(tier)`, `estimate_tier_memory(tier)`, `validate_tier_compile(tier)`. The editor LOD dropdown may auto-create an empty variant — remove unused variants before shipping.
+- Per-tier memory estimate is shown in the editor toolbar (flags budgets over 8 MiB/graph). Global live-package budgets: 128 MiB desktop / 64 MiB mobile / 32 MiB web. Oversized compiles fail; the currently audible graph is kept.
+- `SpectralGate` COLA-normalizes like `PhaseVocoder` (open threshold ≈ unity gain ±0.5 dB). `threshold_db` is clamped to ≤0 dB.
+- Graph swaps / LOD: 40 ms equal-power crossfade when CPU tokens allow (2 desktop / 1 mobile+web); otherwise a 64-sample single-graph fade-out/swap/fade-in.
 
 **Game Audio Layer / GDScript (migrate `game-template` before release):**
-- Register RTPC / analysis names before `set_*` (no auto-create from audio). Prefer handles from `register_*`.
-- `SymphonyVoicePool.acquire_slot()` no longer steals; `play_event` / dispatcher may return `RESULT_STOLEN`.
-- `playback.trigger(name, value)` returns `bool` (false if the queue dropped the event).
-- `SymphonyVoiceManager.process_deferred_lod()` is optional — also runs from the AudioServer update callback.
-- `SymphonyVoiceManager.get_rt_violation_count()` / `get_debug_metrics()["rt_violations"]` should stay 0. Non-zero means an audio-thread alloc, free, lock, compile, ObjectDB, or container mutation was detected (dev builds also `DEV_ASSERT`).
+- Register RTPC / analysis names before `set_*` (no auto-create). `register_*` returns a stable `int` handle; `set_parameter_target` / `set_analysis` return `bool`. Missing names increment `RTPCEngine.get_missing_handle_count()`.
+- `SymphonyVoicePool.acquire_slot()` is free-only (`-1` when full). `SymphonyEventDispatcher.play_event()` may return `RESULT_STOLEN` (slot still valid).
+- `playback.trigger(name, value) -> bool` (`false` if the 64-entry queue dropped the event). Check `SymphonyVoiceManager.get_dropped_trigger_count()`.
+- `SymphonyVoiceManager.process_deferred_lod()` is optional — AudioServer's update callback already runs it (at most one LOD compile per update).
+- `SymphonyVoiceManager.get_debug_metrics()` exposes memory, package, transition, trigger, retirement, and `rt_violations`. `get_rt_violation_count()` / `rt_violations` should stay 0 (dev builds `DEV_ASSERT` on audio-thread alloc/free/lock/compile/ObjectDB/container mutation).
 
-Internal engine details (crossfade CPU admission, SharedPCM global budgeting, package retirement) do not require gameplay script changes beyond the bullets above.
+Internal engine details (package retirement, SharedPCM unique charging, RT-scope, TSan) do not require gameplay script changes beyond the bullets above.
 
 ---
 
@@ -1883,7 +1911,7 @@ Single-frequency amplitude tracker — lightweight alternative to ResonatorAnaly
 A separate bank of values written by the audio thread and read by the game thread. Enables spectral analysis to drive gameplay logic, visuals, or adaptive routing.
 
 New GDScript methods on `RTPCEngine`:
-- `register_analysis(name: String)` — pre-register a slot (optional, auto-registers on first write)
+- `register_analysis(name: String)` — pre-register a slot (**required as of v1.7.1**; auto-register on first write was removed)
 - `set_analysis(name: String, value: float)` — write from audio-side script
 - `get_analysis(name: String) → float` — read from game thread
 - `has_analysis(name: String) → bool`

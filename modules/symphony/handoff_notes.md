@@ -5,7 +5,7 @@
 **Plan source of truth:** `modules/symphony/improve_plan_1_7.md` (§6 gate + Verification)  
 **Do not edit:** `modules/symphony/review_version_1_7.md`  
 **Migration log:** `modules/symphony/MIGRATION.md`  
-**User guide:** `modules/symphony/user_guide.md` (v1.7.1 changelog started)
+**User guide:** `modules/symphony/user_guide.md` (v1.7.1 changelog complete)
 
 ---
 
@@ -15,7 +15,7 @@
 |-----------|--------|
 | **M1** | Done |
 | **M2** | Closed |
-| **M3** | Nearly complete — RT-scope + TSan suite green; **next: M3 wrap-up docs** |
+| **M3** | Done (C++). Game Audio Layer migration remains in `game-template/` |
 
 **HEAD (newest first):**
 
@@ -91,17 +91,15 @@ Per-512f equivalent ≈ median/32 (~6.5 / 39 / 76 µs). Strict gates: median ≤
 4. Concurrent mix + swap/parameter/trigger/LOD/drain/stop stress (`THREADS_ENABLED`)
 5. `get_rt_violation_count()` + debug metric `rt_violations`
 6. **TSan** — `bin/godot.macos.editor.arm64.san`; Symphony suite reports no data races. GrainCloud µs/unit gate skipped under TSan/ASan.
+7. **Docs** — `MIGRATION.md` M3-complete + Game Audio Layer checklist; `user_guide.md` v1.7.1 changelog finished (stale RTPC auto-register / steal / LOD crossfade corrected)
 
 ---
 
-## Suggested Next (priority) — M3 wrap-up docs
+## Suggested Next (priority) — Game Audio Layer (out of this repo)
 
-**Default: documentation / migration polish. Do not reopen RT-scope or TSan unless a new race appears.**
+**M3 C++ + docs are done.** Do not reopen RT-scope or TSan unless a new race appears.
 
-### Remaining M3
-1. Review `MIGRATION.md` planned section (several items already landed; trim stale bullets).
-2. Finish `user_guide.md` v1.7.1 changelog if any public API is still undocumented.
-3. `game-template` is still out of scope.
+Next work lives in `game-template/`: apply `MIGRATION.md` Game Audio Layer checklist (RTPC register-before-set, `RESULT_STOLEN`, `trigger()` bool, drop per-frame `process_deferred_lod()`).
 
 ```bash
 # TSan (already green 2026-08-13)
@@ -133,7 +131,7 @@ TSAN_OPTIONS="halt_on_error=1 print_stacktrace=1" bin/godot.macos.editor.arm64.s
 2. `git checkout features/symphony_fixed` && `git status` (expect clean)  
 3. Rebuild editor; confirm Symphony tests still green
 4. TSan binary already exists as `bin/godot.macos.editor.arm64.san` if this machine built it
-5. M3 wrap-up: trim stale `MIGRATION.md` planned bullets; `game-template` remains out of scope  
+5. M3 C++/docs done; next is `game-template` migration (`MIGRATION.md` checklist)  
 
 ## Skills / knowledge
 
