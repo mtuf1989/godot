@@ -67,7 +67,7 @@ private:
 	void _release_crossfade_token();
 	void _abort_transition_packages();
 	enum class AdmitResult : uint8_t { Denied, AdmittedNoToken, AdmittedWithToken };
-	[[nodiscard]] AdmitResult _try_admit_crossfade();
+	[[nodiscard]] AdmitResult _try_admit_crossfade(const PreparedGraphPackage *p_incoming);
 	void _begin_equal_power_crossfade(PreparedGraphPackage *p_new_package);
 	void _begin_fallback_transition(PreparedGraphPackage *p_new_package);
 	void _cache_stream_metadata();
@@ -108,6 +108,7 @@ public:
 	[[nodiscard]] float get_budget_percent() const;
 	[[nodiscard]] float get_last_rms() const;
 	[[nodiscard]] int get_effective_priority() const;
+	[[nodiscard]] float get_estimated_cost_units() const;
 
 	~AudioStreamPlaybackSymphony();
 };

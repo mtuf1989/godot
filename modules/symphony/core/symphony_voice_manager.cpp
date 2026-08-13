@@ -163,6 +163,34 @@ int32_t SymphonyVoiceManager::get_crossfade_tokens_available() const {
 	return crossfade_tokens.load(std::memory_order_relaxed);
 }
 
+float SymphonyVoiceManager::estimate_cpu_fraction_for_cost(float p_cost_units, float p_mix_rate, int p_frames) const {
+	if (p_cost_units <= 0.0f || p_mix_rate <= 0.0f || p_frames <= 0) {
+		return 0.0f;
+	}
+	const float us_per_unit = (float)metric_us_per_cost_x1000.load(std::memory_order_relaxed) / 1000.0f;
+	const float estimated_us = p_cost_units * MAX(us_per_unit, 0.001f);
+	const float budget_us = ((float)p_frames / p_mix_rate) * 1.0e6f;
+	if (budget_us <= 0.0f) {
+		return 0.0f;
+	}
+	return estimated_us / budget_us;
+}
+
+void SymphonyVoiceManager::observe_cost_sample(float p_cost_units, float p_mix_us) {
+	if (p_cost_units < 1.0f || p_mix_us <= 0.0f) {
+		return;
+	}
+	const float sample = p_mix_us / p_cost_units;
+	const int32_t sample_x1000 = (int32_t)CLAMP(sample * 1000.0f, 1.0f, 1000000.0f);
+	int32_t cur = metric_us_per_cost_x1000.load(std::memory_order_relaxed);
+	// EWMA α ≈ 0.1
+	int32_t next = cur + (sample_x1000 - cur) / 10;
+	if (next < 1) {
+		next = 1;
+	}
+	metric_us_per_cost_x1000.store(next, std::memory_order_relaxed);
+}
+
 void SymphonyVoiceManager::enforce_voice_limits() {
 	// Audio thread only: fixed stack snapshots + per-voice atomics. No ObjectDB,
 	// heap containers, Resource access, or graph compilation (plan §6).
@@ -204,6 +232,8 @@ void SymphonyVoiceManager::enforce_voice_limits() {
 		snap.current_lod = v->get_current_lod_tier();
 		snap.max_lod = v->get_cached_max_lod();
 		snap.transitioning = v->is_lod_transitioning();
+
+		observe_cost_sample(v->get_estimated_cost_units(), snap.microseconds);
 
 		total_budget += snap.budget;
 		if (snap.budget > peak_budget) {

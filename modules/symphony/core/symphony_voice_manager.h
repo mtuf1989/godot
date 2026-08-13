@@ -40,6 +40,8 @@ class SymphonyVoiceManager : public Object {
 	std::atomic<int32_t> metric_total_budget_millipercent{ 0 };
 	std::atomic<int32_t> metric_peak_budget_millipercent{ 0 };
 	std::atomic<int32_t> metric_avg_voice_microseconds_x1000{ 0 };
+	// EWMA of microseconds per cost unit (×1000). Default 50 → 0.05 µs/unit (conservative).
+	std::atomic<int32_t> metric_us_per_cost_x1000{ 50 };
 
 	bool update_callback_registered = false;
 
@@ -74,6 +76,10 @@ public:
 	[[nodiscard]] bool try_acquire_crossfade_token();
 	void release_crossfade_token();
 	[[nodiscard]] int32_t get_crossfade_tokens_available() const;
+
+	// Calibrated estimate of additional CPU fraction for an incoming package cost.
+	[[nodiscard]] float estimate_cpu_fraction_for_cost(float p_cost_units, float p_mix_rate, int p_frames) const;
+	void observe_cost_sample(float p_cost_units, float p_mix_us);
 
 	// Audio thread: snapshot + write per-voice atomics only.
 	void enforce_voice_limits();

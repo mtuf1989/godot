@@ -70,7 +70,7 @@ void AudioStreamPlaybackSymphony::_abort_transition_packages() {
 	transition_speed = 0.0f;
 }
 
-AudioStreamPlaybackSymphony::AdmitResult AudioStreamPlaybackSymphony::_try_admit_crossfade() {
+AudioStreamPlaybackSymphony::AdmitResult AudioStreamPlaybackSymphony::_try_admit_crossfade(const PreparedGraphPackage *p_incoming) {
 	// Only admit a dual-graph crossfade from a fully idle transition state.
 	if (transition_mode != TransitionMode::Idle) {
 		return AdmitResult::Denied;
@@ -82,6 +82,12 @@ AudioStreamPlaybackSymphony::AdmitResult AudioStreamPlaybackSymphony::_try_admit
 	// get_total_budget_percent() is 0–100+; thresholds are 0–1 fractions.
 	float cpu_fraction = mgr->get_total_budget_percent() / 100.0f;
 	if (cpu_fraction >= mgr->get_critical_threshold() || cpu_fraction >= mgr->get_warning_threshold()) {
+		return AdmitResult::Denied;
+	}
+	float incoming_cost = p_incoming ? p_incoming->estimated_cost_units : 0.0f;
+	const int frames = last_frame_count > 0 ? last_frame_count : 512;
+	float estimated_add = mgr->estimate_cpu_fraction_for_cost(incoming_cost, mix_rate_cached, frames);
+	if (cpu_fraction + estimated_add >= mgr->get_warning_threshold()) {
 		return AdmitResult::Denied;
 	}
 	if (!mgr->try_acquire_crossfade_token()) {
@@ -238,7 +244,7 @@ int AudioStreamPlaybackSymphony::mix(AudioFrame *p_buffer, float p_rate_scale, i
 	PreparedGraphPackage *pending = pending_package.exchange(nullptr, std::memory_order_acquire);
 	if (pending) {
 		pending_is_lod.exchange(false, std::memory_order_relaxed);
-		AdmitResult admit = current_package ? _try_admit_crossfade() : AdmitResult::Denied;
+		AdmitResult admit = current_package ? _try_admit_crossfade(pending) : AdmitResult::Denied;
 		if (admit != AdmitResult::Denied) {
 			holds_crossfade_token = (admit == AdmitResult::AdmittedWithToken);
 			_begin_equal_power_crossfade(pending);
@@ -434,6 +440,10 @@ float AudioStreamPlaybackSymphony::get_last_rms() const {
 
 int AudioStreamPlaybackSymphony::get_effective_priority() const {
 	return cached_priority;
+}
+
+float AudioStreamPlaybackSymphony::get_estimated_cost_units() const {
+	return current_package ? current_package->estimated_cost_units : 0.0f;
 }
 
 void AudioStreamPlaybackSymphony::_finalize_stop() {
