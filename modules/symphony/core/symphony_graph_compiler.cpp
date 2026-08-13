@@ -511,7 +511,15 @@ GraphCompiler::CompileResult GraphCompiler::compile(const GraphDescription &p_de
 
 	// Allocate operator pointer array
 	compiled->operators = (SymphonyOperator **)compiled->arena.alloc(sizeof(SymphonyOperator *) * node_count, 8);
-	compiled->operator_count = node_count;
+	if (!compiled->operators) {
+		result.errors.push_back("Failed to allocate operator pointer array.");
+		memdelete(compiled);
+		return result;
+	}
+	memset(compiled->operators, 0, sizeof(SymphonyOperator *) * node_count);
+	// Track successfully constructed operators only (B3). Destroy must not
+	// run destructors on unconstructed slots.
+	compiled->operator_count = 0;
 
 	// Allocate trigger buffer pointer array
 	compiled->trigger_buffers = (TriggerBuffer **)compiled->arena.alloc(sizeof(TriggerBuffer *) * total_trigger_buffers, 8);
@@ -550,14 +558,17 @@ GraphCompiler::CompileResult GraphCompiler::compile(const GraphDescription &p_de
 		const NodeDesc &nd = desc_ref.nodes[node_idx];
 		const OperatorDescriptor *desc = node_descs[node_idx];
 
-		// Create operator via factory function (placement new inside arena)
+		// Create operator via factory function (placement new inside arena).
+		compiled->arena.mark();
 		SymphonyOperator *op = desc->create_fn(compiled->arena, nd.params, p_mix_rate);
 		if (!op) {
+			compiled->arena.rewind_to_mark();
 			result.errors.push_back(vformat("Failed to create operator '%s' (node %d).", String(desc->type_name), nd.id));
 			memdelete(compiled);
 			return result;
 		}
 		compiled->operators[s] = op;
+		compiled->operator_count = s + 1;
 
 		// Store the node ID for state migration matching.
 		compiled->node_ids[s] = nd.id;
