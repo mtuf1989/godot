@@ -50,9 +50,12 @@ private:
 
 	// Delay line state
 	float *delay_buffers[MAX_LINES] = {};
-	int delay_lengths[MAX_LINES] = {};
+	int delay_lengths[MAX_LINES] = {}; // integer targets (legacy / gains)
+	float delay_lengths_f[MAX_LINES] = {}; // smoothed fractional tap positions
+	float delay_targets_f[MAX_LINES] = {};
 	int write_positions[MAX_LINES] = {};
 	int max_delay_samples = 0;
+	float tap_smooth_coeff = 0.0f; // one-pole toward target over ~20 ms
 
 	// One-pole LP damping filters (per line)
 	float damping_state[MAX_LINES] = {};
@@ -134,8 +137,16 @@ public:
 		if (pre_delay_buffer) {
 			memset(pre_delay_buffer, 0, sizeof(float) * p_max_pre_delay_samples);
 		}
+		// ~20 ms smoothing of fractional tap positions (improve_plan §8).
+		{
+			float smooth_samples = 0.020f * mix_rate;
+			tap_smooth_coeff = (smooth_samples > 1.0f) ? (1.0f - exp2f(-1.0f / smooth_samples)) : 1.0f;
+		}
 		hadamard_scale = 1.0f / Math::sqrt((float)num_lines);
 		_refresh_controls(p_room_size, p_decay_time, p_damping, p_pre_delay_ms);
+		for (int l = 0; l < num_lines; l++) {
+			delay_lengths_f[l] = delay_targets_f[l];
+		}
 	}
 
 	virtual void bind_pins(void **p_input_ptrs, void **p_output_ptrs) override {
@@ -182,11 +193,9 @@ public:
 
 			float tap_values[MAX_LINES];
 			for (int l = 0; l < num_lines; l++) {
-				int read_pos = write_positions[l] - delay_lengths[l];
-				if (read_pos < 0) {
-					read_pos += max_delay_samples;
-				}
-				tap_values[l] = delay_buffers[l][read_pos];
+				// Smooth fractional tap toward target (single interpolated read, no dual-tap).
+				delay_lengths_f[l] += (delay_targets_f[l] - delay_lengths_f[l]) * tap_smooth_coeff;
+				tap_values[l] = _read_tap_linear(l, delay_lengths_f[l]);
 			}
 
 			float mixed[MAX_LINES];
@@ -348,10 +357,30 @@ private:
 
 		const float *ratios = (num_lines == 8) ? DELAY_RATIOS_8 : DELAY_RATIOS_4;
 		for (int l = 0; l < num_lines; l++) {
-			delay_lengths[l] = (int)(base_delay_samples / ratios[l]);
-			// Clamp to valid range
+			float target = base_delay_samples / ratios[l];
+			target = CLAMP(target, 1.0f, (float)(max_delay_samples - 2));
+			delay_targets_f[l] = target;
+			delay_lengths[l] = (int)(target + 0.5f); // integer for RT60 gain calc
 			delay_lengths[l] = CLAMP(delay_lengths[l], 1, max_delay_samples - 1);
 		}
+	}
+
+	[[nodiscard]] float _read_tap_linear(int p_line, float p_delay_samples) const {
+		float read_pos = (float)write_positions[p_line] - p_delay_samples;
+		while (read_pos < 0.0f) {
+			read_pos += (float)max_delay_samples;
+		}
+		while (read_pos >= (float)max_delay_samples) {
+			read_pos -= (float)max_delay_samples;
+		}
+		int idx = (int)read_pos;
+		float frac = read_pos - (float)idx;
+		int next = idx + 1;
+		if (next >= max_delay_samples) {
+			next = 0;
+		}
+		const float *buf = delay_buffers[p_line];
+		return buf[idx] + frac * (buf[next] - buf[idx]);
 	}
 
 	void _hadamard_mix(const float *p_input, float *p_output) {
