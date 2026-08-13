@@ -3,6 +3,7 @@
 #include "../core/symphony_graph_compiler.h"
 #include "../core/symphony_graph_flattener.h"
 #include "../core/symphony_operator_registry.h"
+#include "../core/symphony_memory_budget.h"
 
 #include "core/object/class_db.h"
 #include "core/io/resource.h"
@@ -21,184 +22,192 @@ void AudioStreamSymphony::_bind_methods() {
 
 	// LOD system
 	ClassDB::bind_method(D_METHOD("get_lod_count"), &AudioStreamSymphony::get_lod_count);
+	ClassDB::bind_method(D_METHOD("get_lod_variant_count"), &AudioStreamSymphony::get_lod_variant_count);
 	ClassDB::bind_method(D_METHOD("get_recommended_lod", "distance_ratio"), &AudioStreamSymphony::get_recommended_lod);
 	ClassDB::bind_method(D_METHOD("set_lod_threshold_1", "threshold"), &AudioStreamSymphony::set_lod_threshold_1);
 	ClassDB::bind_method(D_METHOD("get_lod_threshold_1"), &AudioStreamSymphony::get_lod_threshold_1);
 	ClassDB::bind_method(D_METHOD("set_lod_threshold_2", "threshold"), &AudioStreamSymphony::set_lod_threshold_2);
 	ClassDB::bind_method(D_METHOD("get_lod_threshold_2"), &AudioStreamSymphony::get_lod_threshold_2);
+	ClassDB::bind_method(D_METHOD("add_lod_variant"), &AudioStreamSymphony::add_lod_variant);
+	ClassDB::bind_method(D_METHOD("duplicate_main_to_lod"), &AudioStreamSymphony::duplicate_main_to_lod);
+	ClassDB::bind_method(D_METHOD("remove_lod_variant", "tier"), &AudioStreamSymphony::remove_lod_variant);
+	ClassDB::bind_method(D_METHOD("has_lod_variant", "tier"), &AudioStreamSymphony::has_lod_variant);
+	ClassDB::bind_method(D_METHOD("estimate_tier_memory", "tier"), &AudioStreamSymphony::estimate_tier_memory);
+	ClassDB::bind_method(D_METHOD("validate_tier_compile", "tier"), &AudioStreamSymphony::validate_tier_compile);
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "lod_threshold_1", PROPERTY_HINT_RANGE, "0.0,1.0,0.01"), "set_lod_threshold_1", "get_lod_threshold_1");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "lod_threshold_2", PROPERTY_HINT_RANGE, "0.0,1.0,0.01"), "set_lod_threshold_2", "get_lod_threshold_2");
 }
 
-// --- Resource serialization ---
+// --- Resource serialization (prefix-aware for graph/ and lod/<tier>/) ---
 
-void AudioStreamSymphony::_get_property_list(List<PropertyInfo> *p_list) const {
-	// Graph-level quality options
-	p_list->push_back(PropertyInfo(Variant::BOOL, "graph/anti_alias_staircase", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_STORAGE));
-	p_list->push_back(PropertyInfo(Variant::BOOL, "graph/smooth_parameters", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_STORAGE));
-	p_list->push_back(PropertyInfo(Variant::FLOAT, "graph/smooth_time_ms", PROPERTY_HINT_RANGE, "0.0,100.0,0.1", PROPERTY_USAGE_STORAGE));
+void AudioStreamSymphony::_append_graph_properties(List<PropertyInfo> *p_list, const String &p_prefix, const GraphDescription &p_desc) {
+	p_list->push_back(PropertyInfo(Variant::BOOL, p_prefix + "/anti_alias_staircase", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_STORAGE));
+	p_list->push_back(PropertyInfo(Variant::BOOL, p_prefix + "/smooth_parameters", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_STORAGE));
+	p_list->push_back(PropertyInfo(Variant::FLOAT, p_prefix + "/smooth_time_ms", PROPERTY_HINT_RANGE, "0.0,100.0,0.1", PROPERTY_USAGE_STORAGE));
 
-	// node_count — so the loader knows how many nodes to expect
-	p_list->push_back(PropertyInfo(Variant::INT, "graph/node_count", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_STORAGE));
-
-	for (int32_t i = 0; i < graph_desc.nodes.size(); i++) {
-		String prefix = vformat("graph/nodes/%d/", i);
-		p_list->push_back(PropertyInfo(Variant::INT, prefix + "id", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_STORAGE));
-		p_list->push_back(PropertyInfo(Variant::STRING_NAME, prefix + "type", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_STORAGE));
-		p_list->push_back(PropertyInfo(Variant::VECTOR2, prefix + "position", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_STORAGE));
-		p_list->push_back(PropertyInfo(Variant::DICTIONARY, prefix + "params", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_STORAGE));
-		p_list->push_back(PropertyInfo(Variant::BOOL, prefix + "collapsed", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_STORAGE));
+	p_list->push_back(PropertyInfo(Variant::INT, p_prefix + "/node_count", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_STORAGE));
+	for (int32_t i = 0; i < p_desc.nodes.size(); i++) {
+		String node_prefix = vformat("%s/nodes/%d/", p_prefix, i);
+		p_list->push_back(PropertyInfo(Variant::INT, node_prefix + "id", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_STORAGE));
+		p_list->push_back(PropertyInfo(Variant::STRING_NAME, node_prefix + "type", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_STORAGE));
+		p_list->push_back(PropertyInfo(Variant::VECTOR2, node_prefix + "position", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_STORAGE));
+		p_list->push_back(PropertyInfo(Variant::DICTIONARY, node_prefix + "params", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_STORAGE));
+		p_list->push_back(PropertyInfo(Variant::BOOL, node_prefix + "collapsed", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_STORAGE));
 	}
 
-	// connections
-	p_list->push_back(PropertyInfo(Variant::INT, "graph/connection_count", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_STORAGE));
-
-	for (int32_t i = 0; i < graph_desc.connections.size(); i++) {
-		String prefix = vformat("graph/connections/%d/", i);
-		p_list->push_back(PropertyInfo(Variant::INT, prefix + "from_node", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_STORAGE));
-		p_list->push_back(PropertyInfo(Variant::INT, prefix + "from_pin", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_STORAGE));
-		p_list->push_back(PropertyInfo(Variant::INT, prefix + "to_node", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_STORAGE));
-		p_list->push_back(PropertyInfo(Variant::INT, prefix + "to_pin", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_STORAGE));
+	p_list->push_back(PropertyInfo(Variant::INT, p_prefix + "/connection_count", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_STORAGE));
+	for (int32_t i = 0; i < p_desc.connections.size(); i++) {
+		String conn_prefix = vformat("%s/connections/%d/", p_prefix, i);
+		p_list->push_back(PropertyInfo(Variant::INT, conn_prefix + "from_node", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_STORAGE));
+		p_list->push_back(PropertyInfo(Variant::INT, conn_prefix + "from_pin", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_STORAGE));
+		p_list->push_back(PropertyInfo(Variant::INT, conn_prefix + "to_node", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_STORAGE));
+		p_list->push_back(PropertyInfo(Variant::INT, conn_prefix + "to_pin", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_STORAGE));
+		p_list->push_back(PropertyInfo(Variant::BOOL, conn_prefix + "is_feedback", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_STORAGE));
 	}
 
-	// frames
-	p_list->push_back(PropertyInfo(Variant::INT, "graph/frame_count", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_STORAGE));
-
-	for (int32_t i = 0; i < graph_desc.frames.size(); i++) {
-		String prefix = vformat("graph/frames/%d/", i);
-		p_list->push_back(PropertyInfo(Variant::INT, prefix + "id", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_STORAGE));
-		p_list->push_back(PropertyInfo(Variant::STRING, prefix + "title", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_STORAGE));
-		p_list->push_back(PropertyInfo(Variant::VECTOR2, prefix + "position", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_STORAGE));
-		p_list->push_back(PropertyInfo(Variant::VECTOR2, prefix + "size", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_STORAGE));
-		p_list->push_back(PropertyInfo(Variant::COLOR, prefix + "tint_color", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_STORAGE));
-		p_list->push_back(PropertyInfo(Variant::PACKED_INT32_ARRAY, prefix + "attached_nodes", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_STORAGE));
+	p_list->push_back(PropertyInfo(Variant::INT, p_prefix + "/frame_count", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_STORAGE));
+	for (int32_t i = 0; i < p_desc.frames.size(); i++) {
+		String frame_prefix = vformat("%s/frames/%d/", p_prefix, i);
+		p_list->push_back(PropertyInfo(Variant::INT, frame_prefix + "id", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_STORAGE));
+		p_list->push_back(PropertyInfo(Variant::STRING, frame_prefix + "title", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_STORAGE));
+		p_list->push_back(PropertyInfo(Variant::VECTOR2, frame_prefix + "position", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_STORAGE));
+		p_list->push_back(PropertyInfo(Variant::VECTOR2, frame_prefix + "size", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_STORAGE));
+		p_list->push_back(PropertyInfo(Variant::COLOR, frame_prefix + "tint_color", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_STORAGE));
+		p_list->push_back(PropertyInfo(Variant::PACKED_INT32_ARRAY, frame_prefix + "attached_nodes", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_STORAGE));
 	}
 }
 
-bool AudioStreamSymphony::_get(const StringName &p_name, Variant &r_ret) const {
-	String name = String(p_name);
-
-	if (name == "graph/anti_alias_staircase") {
-		r_ret = graph_desc.anti_alias_staircase;
+bool AudioStreamSymphony::_get_graph_property(const String &p_relative, const GraphDescription &p_desc, Variant &r_ret) {
+	if (p_relative == "anti_alias_staircase") {
+		r_ret = p_desc.anti_alias_staircase;
 		return true;
 	}
-	if (name == "graph/smooth_parameters") {
-		r_ret = graph_desc.smooth_parameters;
+	if (p_relative == "smooth_parameters") {
+		r_ret = p_desc.smooth_parameters;
 		return true;
 	}
-	if (name == "graph/smooth_time_ms") {
-		r_ret = graph_desc.smooth_time_ms;
+	if (p_relative == "smooth_time_ms") {
+		r_ret = p_desc.smooth_time_ms;
 		return true;
 	}
-	if (name == "graph/node_count") {
-		r_ret = graph_desc.nodes.size();
+	if (p_relative == "node_count") {
+		r_ret = p_desc.nodes.size();
 		return true;
 	}
-	if (name == "graph/connection_count") {
-		r_ret = graph_desc.connections.size();
+	if (p_relative == "connection_count") {
+		r_ret = p_desc.connections.size();
 		return true;
 	}
-	if (name == "graph/frame_count") {
-		r_ret = graph_desc.frames.size();
+	if (p_relative == "frame_count") {
+		r_ret = p_desc.frames.size();
 		return true;
 	}
 
-	if (name.begins_with("graph/nodes/")) {
-		// Parse: graph/nodes/<idx>/<field>
-		String rest = name.substr(String("graph/nodes/").length());
+	if (p_relative.begins_with("nodes/")) {
+		String rest = p_relative.substr(String("nodes/").length());
 		int slash = rest.find("/");
 		if (slash < 0) {
 			return false;
 		}
 		int idx = rest.substr(0, slash).to_int();
 		String field = rest.substr(slash + 1);
-
-		if (idx < 0 || idx >= graph_desc.nodes.size()) {
+		if (idx < 0 || idx >= p_desc.nodes.size()) {
 			return false;
 		}
-		const NodeDesc &nd = graph_desc.nodes[idx];
-
+		const NodeDesc &nd = p_desc.nodes[idx];
 		if (field == "id") {
 			r_ret = nd.id;
 			return true;
-		} else if (field == "type") {
+		}
+		if (field == "type") {
 			r_ret = nd.type_name;
 			return true;
-		} else if (field == "position") {
+		}
+		if (field == "position") {
 			r_ret = nd.editor_position;
 			return true;
-		} else if (field == "params") {
+		}
+		if (field == "params") {
 			Dictionary d;
 			for (const KeyValue<StringName, Variant> &kv : nd.params) {
 				d[String(kv.key)] = kv.value;
 			}
 			r_ret = d;
 			return true;
-		} else if (field == "collapsed") {
+		}
+		if (field == "collapsed") {
 			r_ret = nd.collapsed;
 			return true;
 		}
 	}
 
-	if (name.begins_with("graph/connections/")) {
-		String rest = name.substr(String("graph/connections/").length());
+	if (p_relative.begins_with("connections/")) {
+		String rest = p_relative.substr(String("connections/").length());
 		int slash = rest.find("/");
 		if (slash < 0) {
 			return false;
 		}
 		int idx = rest.substr(0, slash).to_int();
 		String field = rest.substr(slash + 1);
-
-		if (idx < 0 || idx >= graph_desc.connections.size()) {
+		if (idx < 0 || idx >= p_desc.connections.size()) {
 			return false;
 		}
-		const ConnectionDesc &conn = graph_desc.connections[idx];
-
+		const ConnectionDesc &conn = p_desc.connections[idx];
 		if (field == "from_node") {
 			r_ret = conn.from_node;
 			return true;
-		} else if (field == "from_pin") {
+		}
+		if (field == "from_pin") {
 			r_ret = conn.from_pin;
 			return true;
-		} else if (field == "to_node") {
+		}
+		if (field == "to_node") {
 			r_ret = conn.to_node;
 			return true;
-		} else if (field == "to_pin") {
+		}
+		if (field == "to_pin") {
 			r_ret = conn.to_pin;
+			return true;
+		}
+		if (field == "is_feedback") {
+			r_ret = conn.is_feedback;
 			return true;
 		}
 	}
 
-	if (name.begins_with("graph/frames/")) {
-		String rest = name.substr(String("graph/frames/").length());
+	if (p_relative.begins_with("frames/")) {
+		String rest = p_relative.substr(String("frames/").length());
 		int slash = rest.find("/");
 		if (slash < 0) {
 			return false;
 		}
 		int idx = rest.substr(0, slash).to_int();
 		String field = rest.substr(slash + 1);
-
-		if (idx < 0 || idx >= graph_desc.frames.size()) {
+		if (idx < 0 || idx >= p_desc.frames.size()) {
 			return false;
 		}
-		const FrameDesc &fd = graph_desc.frames[idx];
-
+		const FrameDesc &fd = p_desc.frames[idx];
 		if (field == "id") {
 			r_ret = fd.id;
 			return true;
-		} else if (field == "title") {
+		}
+		if (field == "title") {
 			r_ret = fd.title;
 			return true;
-		} else if (field == "position") {
+		}
+		if (field == "position") {
 			r_ret = fd.editor_position;
 			return true;
-		} else if (field == "size") {
+		}
+		if (field == "size") {
 			r_ret = fd.editor_size;
 			return true;
-		} else if (field == "tint_color") {
+		}
+		if (field == "tint_color") {
 			r_ret = fd.tint_color;
 			return true;
-		} else if (field == "attached_nodes") {
+		}
+		if (field == "attached_nodes") {
 			PackedInt32Array arr;
 			for (int32_t nid : fd.attached_nodes) {
 				arr.push_back(nid);
@@ -211,61 +220,57 @@ bool AudioStreamSymphony::_get(const StringName &p_name, Variant &r_ret) const {
 	return false;
 }
 
-bool AudioStreamSymphony::_set(const StringName &p_name, const Variant &p_value) {
-	String name = String(p_name);
-
-	if (name == "graph/anti_alias_staircase") {
-		graph_desc.anti_alias_staircase = p_value;
+bool AudioStreamSymphony::_set_graph_property(const String &p_relative, GraphDescription &p_desc, const Variant &p_value) {
+	if (p_relative == "anti_alias_staircase") {
+		p_desc.anti_alias_staircase = p_value;
 		return true;
 	}
-	if (name == "graph/smooth_parameters") {
-		graph_desc.smooth_parameters = p_value;
+	if (p_relative == "smooth_parameters") {
+		p_desc.smooth_parameters = p_value;
 		return true;
 	}
-	if (name == "graph/smooth_time_ms") {
-		graph_desc.smooth_time_ms = p_value;
+	if (p_relative == "smooth_time_ms") {
+		p_desc.smooth_time_ms = p_value;
 		return true;
 	}
-	if (name == "graph/node_count") {
-		int count = p_value;
-		graph_desc.nodes.resize(count);
+	if (p_relative == "node_count") {
+		p_desc.nodes.resize((int)p_value);
 		return true;
 	}
-	if (name == "graph/connection_count") {
-		int count = p_value;
-		graph_desc.connections.resize(count);
+	if (p_relative == "connection_count") {
+		p_desc.connections.resize((int)p_value);
 		return true;
 	}
-	if (name == "graph/frame_count") {
-		int count = p_value;
-		graph_desc.frames.resize(count);
+	if (p_relative == "frame_count") {
+		p_desc.frames.resize((int)p_value);
 		return true;
 	}
 
-	if (name.begins_with("graph/nodes/")) {
-		String rest = name.substr(String("graph/nodes/").length());
+	if (p_relative.begins_with("nodes/")) {
+		String rest = p_relative.substr(String("nodes/").length());
 		int slash = rest.find("/");
 		if (slash < 0) {
 			return false;
 		}
 		int idx = rest.substr(0, slash).to_int();
 		String field = rest.substr(slash + 1);
-
-		if (idx < 0 || idx >= graph_desc.nodes.size()) {
+		if (idx < 0 || idx >= p_desc.nodes.size()) {
 			return false;
 		}
-		NodeDesc &nd = graph_desc.nodes.write[idx];
-
+		NodeDesc &nd = p_desc.nodes.write[idx];
 		if (field == "id") {
 			nd.id = p_value;
 			return true;
-		} else if (field == "type") {
+		}
+		if (field == "type") {
 			nd.type_name = p_value;
 			return true;
-		} else if (field == "position") {
+		}
+		if (field == "position") {
 			nd.editor_position = p_value;
 			return true;
-		} else if (field == "params") {
+		}
+		if (field == "params") {
 			Dictionary d = p_value;
 			nd.params.clear();
 			LocalVector<Variant> keys = d.get_key_list();
@@ -273,71 +278,80 @@ bool AudioStreamSymphony::_set(const StringName &p_name, const Variant &p_value)
 				nd.params[StringName(String(key))] = d[key];
 			}
 			return true;
-		} else if (field == "collapsed") {
+		}
+		if (field == "collapsed") {
 			nd.collapsed = p_value;
 			return true;
 		}
 	}
 
-	if (name.begins_with("graph/connections/")) {
-		String rest = name.substr(String("graph/connections/").length());
+	if (p_relative.begins_with("connections/")) {
+		String rest = p_relative.substr(String("connections/").length());
 		int slash = rest.find("/");
 		if (slash < 0) {
 			return false;
 		}
 		int idx = rest.substr(0, slash).to_int();
 		String field = rest.substr(slash + 1);
-
-		if (idx < 0 || idx >= graph_desc.connections.size()) {
+		if (idx < 0 || idx >= p_desc.connections.size()) {
 			return false;
 		}
-		ConnectionDesc &conn = graph_desc.connections.write[idx];
-
+		ConnectionDesc &conn = p_desc.connections.write[idx];
 		if (field == "from_node") {
 			conn.from_node = p_value;
 			return true;
-		} else if (field == "from_pin") {
+		}
+		if (field == "from_pin") {
 			conn.from_pin = p_value;
 			return true;
-		} else if (field == "to_node") {
+		}
+		if (field == "to_node") {
 			conn.to_node = p_value;
 			return true;
-		} else if (field == "to_pin") {
+		}
+		if (field == "to_pin") {
 			conn.to_pin = p_value;
+			return true;
+		}
+		if (field == "is_feedback") {
+			conn.is_feedback = p_value;
 			return true;
 		}
 	}
 
-	if (name.begins_with("graph/frames/")) {
-		String rest = name.substr(String("graph/frames/").length());
+	if (p_relative.begins_with("frames/")) {
+		String rest = p_relative.substr(String("frames/").length());
 		int slash = rest.find("/");
 		if (slash < 0) {
 			return false;
 		}
 		int idx = rest.substr(0, slash).to_int();
 		String field = rest.substr(slash + 1);
-
-		if (idx < 0 || idx >= graph_desc.frames.size()) {
+		if (idx < 0 || idx >= p_desc.frames.size()) {
 			return false;
 		}
-		FrameDesc &fd = graph_desc.frames.write[idx];
-
+		FrameDesc &fd = p_desc.frames.write[idx];
 		if (field == "id") {
 			fd.id = p_value;
 			return true;
-		} else if (field == "title") {
+		}
+		if (field == "title") {
 			fd.title = p_value;
 			return true;
-		} else if (field == "position") {
+		}
+		if (field == "position") {
 			fd.editor_position = p_value;
 			return true;
-		} else if (field == "size") {
+		}
+		if (field == "size") {
 			fd.editor_size = p_value;
 			return true;
-		} else if (field == "tint_color") {
+		}
+		if (field == "tint_color") {
 			fd.tint_color = p_value;
 			return true;
-		} else if (field == "attached_nodes") {
+		}
+		if (field == "attached_nodes") {
 			PackedInt32Array arr = p_value;
 			fd.attached_nodes.clear();
 			for (int i = 0; i < arr.size(); i++) {
@@ -345,6 +359,75 @@ bool AudioStreamSymphony::_set(const StringName &p_name, const Variant &p_value)
 			}
 			return true;
 		}
+	}
+
+	return false;
+}
+
+void AudioStreamSymphony::_get_property_list(List<PropertyInfo> *p_list) const {
+	_append_graph_properties(p_list, "graph", graph_desc);
+
+	p_list->push_back(PropertyInfo(Variant::INT, "lod/variant_count", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_STORAGE));
+	for (int i = 0; i < lod_graphs.size(); i++) {
+		_append_graph_properties(p_list, vformat("lod/%d", i + 1), lod_graphs[i]);
+	}
+}
+
+bool AudioStreamSymphony::_get(const StringName &p_name, Variant &r_ret) const {
+	String name = String(p_name);
+
+	if (name.begins_with("graph/")) {
+		return _get_graph_property(name.substr(String("graph/").length()), graph_desc, r_ret);
+	}
+	if (name == "lod/variant_count") {
+		r_ret = lod_graphs.size();
+		return true;
+	}
+	if (name.begins_with("lod/")) {
+		String rest = name.substr(String("lod/").length());
+		int slash = rest.find("/");
+		if (slash < 0) {
+			return false;
+		}
+		int tier = rest.substr(0, slash).to_int();
+		String relative = rest.substr(slash + 1);
+		int idx = tier - 1;
+		if (idx < 0 || idx >= lod_graphs.size()) {
+			return false;
+		}
+		return _get_graph_property(relative, lod_graphs[idx], r_ret);
+	}
+
+	return false;
+}
+
+bool AudioStreamSymphony::_set(const StringName &p_name, const Variant &p_value) {
+	String name = String(p_name);
+
+	if (name.begins_with("graph/")) {
+		return _set_graph_property(name.substr(String("graph/").length()), graph_desc, p_value);
+	}
+	if (name == "lod/variant_count") {
+		int count = CLAMP((int)p_value, 0, 2);
+		lod_graphs.resize(count);
+		return true;
+	}
+	if (name.begins_with("lod/")) {
+		String rest = name.substr(String("lod/").length());
+		int slash = rest.find("/");
+		if (slash < 0) {
+			return false;
+		}
+		int tier = rest.substr(0, slash).to_int();
+		String relative = rest.substr(slash + 1);
+		int idx = tier - 1;
+		if (idx < 0 || idx >= 2) {
+			return false;
+		}
+		if (lod_graphs.size() <= idx) {
+			lod_graphs.resize(idx + 1);
+		}
+		return _set_graph_property(relative, lod_graphs.write[idx], p_value);
 	}
 
 	return false;
@@ -372,6 +455,38 @@ void AudioStreamSymphony::set_graph_description(const GraphDescription &p_desc) 
 
 const GraphDescription &AudioStreamSymphony::get_graph_description() const {
 	return graph_desc;
+}
+
+const GraphDescription &AudioStreamSymphony::get_graph_for_tier(int p_tier) const {
+	if (p_tier <= 0) {
+		return graph_desc;
+	}
+	const int idx = p_tier - 1;
+	ERR_FAIL_INDEX_V(idx, lod_graphs.size(), graph_desc);
+	return lod_graphs[idx];
+}
+
+GraphDescription &AudioStreamSymphony::get_graph_for_tier_mut(int p_tier) {
+	if (p_tier <= 0) {
+		return graph_desc;
+	}
+	const int idx = p_tier - 1;
+	if (idx < 0) {
+		return graph_desc;
+	}
+	if (lod_graphs.size() <= idx) {
+		lod_graphs.resize(MIN(idx + 1, 2));
+	}
+	ERR_FAIL_INDEX_V(idx, lod_graphs.size(), graph_desc);
+	return lod_graphs.write[idx];
+}
+
+void AudioStreamSymphony::set_graph_for_tier(int p_tier, const GraphDescription &p_desc) {
+	if (p_tier <= 0) {
+		graph_desc = p_desc;
+		return;
+	}
+	set_lod_variant(p_tier, p_desc);
 }
 
 CompiledGraph *AudioStreamSymphony::compile_graph() const {
@@ -836,4 +951,111 @@ int AudioStreamSymphony::get_recommended_lod(float p_distance_ratio) const {
 		return 1;
 	}
 	return 0;
+}
+
+int AudioStreamSymphony::add_lod_variant() {
+	if (lod_graphs.size() >= 2) {
+		return -1;
+	}
+	lod_graphs.push_back(GraphDescription());
+	notify_property_list_changed();
+	emit_changed();
+	return lod_graphs.size(); // tier = size after push (1 or 2)
+}
+
+int AudioStreamSymphony::duplicate_main_to_lod() {
+	if (lod_graphs.size() >= 2) {
+		return -1;
+	}
+	lod_graphs.push_back(graph_desc);
+	notify_property_list_changed();
+	emit_changed();
+	return lod_graphs.size();
+}
+
+bool AudioStreamSymphony::set_lod_variant(int p_tier, const GraphDescription &p_desc) {
+	if (p_tier < 1 || p_tier > 2) {
+		return false;
+	}
+	const int idx = p_tier - 1;
+	if (lod_graphs.size() <= idx) {
+		lod_graphs.resize(idx + 1);
+	}
+	lod_graphs.write[idx] = p_desc;
+	notify_property_list_changed();
+	emit_changed();
+	return true;
+}
+
+bool AudioStreamSymphony::remove_lod_variant(int p_tier) {
+	if (p_tier < 1 || p_tier > lod_graphs.size()) {
+		return false;
+	}
+	lod_graphs.remove_at(p_tier - 1);
+	notify_property_list_changed();
+	emit_changed();
+	return true;
+}
+
+GraphDescription AudioStreamSymphony::get_lod_variant(int p_tier) const {
+	if (p_tier < 1 || p_tier > lod_graphs.size()) {
+		return GraphDescription();
+	}
+	return lod_graphs[p_tier - 1];
+}
+
+bool AudioStreamSymphony::has_lod_variant(int p_tier) const {
+	return p_tier >= 1 && p_tier <= lod_graphs.size();
+}
+
+Dictionary AudioStreamSymphony::estimate_tier_memory(int p_tier) const {
+	Dictionary out;
+	static const float rates[] = { 22050.0f, 44100.0f, 48000.0f, 96000.0f };
+	static const char *keys[] = { "22050", "44100", "48000", "96000" };
+
+	const GraphDescription &desc = (p_tier <= 0) ? graph_desc : (has_lod_variant(p_tier) ? lod_graphs[p_tier - 1] : graph_desc);
+	String owner_path = get_path();
+	GraphFlattener::FlattenResult flat = GraphFlattener::flatten(desc, owner_path);
+	if (!flat.success()) {
+		out["ok"] = false;
+		out["error"] = flat.errors.size() > 0 ? flat.errors[0] : String("flatten failed");
+		return out;
+	}
+
+	SymphonyMemoryBudget *budget = SymphonyMemoryBudget::get_singleton();
+	const size_t per_graph = budget ? budget->get_per_graph_limit_bytes() : SymphonyMemoryBudget::DEFAULT_PER_GRAPH_BYTES;
+	bool any_over = false;
+
+	for (int i = 0; i < 4; i++) {
+		GraphCompiler::CompileResult result = GraphCompiler::compile(flat.graph, rates[i]);
+		if (result.success() && result.graph) {
+			out[keys[i]] = (int64_t)result.total_package_bytes;
+			if (result.total_package_bytes > per_graph) {
+				any_over = true;
+			}
+			memdelete(result.graph);
+		} else {
+			out[keys[i]] = -1;
+			any_over = true;
+		}
+	}
+	out["ok"] = true;
+	out["over_budget"] = any_over;
+	out["per_graph_limit"] = (int64_t)per_graph;
+	return out;
+}
+
+Dictionary AudioStreamSymphony::validate_tier_compile(int p_tier) const {
+	Dictionary out;
+	CompiledGraph *graph = (p_tier <= 0) ? compile_graph() : compile_lod_graph(p_tier);
+	out["ok"] = graph != nullptr;
+	if (graph) {
+		out["arena_bytes"] = (int64_t)graph->budgeted_bytes;
+		out["cost_units"] = graph->estimated_cost_units;
+		memdelete(graph);
+	} else {
+		out["arena_bytes"] = 0;
+		out["cost_units"] = 0.0f;
+	}
+	return out;
 }

@@ -5,6 +5,7 @@
 #include "core/object/class_db.h"
 #include "editor/editor_node.h"
 #include "scene/gui/label.h"
+#include "scene/gui/option_button.h"
 
 // --- SymphonyNodeInspectorProxy ---
 
@@ -48,7 +49,7 @@ bool SymphonyNodeInspectorProxy::_get(const StringName &p_name, Variant &r_ret) 
 		return false;
 	}
 
-	const GraphDescription &desc = editor->get_edited_stream()->get_graph_description();
+	const GraphDescription &desc = editor->_active_desc();
 	for (int i = 0; i < desc.nodes.size(); i++) {
 		if (desc.nodes[i].id == node_id) {
 			if (desc.nodes[i].params.has(p_name)) {
@@ -71,7 +72,7 @@ bool SymphonyNodeInspectorProxy::_set(const StringName &p_name, const Variant &p
 	}
 
 	// Directly update the param (undo/redo is handled by the inline SpinBox).
-	const GraphDescription &desc = editor->get_edited_stream()->get_graph_description();
+	const GraphDescription &desc = editor->_active_desc();
 	for (int i = 0; i < desc.nodes.size(); i++) {
 		if (desc.nodes[i].id == node_id) {
 			if (desc.nodes[i].params.has(p_name)) {
@@ -98,6 +99,8 @@ void SymphonyGraphEditor::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("_ur_set_node_position", "node_id", "position"), &SymphonyGraphEditor::_ur_set_node_position);
 	ClassDB::bind_method(D_METHOD("_ur_add_frame", "frame_data"), &SymphonyGraphEditor::_ur_add_frame);
 	ClassDB::bind_method(D_METHOD("_ur_remove_frame", "frame_id"), &SymphonyGraphEditor::_ur_remove_frame);
+	ClassDB::bind_method(D_METHOD("_ur_set_connection_feedback", "from", "from_pin", "to", "to_pin", "feedback"), &SymphonyGraphEditor::_ur_set_connection_feedback);
+	ClassDB::bind_method(D_METHOD("_draw_feedback_overlay"), &SymphonyGraphEditor::_draw_feedback_overlay);
 }
 
 SymphonyGraphEditor::SymphonyGraphEditor() {
@@ -133,6 +136,30 @@ SymphonyGraphEditor::SymphonyGraphEditor() {
 	delete_button->connect("pressed", callable_mp(this, &SymphonyGraphEditor::_on_delete_pressed));
 	toolbar->add_child(delete_button);
 
+	lod_tier_option = memnew(OptionButton);
+	lod_tier_option->add_item("LOD 0 (Main)", 0);
+	lod_tier_option->add_item("LOD 1", 1);
+	lod_tier_option->add_item("LOD 2", 2);
+	lod_tier_option->select(0);
+	lod_tier_option->connect("item_selected", callable_mp(this, &SymphonyGraphEditor::_on_lod_tier_selected));
+	toolbar->add_child(lod_tier_option);
+
+	dup_lod_button = memnew(Button);
+	dup_lod_button->set_text("Dup→LOD");
+	dup_lod_button->set_tooltip_text("Duplicate main graph into a new LOD variant");
+	dup_lod_button->connect("pressed", callable_mp(this, &SymphonyGraphEditor::_on_duplicate_lod_pressed));
+	toolbar->add_child(dup_lod_button);
+
+	feedback_button = memnew(Button);
+	feedback_button->set_text("FB Toggle");
+	feedback_button->set_tooltip_text("Toggle is_feedback on the selected connection (amber/FB)");
+	feedback_button->connect("pressed", callable_mp(this, &SymphonyGraphEditor::_on_toggle_feedback_pressed));
+	toolbar->add_child(feedback_button);
+
+	memory_label = memnew(Label);
+	memory_label->set_text("Mem: —");
+	toolbar->add_child(memory_label);
+
 	// Breadcrumb bar (for SubGraph navigation).
 	breadcrumb_bar = memnew(HBoxContainer);
 	breadcrumb_bar->hide(); // Hidden until we navigate into a sub-graph.
@@ -159,7 +186,14 @@ SymphonyGraphEditor::SymphonyGraphEditor() {
 	graph_edit->connect("paste_nodes_request", callable_mp(this, &SymphonyGraphEditor::_on_paste_nodes_request));
 	graph_edit->connect("duplicate_nodes_request", callable_mp(this, &SymphonyGraphEditor::_on_duplicate_nodes_request));
 	graph_edit->connect("node_selected", callable_mp(this, &SymphonyGraphEditor::_on_node_selected));
+	graph_edit->connect("scroll_offset_changed", callable_mp(this, &SymphonyGraphEditor::_on_graph_view_changed));
 
+	// Overlay for amber dashed feedback edges + FB badges (plan §11).
+	feedback_overlay = memnew(Control);
+	feedback_overlay->set_mouse_filter(Control::MOUSE_FILTER_IGNORE);
+	feedback_overlay->set_anchors_and_offsets_preset(Control::PRESET_FULL_RECT);
+	feedback_overlay->connect("draw", callable_mp(this, &SymphonyGraphEditor::_draw_feedback_overlay));
+	graph_edit->add_child(feedback_overlay);
 	// Inspector proxy.
 	inspector_proxy = memnew(SymphonyNodeInspectorProxy);
 
@@ -243,11 +277,15 @@ void SymphonyGraphEditor::edit(Ref<AudioStreamSymphony> p_stream) {
 	}
 	stream = p_stream;
 	nav_stack.clear();
+	editing_lod_tier = 0;
+	if (lod_tier_option) {
+		lod_tier_option->select(0);
+	}
 
 	next_node_id = 0;
 	next_frame_id = 0;
 	if (stream.is_valid()) {
-		const GraphDescription &desc = stream->get_graph_description();
+		const GraphDescription &desc = _active_desc();
 		for (int i = 0; i < desc.nodes.size(); i++) {
 			if (desc.nodes[i].id >= next_node_id) {
 				next_node_id = desc.nodes[i].id + 1;
@@ -262,6 +300,7 @@ void SymphonyGraphEditor::edit(Ref<AudioStreamSymphony> p_stream) {
 
 	_rebuild_graph_edit();
 	_rebuild_breadcrumbs();
+	_update_memory_label();
 }
 
 void SymphonyGraphEditor::_rebuild_graph_edit() {
@@ -281,7 +320,7 @@ void SymphonyGraphEditor::_rebuild_graph_edit() {
 		return;
 	}
 
-	const GraphDescription &desc = stream->get_graph_description();
+	const GraphDescription &desc = _active_desc();
 
 	for (int i = 0; i < desc.nodes.size(); i++) {
 		GraphNode *gn = _create_graph_node(desc.nodes[i]);
@@ -304,6 +343,11 @@ void SymphonyGraphEditor::_rebuild_graph_edit() {
 				graph_edit->attach_graph_element_to_frame(node_name, _frame_name_from_id(fd.id));
 			}
 		}
+	}
+
+	_apply_feedback_visuals();
+	if (feedback_overlay && feedback_overlay->get_parent() == graph_edit) {
+		graph_edit->move_child(feedback_overlay, -1);
 	}
 }
 
@@ -569,7 +613,7 @@ void SymphonyGraphEditor::_on_delete_nodes_request(const TypedArray<StringName> 
 	EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
 	undo_redo->create_action("Delete Symphony Nodes");
 
-	const GraphDescription &desc = stream->get_graph_description();
+	const GraphDescription &desc = _active_desc();
 	bool has_actions = false;
 
 	for (int i = 0; i < p_nodes.size(); i++) {
@@ -637,7 +681,7 @@ void SymphonyGraphEditor::_on_node_position_changed(const StringName &p_node) {
 	Vector2 new_pos = gn->get_position_offset();
 
 	// Find old position.
-	const GraphDescription &desc = stream->get_graph_description();
+	const GraphDescription &desc = _active_desc();
 	Vector2 old_pos = new_pos;
 	for (int i = 0; i < desc.nodes.size(); i++) {
 		if (desc.nodes[i].id == node_id) {
@@ -664,7 +708,7 @@ void SymphonyGraphEditor::_on_param_changed(double p_value, int32_t p_node_id, c
 
 	// Find old value (description hasn't been updated yet, SpinBox fires before we update).
 	float old_value = p_value;
-	const GraphDescription &desc = stream->get_graph_description();
+	const GraphDescription &desc = _active_desc();
 	for (int i = 0; i < desc.nodes.size(); i++) {
 		if (desc.nodes[i].id == p_node_id && desc.nodes[i].params.has(p_param_name)) {
 			old_value = desc.nodes[i].params[p_param_name];
@@ -688,7 +732,7 @@ void SymphonyGraphEditor::_on_collapse_toggled(bool p_collapsed, int32_t p_node_
 		return;
 	}
 
-	GraphDescription &desc = const_cast<GraphDescription &>(stream->get_graph_description());
+	GraphDescription &desc = _active_desc();
 	for (int i = 0; i < desc.nodes.size(); i++) {
 		if (desc.nodes[i].id == p_node_id) {
 			desc.nodes.write[i].collapsed = p_collapsed;
@@ -720,7 +764,7 @@ void SymphonyGraphEditor::_on_node_selected(Node *p_node) {
 	GraphNode *gn = Object::cast_to<GraphNode>(p_node);
 	if (gn && stream.is_valid()) {
 		int32_t node_id = _node_id_from_name(gn->get_name());
-		const GraphDescription &desc = stream->get_graph_description();
+		const GraphDescription &desc = _active_desc();
 		for (int i = 0; i < desc.nodes.size(); i++) {
 			if (desc.nodes[i].id == node_id) {
 				inspector_proxy->setup(this, node_id, desc.nodes[i].type_name);
@@ -745,7 +789,7 @@ void SymphonyGraphEditor::_ur_add_node(const Dictionary &p_node_data) {
 	}
 
 	NodeDesc nd = _dict_to_node_desc(p_node_data);
-	GraphDescription &desc = const_cast<GraphDescription &>(stream->get_graph_description());
+	GraphDescription &desc = _active_desc();
 	desc.nodes.push_back(nd);
 
 	GraphNode *gn = _create_graph_node(nd);
@@ -765,7 +809,7 @@ void SymphonyGraphEditor::_ur_remove_node(int32_t p_node_id) {
 		return;
 	}
 
-	GraphDescription &desc = const_cast<GraphDescription &>(stream->get_graph_description());
+	GraphDescription &desc = _active_desc();
 
 	// Remove connections involving this node from GraphEdit.
 	for (int c = desc.connections.size() - 1; c >= 0; c--) {
@@ -803,7 +847,7 @@ void SymphonyGraphEditor::_ur_connect(int32_t p_from, int p_from_pin, int32_t p_
 		return;
 	}
 
-	GraphDescription &desc = const_cast<GraphDescription &>(stream->get_graph_description());
+	GraphDescription &desc = _active_desc();
 	ConnectionDesc cd;
 	cd.from_node = p_from;
 	cd.from_pin = p_from_pin;
@@ -823,7 +867,7 @@ void SymphonyGraphEditor::_ur_disconnect(int32_t p_from, int p_from_pin, int32_t
 		return;
 	}
 
-	GraphDescription &desc = const_cast<GraphDescription &>(stream->get_graph_description());
+	GraphDescription &desc = _active_desc();
 	for (int i = desc.connections.size() - 1; i >= 0; i--) {
 		const ConnectionDesc &c = desc.connections[i];
 		if (c.from_node == p_from && c.from_pin == p_from_pin && c.to_node == p_to && c.to_pin == p_to_pin) {
@@ -844,7 +888,7 @@ void SymphonyGraphEditor::_ur_set_param(int32_t p_node_id, const StringName &p_p
 		return;
 	}
 
-	GraphDescription &desc = const_cast<GraphDescription &>(stream->get_graph_description());
+	GraphDescription &desc = _active_desc();
 	for (int i = 0; i < desc.nodes.size(); i++) {
 		if (desc.nodes[i].id == p_node_id) {
 			desc.nodes.write[i].params[p_param_name] = p_value;
@@ -906,7 +950,7 @@ void SymphonyGraphEditor::_ur_set_node_position(int32_t p_node_id, const Vector2
 		return;
 	}
 
-	GraphDescription &desc = const_cast<GraphDescription &>(stream->get_graph_description());
+	GraphDescription &desc = _active_desc();
 	for (int i = 0; i < desc.nodes.size(); i++) {
 		if (desc.nodes[i].id == p_node_id) {
 			desc.nodes.write[i].editor_position = p_position;
@@ -929,7 +973,7 @@ void SymphonyGraphEditor::_ur_add_frame(const Dictionary &p_frame_data) {
 		return;
 	}
 
-	GraphDescription &desc = const_cast<GraphDescription &>(stream->get_graph_description());
+	GraphDescription &desc = _active_desc();
 	FrameDesc fd;
 	fd.id = p_frame_data["id"];
 	fd.title = p_frame_data["title"];
@@ -953,7 +997,7 @@ void SymphonyGraphEditor::_ur_remove_frame(int32_t p_frame_id) {
 		return;
 	}
 
-	GraphDescription &desc = const_cast<GraphDescription &>(stream->get_graph_description());
+	GraphDescription &desc = _active_desc();
 	for (int i = 0; i < desc.frames.size(); i++) {
 		if (desc.frames[i].id == p_frame_id) {
 			desc.frames.remove_at(i);
@@ -1016,7 +1060,7 @@ void SymphonyGraphEditor::_on_copy_nodes_request() {
 	clipboard.nodes.clear();
 	clipboard.connections.clear();
 
-	const GraphDescription &desc = stream->get_graph_description();
+	const GraphDescription &desc = _active_desc();
 
 	// Collect selected node IDs.
 	HashSet<int32_t> selected_ids;
@@ -1245,7 +1289,7 @@ void SymphonyGraphEditor::_on_file_dialog_file_selected(const String &p_path) {
 		int32_t node_id = pending_resource_node_id;
 		pending_resource_node_id = -1;
 
-		GraphDescription &desc = const_cast<GraphDescription &>(stream->get_graph_description());
+		GraphDescription &desc = _active_desc();
 		for (NodeDesc &nd : desc.nodes) {
 			if (nd.id == node_id) {
 				nd.params["resource_path"] = p_path;
@@ -1335,7 +1379,7 @@ void SymphonyGraphEditor::_on_pin_type_changed(int p_index, int32_t p_node_id) {
 	}
 
 	float old_value = 0.0f;
-	const GraphDescription &desc = stream->get_graph_description();
+	const GraphDescription &desc = _active_desc();
 	for (int i = 0; i < desc.nodes.size(); i++) {
 		if (desc.nodes[i].id == p_node_id && desc.nodes[i].params.has("pin_type")) {
 			old_value = desc.nodes[i].params["pin_type"];
@@ -1366,7 +1410,7 @@ void SymphonyGraphEditor::_on_node_gui_input(const Ref<InputEvent> &p_event, int
 			return;
 		}
 		// Check if this node is a SubGraph.
-		const GraphDescription &desc = stream->get_graph_description();
+		const GraphDescription &desc = _active_desc();
 		for (const NodeDesc &nd : desc.nodes) {
 			if (nd.id == p_node_id && nd.type_name == StringName("SubGraph")) {
 				String resource_path;
@@ -1399,7 +1443,7 @@ void SymphonyGraphEditor::_push_subgraph(const String &p_resource_path) {
 	stream = sub_res;
 	next_node_id = 0;
 	next_frame_id = 0;
-	const GraphDescription &desc = stream->get_graph_description();
+	const GraphDescription &desc = _active_desc();
 	for (const NodeDesc &nd : desc.nodes) {
 		if (nd.id >= next_node_id) {
 			next_node_id = nd.id + 1;
@@ -1437,7 +1481,7 @@ void SymphonyGraphEditor::_navigate_to(int p_depth) {
 	// Recalculate IDs.
 	next_node_id = 0;
 	next_frame_id = 0;
-	const GraphDescription &desc = stream->get_graph_description();
+	const GraphDescription &desc = _active_desc();
 	for (const NodeDesc &nd : desc.nodes) {
 		if (nd.id >= next_node_id) {
 			next_node_id = nd.id + 1;
@@ -1534,7 +1578,16 @@ void SymphonyGraphEditor::_sync_graph_description() {
 		return;
 	}
 
-	GraphDescription &desc = const_cast<GraphDescription &>(stream->get_graph_description());
+	GraphDescription &desc = _active_desc();
+
+	// Preserve feedback flags across GraphEdit sync (UI has no native feedback bit).
+	HashMap<uint64_t, bool> feedback_map;
+	for (int i = 0; i < desc.connections.size(); i++) {
+		const ConnectionDesc &c = desc.connections[i];
+		uint64_t key = ((uint64_t)(uint32_t)c.from_node << 48) | ((uint64_t)(uint32_t)c.from_pin << 32) |
+				((uint64_t)(uint32_t)c.to_node << 16) | (uint64_t)(uint32_t)c.to_pin;
+		feedback_map[key] = c.is_feedback;
+	}
 
 	desc.connections.clear();
 	const Vector<Ref<GraphEdit::Connection>> &connections = graph_edit->get_connections();
@@ -1546,6 +1599,11 @@ void SymphonyGraphEditor::_sync_graph_description() {
 		cd.to_node = _node_id_from_name(c->to_node);
 		cd.to_pin = c->to_port;
 		if (cd.from_node >= 0 && cd.to_node >= 0) {
+			uint64_t key = ((uint64_t)(uint32_t)cd.from_node << 48) | ((uint64_t)(uint32_t)cd.from_pin << 32) |
+					((uint64_t)(uint32_t)cd.to_node << 16) | (uint64_t)(uint32_t)cd.to_pin;
+			if (feedback_map.has(key)) {
+				cd.is_feedback = feedback_map[key];
+			}
 			desc.connections.push_back(cd);
 		}
 	}
@@ -1574,6 +1632,7 @@ void SymphonyGraphEditor::_sync_graph_description() {
 
 	stream->notify_property_list_changed();
 	stream->emit_changed();
+	_update_memory_label();
 }
 
 void SymphonyGraphEditor::_recompile_and_preview() {
@@ -1649,6 +1708,219 @@ NodeDesc SymphonyGraphEditor::_dict_to_node_desc(const Dictionary &p_dict) const
 		nd.params[StringName(String(key))] = params[key];
 	}
 	return nd;
+}
+
+GraphDescription &SymphonyGraphEditor::_active_desc() {
+	static GraphDescription fallback;
+	ERR_FAIL_COND_V(!stream.is_valid(), fallback);
+	if (editing_lod_tier > 0 && !stream->has_lod_variant(editing_lod_tier)) {
+		editing_lod_tier = 0;
+		if (lod_tier_option) {
+			lod_tier_option->select(0);
+		}
+	}
+	return stream->get_graph_for_tier_mut(editing_lod_tier);
+}
+
+const GraphDescription &SymphonyGraphEditor::_active_desc() const {
+	static GraphDescription empty_desc;
+	ERR_FAIL_COND_V(!stream.is_valid(), empty_desc);
+	if (editing_lod_tier > 0 && stream->has_lod_variant(editing_lod_tier)) {
+		return stream->get_graph_for_tier(editing_lod_tier);
+	}
+	return stream->get_graph_description();
+}
+
+void SymphonyGraphEditor::_on_lod_tier_selected(int p_index) {
+	if (!stream.is_valid()) {
+		return;
+	}
+	_sync_graph_description();
+	int tier = lod_tier_option ? lod_tier_option->get_item_id(p_index) : p_index;
+	if (tier > 0 && !stream->has_lod_variant(tier)) {
+		while (stream->get_lod_variant_count() < tier) {
+			if (stream->add_lod_variant() < 0) {
+				break;
+			}
+		}
+	}
+	editing_lod_tier = tier;
+	_rebuild_graph_edit();
+	_update_memory_label();
+}
+
+void SymphonyGraphEditor::_on_duplicate_lod_pressed() {
+	if (!stream.is_valid()) {
+		return;
+	}
+	_sync_graph_description();
+	int tier = stream->duplicate_main_to_lod();
+	if (tier < 0) {
+		WARN_PRINT("Symphony: already have two LOD variants.");
+		return;
+	}
+	editing_lod_tier = tier;
+	if (lod_tier_option) {
+		lod_tier_option->select(tier);
+	}
+	_rebuild_graph_edit();
+	_update_memory_label();
+}
+
+void SymphonyGraphEditor::_on_toggle_feedback_pressed() {
+	if (!stream.is_valid()) {
+		return;
+	}
+	_sync_graph_description();
+	GraphDescription &desc = _active_desc();
+	if (desc.connections.is_empty()) {
+		return;
+	}
+
+	int target = desc.connections.size() - 1;
+	for (int i = 0; i < graph_edit->get_child_count(); i++) {
+		GraphNode *gn = Object::cast_to<GraphNode>(graph_edit->get_child(i));
+		if (!gn || !gn->is_selected()) {
+			continue;
+		}
+		int32_t nid = _node_id_from_name(gn->get_name());
+		for (int c = 0; c < desc.connections.size(); c++) {
+			if (desc.connections[c].from_node == nid || desc.connections[c].to_node == nid) {
+				target = c;
+				break;
+			}
+		}
+		break;
+	}
+
+	const ConnectionDesc &conn = desc.connections[target];
+	const bool new_fb = !conn.is_feedback;
+	EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
+	undo_redo->create_action(new_fb ? "Mark Feedback" : "Clear Feedback");
+	undo_redo->add_do_method(this, "_ur_set_connection_feedback", conn.from_node, conn.from_pin, conn.to_node, conn.to_pin, new_fb);
+	undo_redo->add_undo_method(this, "_ur_set_connection_feedback", conn.from_node, conn.from_pin, conn.to_node, conn.to_pin, conn.is_feedback);
+	undo_redo->commit_action();
+}
+
+void SymphonyGraphEditor::_ur_set_connection_feedback(int32_t p_from, int p_from_pin, int32_t p_to, int p_to_pin, bool p_feedback) {
+	if (!stream.is_valid()) {
+		return;
+	}
+	GraphDescription &desc = _active_desc();
+	for (int i = 0; i < desc.connections.size(); i++) {
+		ConnectionDesc &c = desc.connections.write[i];
+		if (c.from_node == p_from && c.from_pin == p_from_pin && c.to_node == p_to && c.to_pin == p_to_pin) {
+			c.is_feedback = p_feedback;
+			break;
+		}
+	}
+	_apply_feedback_visuals();
+	stream->notify_property_list_changed();
+	stream->emit_changed();
+	_recompile_and_preview();
+}
+
+void SymphonyGraphEditor::_apply_feedback_visuals() {
+	if (!stream.is_valid() || !graph_edit) {
+		return;
+	}
+	const GraphDescription &desc = _active_desc();
+	for (int i = 0; i < desc.connections.size(); i++) {
+		const ConnectionDesc &c = desc.connections[i];
+		// Keep underlying GraphEdit edge dim for feedback; amber dashed overlay is the authoring cue.
+		graph_edit->set_connection_activity(
+				_name_from_node_id(c.from_node), c.from_pin,
+				_name_from_node_id(c.to_node), c.to_pin,
+				c.is_feedback ? 0.15f : 0.0f);
+	}
+	if (feedback_overlay) {
+		feedback_overlay->queue_redraw();
+	}
+}
+
+void SymphonyGraphEditor::_on_graph_view_changed(const Vector2 &p_offset) {
+	if (feedback_overlay) {
+		feedback_overlay->queue_redraw();
+	}
+}
+
+void SymphonyGraphEditor::_draw_feedback_overlay() {
+	if (!feedback_overlay || !graph_edit || !stream.is_valid()) {
+		return;
+	}
+	const GraphDescription &desc = _active_desc();
+	const float zoom = graph_edit->get_zoom();
+	const Vector2 scroll = graph_edit->get_scroll_offset();
+	const Color amber = FEEDBACK_AMBER;
+
+	for (int i = 0; i < desc.connections.size(); i++) {
+		const ConnectionDesc &c = desc.connections[i];
+		if (!c.is_feedback) {
+			continue;
+		}
+		GraphNode *from_node = Object::cast_to<GraphNode>(graph_edit->get_node_or_null(NodePath(String(_name_from_node_id(c.from_node)))));
+		GraphNode *to_node = Object::cast_to<GraphNode>(graph_edit->get_node_or_null(NodePath(String(_name_from_node_id(c.to_node)))));
+		if (!from_node || !to_node) {
+			continue;
+		}
+
+		// Match GraphEdit::_update_connections graph-space endpoints, then map into view space.
+		const Vector2 from_graph = from_node->get_output_port_position(c.from_pin) + from_node->get_position_offset();
+		const Vector2 to_graph = to_node->get_input_port_position(c.to_pin) + to_node->get_position_offset();
+		PackedVector2Array line = graph_edit->get_connection_line(from_graph, to_graph);
+		if (line.size() < 2) {
+			continue;
+		}
+
+		Vector2 mid_view;
+		for (int p = 0; p < line.size() - 1; p++) {
+			Vector2 a = line[p] * zoom - scroll;
+			Vector2 b = line[p + 1] * zoom - scroll;
+			feedback_overlay->draw_dashed_line(a, b, amber, 2.5f, 6.0f, true, true);
+			if (p == (line.size() - 1) / 2) {
+				mid_view = (a + b) * 0.5f;
+			}
+		}
+		if (line.size() == 2) {
+			mid_view = (line[0] * zoom - scroll + line[1] * zoom - scroll) * 0.5f;
+		}
+
+		const Size2 badge_size(28, 16);
+		const Rect2 badge_rect(mid_view - badge_size * 0.5f, badge_size);
+		feedback_overlay->draw_rect(badge_rect, Color(0.15f, 0.1f, 0.05f, 0.92f), true);
+		feedback_overlay->draw_rect(badge_rect, amber, false, 1.0f);
+		Ref<Font> font = feedback_overlay->get_theme_default_font();
+		if (font.is_valid()) {
+			const int font_size = feedback_overlay->get_theme_default_font_size();
+			Vector2 text_size = font->get_string_size("FB", HORIZONTAL_ALIGNMENT_LEFT, -1, font_size);
+			feedback_overlay->draw_string(font, mid_view - text_size * 0.5f + Vector2(0, text_size.y * 0.35f), "FB", HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, amber);
+		}
+	}
+}
+
+void SymphonyGraphEditor::_update_memory_label() {
+	if (!memory_label) {
+		return;
+	}
+	if (!stream.is_valid()) {
+		memory_label->set_text("Mem: —");
+		return;
+	}
+	Dictionary mem = stream->estimate_tier_memory(editing_lod_tier);
+	if (!(bool)mem.get("ok", false)) {
+		memory_label->set_text("Mem: compile error");
+		memory_label->add_theme_color_override("font_color", Color(1, 0.4, 0.3));
+		return;
+	}
+	int64_t b48 = (int64_t)mem.get("48000", 0);
+	int64_t b96 = (int64_t)mem.get("96000", 0);
+	bool over = (bool)mem.get("over_budget", false);
+	memory_label->set_text(vformat("LOD%d 48k:%.1fKiB 96k:%.1fKiB%s",
+			editing_lod_tier,
+			b48 / 1024.0,
+			b96 / 1024.0,
+			over ? " OVER" : ""));
+	memory_label->add_theme_color_override("font_color", over ? Color(1, 0.55, 0.2) : Color(0.8, 0.8, 0.8));
 }
 
 // --- SymphonyEditorPlugin ---

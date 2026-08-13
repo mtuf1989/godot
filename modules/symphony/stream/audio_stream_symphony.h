@@ -33,6 +33,10 @@ protected:
 	bool _get(const StringName &p_name, Variant &r_ret) const;
 	bool _set(const StringName &p_name, const Variant &p_value);
 
+	static void _append_graph_properties(List<PropertyInfo> *p_list, const String &p_prefix, const GraphDescription &p_desc);
+	static bool _get_graph_property(const String &p_relative, const GraphDescription &p_desc, Variant &r_ret);
+	static bool _set_graph_property(const String &p_relative, GraphDescription &p_desc, const Variant &p_value);
+
 public:
 	void set_mix_rate(float p_mix_rate);
 	float get_mix_rate() const;
@@ -43,9 +47,23 @@ public:
 	void set_graph_description(const GraphDescription &p_desc);
 	const GraphDescription &get_graph_description() const;
 
+	// Tier 0 = main graph; tiers 1..2 = lod_graphs[0..1].
+	const GraphDescription &get_graph_for_tier(int p_tier) const;
+	GraphDescription &get_graph_for_tier_mut(int p_tier);
+	void set_graph_for_tier(int p_tier, const GraphDescription &p_desc);
+
 	CompiledGraph *compile_graph() const;
 	CompiledGraph *compile_lod_graph(int p_lod_tier) const;
 	[[nodiscard]] int get_lod_count() const; // Returns 1 if no LOD graphs, up to 3 (LOD 0 + 2 variants)
+	[[nodiscard]] int get_lod_variant_count() const { return lod_graphs.size(); }
+
+	// LOD authoring APIs (plan §11). Variants are tiers 1 and 2 only.
+	int add_lod_variant(); // empty variant; returns tier or -1 if full
+	int duplicate_main_to_lod(); // copy main graph into a new variant
+	bool set_lod_variant(int p_tier, const GraphDescription &p_desc); // tier 1 or 2
+	bool remove_lod_variant(int p_tier); // tier 1 or 2; renumbers remaining
+	GraphDescription get_lod_variant(int p_tier) const;
+	bool has_lod_variant(int p_tier) const;
 
 	void set_lod_threshold_1(float p_threshold);
 	[[nodiscard]] float get_lod_threshold_1() const;
@@ -53,6 +71,10 @@ public:
 	[[nodiscard]] float get_lod_threshold_2() const;
 
 	[[nodiscard]] int get_recommended_lod(float p_distance_ratio) const;
+
+	// Per-tier memory estimates at supported sample rates (editor / diagnostics).
+	Dictionary estimate_tier_memory(int p_tier) const;
+	Dictionary validate_tier_compile(int p_tier) const;
 
 	static GraphDescription build_test_graph_10_nodes();
 	static GraphDescription build_test_graph_30_nodes();

@@ -53,9 +53,16 @@ private:
 	Button *preview_button = nullptr;
 	Button *save_button = nullptr;
 	Button *add_frame_button = nullptr;
+	Button *feedback_button = nullptr;
+	Button *dup_lod_button = nullptr;
+	OptionButton *lod_tier_option = nullptr;
+	Label *memory_label = nullptr;
+	Control *feedback_overlay = nullptr;
 	AudioStreamPlayer *preview_player = nullptr;
 	bool previewing = false;
+	int editing_lod_tier = 0; // 0 = main, 1..2 = LOD variants
 
+	static constexpr Color FEEDBACK_AMBER = Color(1.0f, 0.65f, 0.15f);
 	int32_t next_node_id = 0;
 	int32_t next_frame_id = 0;
 
@@ -148,9 +155,20 @@ private:
 	void _ur_set_node_position(int32_t p_node_id, const Vector2 &p_position);
 	void _ur_add_frame(const Dictionary &p_frame_data);
 	void _ur_remove_frame(int32_t p_frame_id);
+	void _ur_set_connection_feedback(int32_t p_from, int p_from_pin, int32_t p_to, int p_to_pin, bool p_feedback);
 
 	void _sync_graph_description();
 	void _recompile_and_preview();
+	void _on_lod_tier_selected(int p_index);
+	void _on_duplicate_lod_pressed();
+	void _on_toggle_feedback_pressed();
+	void _update_memory_label();
+	void _apply_feedback_visuals();
+	void _draw_feedback_overlay();
+	void _on_graph_view_changed(const Vector2 &p_offset = Vector2());
+
+	GraphDescription &_active_desc();
+	const GraphDescription &_active_desc() const;
 
 	int32_t _node_id_from_name(const StringName &p_name) const;
 	StringName _name_from_node_id(int32_t p_id) const;

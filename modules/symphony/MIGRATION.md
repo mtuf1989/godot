@@ -53,8 +53,21 @@ bin/godot.macos.editor.arm64 --headless --test --test-case='*Symphony*'
 - Main-thread budget service with compile-time platform defaults:
   - Per graph: 8 MiB
   - Global: 128 MiB desktop / 64 MiB mobile / 32 MiB web
-- Compiler reserves arena bytes before allocation; `CompiledGraph::destroy`
-  releases them. Oversized graphs fail with a compile error (approach A).
+- Compiler reserves **total package bytes** (arena + non-arena metadata) before
+  allocation; `CompiledGraph::destroy` releases them. Oversized graphs fail
+  with a compile error (approach A).
+- Global headroom includes unique SharedPCM cache bytes (`try_reserve_shared` /
+  `release_shared`); SharedPCM is counted once per unique key, not per voice.
+- Compile drains `GraphPackageRetirement` before reserving.
+
+### LOD / feedback authoring (§11)
+
+- Prefix-aware serializer for `graph/...` and `lod/<tier>/...` (tiers 1–2).
+- Connection property `is_feedback` (defaults false for older resources).
+- APIs: `add_lod_variant`, `duplicate_main_to_lod`, `set_lod_variant`,
+  `remove_lod_variant`, `get_lod_variant`, `has_lod_variant`,
+  `estimate_tier_memory`, `validate_tier_compile`.
+- Editor: LOD tier selector, Dup→LOD, FB Toggle (UndoRedo), per-tier memory label.
 
 ### Silence behavior + DSP (§7/§8 partial)
 

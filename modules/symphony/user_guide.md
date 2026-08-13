@@ -1784,6 +1784,23 @@ func _on_music_slider_changed(value: float):
 
 ## Changelog
 
+### v1.7.1 — Real-time package / LOD authoring (in progress)
+
+**Editor / `.tres` authors:**
+- Connections can be marked **feedback** (`is_feedback`). In the Symphony graph editor use **FB Toggle**; feedback edges draw amber dashed with an `FB` badge.
+- LOD variants serialize under `lod/1/...` and `lod/2/...`. Switching the LOD tier dropdown creates an empty variant if missing — remove unused variants before shipping a resource.
+- Per-tier memory estimate is shown in the editor toolbar (flags budgets over 8 MiB/graph).
+
+**Game Audio Layer / GDScript (migrate `game-template` before release):**
+- Register RTPC / analysis names before `set_*` (no auto-create from audio). Prefer handles from `register_*`.
+- `SymphonyVoicePool.acquire_slot()` no longer steals; `play_event` / dispatcher may return `RESULT_STOLEN`.
+- `playback.trigger(name, value)` returns `bool` (false if the queue dropped the event).
+- `SymphonyVoiceManager.process_deferred_lod()` is optional — also runs from the AudioServer update callback.
+
+Internal engine details (crossfade CPU admission, SharedPCM global budgeting, package retirement) do not require gameplay script changes beyond the bullets above.
+
+---
+
 ### v1.7 — Clock Subdivision & Triggered Granular (2026-07-18)
 
 **Clock operator: `subdivision` parameter**
