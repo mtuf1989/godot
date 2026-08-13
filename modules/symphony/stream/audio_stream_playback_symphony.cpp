@@ -4,6 +4,7 @@
 #include "../core/symphony_memory_budget.h"
 #include "../core/symphony_fast_math.h"
 #include "../core/symphony_platform_time.h"
+#include "../core/symphony_realtime_scope.h"
 #include "core/object/class_db.h"
 #include "core/os/thread.h"
 
@@ -173,6 +174,8 @@ void AudioStreamPlaybackSymphony::request_manager_stop() {
 }
 
 void AudioStreamPlaybackSymphony::process_manager_requests() {
+	// Main thread only: stop() / LOD compile may touch ObjectDB and containers.
+	symphony_rt_note(SymphonyRTViolation::ObjectDB, "AudioStreamPlaybackSymphony::process_manager_requests");
 	if (manager_stop_request.exchange(false, std::memory_order_acquire)) {
 		stop();
 		requested_lod_tier.store(-1, std::memory_order_relaxed);
@@ -246,6 +249,7 @@ void AudioStreamPlaybackSymphony::seek(double p_time) {
 }
 
 int AudioStreamPlaybackSymphony::mix(AudioFrame *p_buffer, float p_rate_scale, int p_frames) {
+	SymphonyRealtimeScope rt_scope;
 	if (!active.load(std::memory_order_acquire)) {
 		if (stop_pending.load(std::memory_order_relaxed)) {
 			_finalize_stop();

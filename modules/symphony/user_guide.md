@@ -1797,6 +1797,7 @@ func _on_music_slider_changed(value: float):
 - `SymphonyVoicePool.acquire_slot()` no longer steals; `play_event` / dispatcher may return `RESULT_STOLEN`.
 - `playback.trigger(name, value)` returns `bool` (false if the queue dropped the event).
 - `SymphonyVoiceManager.process_deferred_lod()` is optional — also runs from the AudioServer update callback.
+- `SymphonyVoiceManager.get_rt_violation_count()` / `get_debug_metrics()["rt_violations"]` should stay 0. Non-zero means an audio-thread alloc, free, lock, compile, ObjectDB, or container mutation was detected (dev builds also `DEV_ASSERT`).
 
 Internal engine details (crossfade CPU admission, SharedPCM global budgeting, package retirement) do not require gameplay script changes beyond the bullets above.
 

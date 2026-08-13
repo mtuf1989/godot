@@ -204,7 +204,9 @@ TEST_CASE("[Symphony][Voice] get_debug_metrics exposes transition trigger retire
 	CHECK(metrics.has("packages_destroyed"));
 	CHECK(metrics.has("memory_global_used_bytes"));
 	CHECK(metrics.has("packages_active"));
+	CHECK(metrics.has("rt_violations"));
 	CHECK((int64_t)metrics["packages_destroyed"] == (int64_t)mgr->get_packages_destroyed_count());
+	CHECK((int)metrics["rt_violations"] == (int)mgr->get_rt_violation_count());
 }
 
 } // namespace TestSymphonyVoice

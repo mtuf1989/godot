@@ -4,6 +4,7 @@
 
 #include "symphony_memory_budget.h"
 #include "symphony_graph_package_retirement.h"
+#include "symphony_realtime_scope.h"
 
 #include "core/string/ustring.h"
 #include "core/error/error_macros.h"
@@ -34,6 +35,7 @@ void SymphonyMemoryBudget::set_global_limit_bytes(size_t p_bytes) {
 }
 
 bool SymphonyMemoryBudget::try_reserve(size_t p_bytes, String *r_error) {
+	symphony_rt_note(SymphonyRTViolation::Alloc, "SymphonyMemoryBudget::try_reserve");
 	if (p_bytes > per_graph_limit_bytes) {
 		if (r_error) {
 			*r_error = vformat("Per-graph memory budget exceeded (%d bytes > %d limit).", (int64_t)p_bytes, (int64_t)per_graph_limit_bytes);
@@ -55,11 +57,13 @@ bool SymphonyMemoryBudget::try_reserve(size_t p_bytes, String *r_error) {
 }
 
 void SymphonyMemoryBudget::release(size_t p_bytes) {
+	symphony_rt_note(SymphonyRTViolation::Free, "SymphonyMemoryBudget::release");
 	ERR_FAIL_COND(p_bytes > reserved_bytes);
 	reserved_bytes -= p_bytes;
 }
 
 bool SymphonyMemoryBudget::try_reserve_shared(size_t p_bytes, String *r_error) {
+	symphony_rt_note(SymphonyRTViolation::Alloc, "SymphonyMemoryBudget::try_reserve_shared");
 	const size_t used = reserved_bytes + shared_pcm_bytes;
 	if (p_bytes > global_limit_bytes || used > global_limit_bytes - p_bytes) {
 		if (r_error) {
@@ -72,6 +76,7 @@ bool SymphonyMemoryBudget::try_reserve_shared(size_t p_bytes, String *r_error) {
 }
 
 void SymphonyMemoryBudget::release_shared(size_t p_bytes) {
+	symphony_rt_note(SymphonyRTViolation::Free, "SymphonyMemoryBudget::release_shared");
 	ERR_FAIL_COND(p_bytes > shared_pcm_bytes);
 	shared_pcm_bytes -= p_bytes;
 }

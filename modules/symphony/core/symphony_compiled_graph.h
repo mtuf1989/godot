@@ -6,6 +6,7 @@
 #include "symphony_pin_types.h"
 #include "symphony_memory_budget.h"
 #include "symphony_operator_registry.h"
+#include "symphony_realtime_scope.h"
 #include "core/string/string_name.h"
 
 // The output of the GraphCompiler: a ready-to-execute graph.
@@ -57,6 +58,7 @@ struct CompiledGraph {
 
 	// Execute all operators for one micro-block with silence propagation.
 	void execute(int32_t p_num_frames) {
+		SymphonyRealtimeScope rt_scope;
 		// Fill promotion buffers (Float→Audio).
 		for (int32_t i = 0; i < promotion_count; i++) {
 			float val = promotions[i].src[0];

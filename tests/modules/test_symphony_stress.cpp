@@ -16,8 +16,13 @@ TEST_FORCE_LINK(test_symphony_stress)
 #include "modules/symphony/stream/audio_stream_playback_symphony.h"
 #include "modules/symphony/stream/audio_stream_symphony.h"
 
+#include "modules/symphony/core/symphony_realtime_scope.h"
+
 #include "core/os/os.h"
+#include "core/os/thread.h"
 #include "core/templates/vector.h"
+
+#include <atomic>
 
 namespace TestSymphonyStress {
 
@@ -455,5 +460,66 @@ TEST_CASE("[Symphony][Stress] Mix timing median/p99 for 10/30/50-node graphs") {
 		PreparedGraphPackage::destroy(pkg);
 	}
 }
+
+#ifdef THREADS_ENABLED
+TEST_CASE("[Symphony][Stress] Concurrent mix with swap parameter trigger teardown") {
+	SymphonyRealtimeScope::reset_violations();
+
+	Ref<AudioStreamSymphony> stream;
+	stream.instantiate();
+	stream->set_mix_rate(48000.0f);
+	stream->set_graph_description(AudioStreamSymphony::build_test_graph_10_nodes());
+
+	Ref<AudioStreamPlayback> base = stream->instantiate_playback();
+	Ref<AudioStreamPlaybackSymphony> playback = base;
+	REQUIRE(playback.is_valid());
+	playback->start();
+
+	struct MixContext {
+		AudioStreamPlaybackSymphony *playback = nullptr;
+		std::atomic<bool> running{ true };
+		std::atomic<uint32_t> mixes{ 0 };
+	} ctx;
+	ctx.playback = playback.ptr();
+
+	Thread audio_thread;
+	audio_thread.start(
+			[](void *p_userdata) {
+				MixContext *mix_ctx = static_cast<MixContext *>(p_userdata);
+				AudioFrame buf[64];
+				while (mix_ctx->running.load(std::memory_order_relaxed)) {
+					mix_ctx->playback->mix(buf, 1.0f, 64);
+					mix_ctx->mixes.fetch_add(1, std::memory_order_relaxed);
+				}
+			},
+			&ctx);
+
+	for (int i = 0; i < 64; i++) {
+		playback->set_parameter(StringName("freq"), 220.0f + (float)i);
+		(void)playback->trigger(StringName("gate"), 1.0f);
+		if ((i % 8) == 0) {
+			CompiledGraph *replacement = stream->compile_graph();
+			if (replacement) {
+				playback->swap_graph(replacement);
+			}
+		}
+		if ((i % 16) == 0) {
+			GraphPackageRetirement::drain();
+		}
+		OS::get_singleton()->delay_usec(200);
+	}
+
+	playback->stop();
+	ctx.running.store(false, std::memory_order_relaxed);
+	audio_thread.wait_to_finish();
+
+	AudioFrame tail[64];
+	(void)playback->mix(tail, 1.0f, 64);
+	GraphPackageRetirement::drain();
+
+	CHECK(ctx.mixes.load(std::memory_order_relaxed) > 0);
+	CHECK(SymphonyRealtimeScope::violation_count() == 0);
+}
+#endif // THREADS_ENABLED
 
 } // namespace TestSymphonyStress

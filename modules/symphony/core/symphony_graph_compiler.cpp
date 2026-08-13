@@ -4,6 +4,7 @@
 #include "symphony_checked_math.h"
 #include "symphony_memory_budget.h"
 #include "symphony_graph_package_retirement.h"
+#include "symphony_realtime_scope.h"
 
 #include <limits>
 
@@ -39,6 +40,7 @@
 }
 
 GraphCompiler::CompileResult GraphCompiler::compile(const GraphDescription &p_desc, float p_mix_rate) {
+	symphony_rt_note(SymphonyRTViolation::Compile, "GraphCompiler::compile");
 	CompileResult result;
 	const OperatorRegistry *registry = OperatorRegistry::get_singleton();
 

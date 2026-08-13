@@ -3,6 +3,7 @@
 /**************************************************************************/
 
 #include "symphony_prepared_graph_package.h"
+#include "symphony_realtime_scope.h"
 
 #include "core/os/memory.h"
 #include "core/templates/hashfuncs.h"
@@ -35,6 +36,8 @@ uint32_t _structural_hash(uint32_t p_type_hash, size_t p_state_bytes) {
 } // namespace
 
 PreparedGraphPackage *PreparedGraphPackage::create_from_graph(CompiledGraph *p_graph, size_t p_arena_bytes, size_t p_total_bytes, int p_lod_tier, float p_estimated_cost_units) {
+	symphony_rt_note(SymphonyRTViolation::Alloc, "PreparedGraphPackage::create_from_graph");
+	symphony_rt_note(SymphonyRTViolation::ContainerMutation, "PreparedGraphPackage::create_from_graph");
 	ERR_FAIL_NULL_V(p_graph, nullptr);
 
 	PreparedGraphPackage *pkg = memnew(PreparedGraphPackage);
@@ -89,6 +92,7 @@ PreparedGraphPackage *PreparedGraphPackage::create_from_graph(CompiledGraph *p_g
 }
 
 void PreparedGraphPackage::destroy(PreparedGraphPackage *p_package) {
+	symphony_rt_note(SymphonyRTViolation::Free, "PreparedGraphPackage::destroy");
 	if (!p_package) {
 		return;
 	}

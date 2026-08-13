@@ -5,7 +5,7 @@ Update this file with each commit that changes a public API.
 
 ## Status
 
-- **Milestone:** M2 in progress — prepared packages publishing (retirement/transitions next)
+- **Milestone:** M3 — RT-scope landed; TSan stress test added (run `use_tsan=yes` to gate)
 - **Branch:** `features/symphony_fixed`
 
 ## Completed
@@ -185,6 +185,27 @@ bin/godot.macos.editor.arm64 --headless --test --test-case='*Symphony*'
 
 - `SymphonyMemoryBudget` tracks active/pending/outgoing via atomics; retired count
   mirrors `GraphPackageRetirement::get_pending_count()` in snapshots.
+
+### Real-time scope guards (§6)
+
+- `SymphonyRealtimeScope` is a thread-local depth around playback `mix()`,
+  `CompiledGraph::execute()`, `SymphonyVoiceManager` mix callback, and
+  `RTPCEngine` mix callback.
+- Symphony alloc / free / mutex / ObjectDB / compile / dynamic-container sites
+  call `symphony_rt_note()`. Hits increment process-wide counters and `DEV_ASSERT`
+  in dev builds. Tests use `SymphonyRealtimeAssertSuppressor` to observe counts.
+- `GraphPackageRetirement::drain()` is flagged as `Free` if called inside an
+  audio scope (drain stays on the AudioServer main-thread update callback).
+- `SymphonyVoiceManager.get_rt_violation_count()` and debug metric `rt_violations`
+  expose the process-wide counter (should stay 0 in production).
+- Concurrent stress: `tests/modules/test_symphony_stress.cpp` mixes on a worker
+  thread while the main thread swaps, sets parameters, fires triggers, drains,
+  and stops. Run the Symphony suite under ThreadSanitizer:
+
+```bash
+scons platform=macos target=editor arch=arm64 tests=yes use_tsan=yes module_raycast_enabled=no -j$(sysctl -n hw.ncpu)
+bin/godot.macos.editor.arm64 --headless --test --source-file='*symphony*'
+```
 
 ## Planned (from improve_plan_1_7.md)
 

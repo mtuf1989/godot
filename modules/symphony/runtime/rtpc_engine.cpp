@@ -1,5 +1,6 @@
 #include "rtpc_engine.h"
 #include "../core/symphony_pin_types.h"
+#include "../core/symphony_realtime_scope.h"
 #include "core/object/class_db.h"
 #include "servers/audio/audio_server.h"
 
@@ -47,6 +48,7 @@ void RTPCEngine::_bind_methods() {
 }
 
 void RTPCEngine::_mix_callback(void *p_userdata) {
+	SymphonyRealtimeScope rt_scope;
 	RTPCEngine *engine = static_cast<RTPCEngine *>(p_userdata);
 	int frames = AudioServer::get_singleton()->thread_get_mix_buffer_size();
 	engine->smooth_all(frames);
@@ -90,6 +92,7 @@ void RTPCEngine::smooth_all(int p_num_frames) {
 }
 
 RTPCEngine::Handle RTPCEngine::register_parameter(const StringName &p_name, float p_default_value, float p_smooth_time_ms) {
+	symphony_rt_note(SymphonyRTViolation::ContainerMutation, "RTPCEngine::register_parameter");
 	ERR_FAIL_COND_V_MSG(global_param_count >= MAX_GLOBAL_PARAMETERS, INVALID_HANDLE,
 			"RTPCEngine: Maximum global parameter count reached.");
 	ERR_FAIL_COND_V_MSG(global_param_index.has(p_name), INVALID_HANDLE,
@@ -197,6 +200,7 @@ bool RTPCEngine::has_global_parameter(const String &p_name) const {
 }
 
 RTPCEngine::Handle RTPCEngine::register_analysis_output(const StringName &p_name) {
+	symphony_rt_note(SymphonyRTViolation::ContainerMutation, "RTPCEngine::register_analysis_output");
 	ERR_FAIL_COND_V_MSG(analysis_output_count >= MAX_ANALYSIS_OUTPUTS, INVALID_HANDLE,
 			"RTPCEngine: Maximum analysis output count reached.");
 	ERR_FAIL_COND_V_MSG(analysis_output_index.has(p_name), INVALID_HANDLE,

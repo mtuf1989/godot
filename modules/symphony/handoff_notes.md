@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-13  
 **Branch:** `features/symphony_fixed`  
-**Plan source of truth:** `modules/symphony/improve_plan_1_7.md`  
+**Plan source of truth:** `modules/symphony/improve_plan_1_7.md` (§6 gate + Verification)  
 **Do not edit:** `modules/symphony/review_version_1_7.md`  
 **Migration log:** `modules/symphony/MIGRATION.md`  
 **User guide:** `modules/symphony/user_guide.md` (v1.7.1 changelog started)
@@ -15,27 +15,34 @@
 |-----------|--------|
 | **M1** | Done |
 | **M2** | Closed |
-| **M3** | Nearly complete — remaining: TSan/RT-scope (locked later) |
+| **M3** | In progress — RT-scope landed; **next: TSan editor build + remaining M3 wrap-up** |
 
-**HEAD (newest first) — prior M3 commits:**
+**HEAD (newest first):**
 
+- Thread-local `SymphonyRealtimeScope` + RT-guard tests + concurrent mix stress
+- `c9ed415b3d` — GrainCloud density/pitch `extra_cost_fn` + µs/unit ≤2× stress guard
+- `0d06281342` — SpectralGate COLA + open-threshold unity ±0.5 dB
+- `c657ad4b45` — Strict release mix-timing baselines (+5% / +10%)
 - `e9b517d919` — Handoff notes for M3 close-out
-- `ff4c2235ce` — Spectral suite depth + FFT `extra_cost_fn` (`N·log2(N)·hops`)
+- `ff4c2235ce` — Spectral suite depth + FFT `extra_cost_fn`
 - `52cd2e8aaa` — Memory stress + 10/30/50-node mix timing
 - `93ff25a112` — Read-only transition / trigger / spectral / retirement metrics
 - `5842cf7fce` — Atomic `control_package` for `set_parameter` / `trigger`
-- `0fb5639861` — Package fingerprints + audio-boundary state migrate
 
-**Tests:**
+**Tests (last run):** `52/52` Symphony cases pass (editor)
 
 ```bash
-# Editor (soft timing ceiling only)
+# Editor
 scons platform=macos target=editor arch=arm64 tests=yes module_raycast_enabled=no -j$(sysctl -n hw.ncpu)
 bin/godot.macos.editor.arm64 --headless --test --source-file='*symphony*'
 
-# Release regression gates (median ≤+5%, p99 ≤+10% vs stored baselines)
+# Release mix-timing gates
 scons platform=macos target=template_release arch=arm64 tests=yes module_raycast_enabled=no -j$(sysctl -n hw.ncpu)
 bin/godot.macos.template_release.arm64 --headless --test --test-case='*Mix timing*'
+
+# Next session — TSan (macos supports use_tsan)
+scons platform=macos target=editor arch=arm64 tests=yes use_tsan=yes module_raycast_enabled=no -j$(sysctl -n hw.ncpu)
+bin/godot.macos.editor.arm64 --headless --test --source-file='*symphony*'
 # Prefer --test-case='*Symphony*' over '[Symphony]' (doctest char-class trap)
 ```
 
@@ -47,7 +54,7 @@ bin/godot.macos.template_release.arm64 --headless --test --test-case='*Mix timin
 | 30-node | 1254 µs | 1747 µs |
 | 50-node | 2420 µs | 2790 µs |
 
-Per-512f equivalent ≈ median/32 (~6.5 / 39 / 76 µs).
+Per-512f equivalent ≈ median/32 (~6.5 / 39 / 76 µs). Strict gates: median ≤+5%, p99 ≤+10%.
 
 ---
 
@@ -60,7 +67,8 @@ Per-512f equivalent ≈ median/32 (~6.5 / 39 / 76 µs).
 - Transitions: 40 ms equal-power when admitted; else 64-sample single-graph fallback
 - Crossfade tokens: 2 desktop / 1 mobile+web
 - Keep auto-LOD; silence −120 dB + 2-block hysteresis; no large-history migration
-- Tests “green enough to iterate”; **TSan later**
+- Tests “green enough to iterate”
+- **TSan + RT-scope unlocked** — kick off next session (was deferred; now M3 close-out)
 - State migrate at **audio boundary** (not review mailbox); match node ID + type + structural hash; ≤256 bytes
 - **game-template is out of scope**; API migrations documented in `MIGRATION.md` + user_guide changelog
 
@@ -74,44 +82,51 @@ Per-512f equivalent ≈ median/32 (~6.5 / 39 / 76 µs).
 - §11 LOD/feedback serialization, authoring APIs, editor FB overlay
 - WavePlayer sample offsets; steal validates stream before acquire
 - Fingerprints + migrate; atomic `control_package`; debug metrics; stress suite; spectral suite + FFT `extra_cost_fn`
+- Release mix-timing baselines; SpectralGate COLA/unity; GrainCloud `extra_cost_fn`
 
 ### This session
-1. **Release timing baselines** — `template_release` hard-fails 10/30/50-node mix timing (`32×512f` batches, 3-trial median) at plan ≤+5% median / ≤+10% p99 vs stored macos-arm64 constants. Editor keeps soft ceiling only. Expect flake under heavy host load.
-2. **SpectralGate polish** — COLA `1/Σw²` table (parity with PhaseVocoder / review 6.3); open-threshold unity ±0.5 dB; threshold clamp ≤0 dB covered by attenuation test; arena estimate corrected to 10N floats.
-3. **GrainCloud `extra_cost_fn`** — calibration showed ~1.56× µs/unit vs oscillator at max density+pitch; density/pitch-scaled extra cost + stress ≤2× guard.
+1. **RT-scope** — `SymphonyRealtimeScope` around mix / `CompiledGraph::execute` / VoiceManager + RTPC mix callbacks
+2. Instrumented Symphony alloc, free, mutex, ObjectDB, compile, and dynamic-container sites (`symphony_rt_note`)
+3. Tests: mix/execute report 0 violations; each kind is detectable with assert suppressor
+4. Concurrent mix + swap/parameter/trigger/drain/stop stress (`THREADS_ENABLED`)
+5. `get_rt_violation_count()` + debug metric `rt_violations`
 
 ---
 
-## Suggested Next (priority)
+## Suggested Next (priority) — TSan build + M3 wrap-up
 
-1. **TSan + RT-scope assertions** (§6) — only when unlocked (currently “TSan later”)  
-2. **game-template** — separate repo when ready  
+**Default: run TSan. Do not reopen RT-scope design unless tests fail.**
 
-Ask user which slice if unclear (default: stop for M3 review unless TSan unlocked).
+### Remaining §6 / M3
+1. **TSan editor build** (commands in “How to Resume”) and triage any races the concurrent mix stress surfaces.
+2. Expand stress only if TSan reports a real Symphony race (LOD compile vs mix, registration, teardown).
+3. Gate: TSan clean + RT-scope tests remain green (`rt_violations == 0` on mix/execute).
+4. M3 review wrap-up docs after TSan is clean. `game-template` is still out of scope.
 
 ---
 
 ## Caveats / footguns
 
-- Stress test that forces `global_limit_bytes=1` prints an expected `ERROR:` from `compile_graph`; `BudgetGuard` restores limits (and recovers tiny leftover limits from aborted runs)
-- Never call `CompiledGraph::execute` with `p_num_frames > SYMPHONY_MICRO_BLOCK_SIZE` (hang/corruption); stress timing loops in micro-blocks
+- Stress test that forces `global_limit_bytes=1` prints an expected `ERROR:` from `compile_graph`; `BudgetGuard` restores limits
+- Never call `CompiledGraph::execute` with `p_num_frames > SYMPHONY_MICRO_BLOCK_SIZE`
 - Micro-block: 32 on `__EMSCRIPTEN__`, else 64
 - Oscillator high-freq AA can overshoot ~±3 (tests allow ±3.1)
 - Editor LOD tier switch may auto-create empty variants — strip unused before ship
-- Mix timing release baselines are machine/arch-specific and use **strict** +5%/+10%
-  gates on `template_release`; recalibrate constants in `test_symphony_stress.cpp` if
-  builders or the reference Mac change. Heavy host load can flake p99.
+- Mix timing release baselines are machine/arch-specific; heavy host load can flake p99 under strict gates
+- SpectralGate FFT magnitudes are **unnormalized** — `threshold_db` ≤0 still lets loud bins pass; tests use very quiet tones for attenuation
+- GrainCloud `trigger_value` unused warning in `register_types` compile (pre-existing)
+- TSan builds are slower; keep `module_raycast_enabled=no`
 - Do not edit `review_version_1_7.md`
 
 ---
 
 ## How to Resume
 
-1. Read this file + skim remaining M3 gates in `improve_plan_1_7.md`  
-2. `git checkout features/symphony_fixed` && `git status`  
-3. Rebuild if binary stale; run Symphony tests (commands above)  
-4. Prefer next: ask whether to unlock TSan, or stop for M3 review  
-5. Update `MIGRATION.md` / `user_guide.md` on API changes; focused commits  
+1. Read this file + `improve_plan_1_7.md` §6 + Verification/TSan bullets  
+2. `git checkout features/symphony_fixed` && `git status` (expect clean)  
+3. Rebuild editor; confirm Symphony tests still green (includes new RT-scope + concurrent mix cases)
+4. **TSan:** `use_tsan=yes` then `--source-file='*symphony*'`; triage races; do not reopen RT-scope unless a guard is wrong
+5. Update `MIGRATION.md` / `user_guide.md` on further API/guard changes; focused commits  
 
 ## Skills / knowledge
 

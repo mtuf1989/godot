@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/os/memory.h"
+#include "symphony_realtime_scope.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -23,6 +24,7 @@ struct ArenaAllocator {
 	// Allocate the arena with a given total size.
 	// Base pointer is 32-byte aligned (C12 / improve_plan §3).
 	bool init(size_t p_capacity) {
+		symphony_rt_note(SymphonyRTViolation::Alloc, "ArenaAllocator::init");
 		constexpr size_t k_align = 32;
 		// Over-allocate so we can align the usable base without a separate aligned API.
 		size_t alloc_size = p_capacity + k_align;
@@ -60,6 +62,7 @@ struct ArenaAllocator {
 	size_t get_remaining() const { return capacity - offset; }
 
 	void free() {
+		symphony_rt_note(SymphonyRTViolation::Free, "ArenaAllocator::free");
 		if (raw_base) {
 			memfree(raw_base);
 		} else if (base) {

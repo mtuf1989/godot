@@ -3,6 +3,7 @@
 /**************************************************************************/
 
 #include "symphony_graph_package_retirement.h"
+#include "symphony_realtime_scope.h"
 
 #include "servers/audio/audio_server.h"
 
@@ -51,6 +52,7 @@ void GraphPackageRetirement::retire(PreparedGraphPackage *p_package) {
 }
 
 void GraphPackageRetirement::drain() {
+	symphony_rt_note(SymphonyRTViolation::Free, "GraphPackageRetirement::drain");
 	PreparedGraphPackage *list = head.exchange(nullptr, std::memory_order_acquire);
 	uint32_t destroyed = 0;
 	while (list) {

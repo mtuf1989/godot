@@ -7,13 +7,19 @@
 
 TEST_FORCE_LINK(test_symphony_playback)
 
+#include "modules/symphony/core/shared_pcm_cache.h"
+#include "modules/symphony/core/symphony_arena_allocator.h"
 #include "modules/symphony/core/symphony_graph_compiler.h"
 #include "modules/symphony/core/symphony_graph_description.h"
 #include "modules/symphony/core/symphony_graph_package_retirement.h"
 #include "modules/symphony/core/symphony_prepared_graph_package.h"
 #include "modules/symphony/core/symphony_operator.h"
+#include "modules/symphony/core/symphony_realtime_scope.h"
+#include "modules/symphony/core/symphony_voice_manager.h"
 #include "modules/symphony/stream/audio_stream_symphony.h"
 #include "modules/symphony/stream/audio_stream_playback_symphony.h"
+
+#include "core/os/memory.h"
 
 #include <cstring>
 
@@ -254,6 +260,112 @@ TEST_CASE("[Symphony][Playback] set_parameter and trigger target published contr
 
 	playback->stop();
 	GraphPackageRetirement::drain();
+}
+
+TEST_CASE("[Symphony][Playback] RT-scope mix and execute report no violations") {
+	SymphonyRealtimeScope::reset_violations();
+
+	GraphCompiler::CompileResult result = GraphCompiler::compile(_make_io_graph(), 48000.0f);
+	REQUIRE(result.success());
+	PreparedGraphPackage *pkg = PreparedGraphPackage::create_from_graph(result.graph, result.arena_bytes, result.total_package_bytes);
+	REQUIRE(pkg != nullptr);
+	REQUIRE(pkg->graph != nullptr);
+
+	AudioFrame exec_buf[SYMPHONY_MICRO_BLOCK_SIZE];
+	pkg->graph_output->set_output(exec_buf, 0);
+	pkg->graph->execute(SYMPHONY_MICRO_BLOCK_SIZE);
+	CHECK(SymphonyRealtimeScope::violation_count() == 0);
+
+	Ref<AudioStreamSymphony> stream;
+	stream.instantiate();
+	stream->set_mix_rate(48000.0f);
+	stream->set_graph_description(_make_io_graph());
+	Ref<AudioStreamPlayback> base = stream->instantiate_playback();
+	Ref<AudioStreamPlaybackSymphony> playback = base;
+	REQUIRE(playback.is_valid());
+	playback->start();
+
+	AudioFrame mix_buf[64];
+	CHECK(playback->mix(mix_buf, 1.0f, 64) == 64);
+
+	CompiledGraph *replacement = stream->compile_graph();
+	REQUIRE(replacement != nullptr);
+	playback->swap_graph(replacement);
+	CHECK(playback->mix(mix_buf, 1.0f, 64) == 64);
+
+	playback->stop();
+	CHECK(playback->mix(mix_buf, 1.0f, 64) == 0);
+	GraphPackageRetirement::drain();
+	PreparedGraphPackage::destroy(pkg);
+
+	CHECK(SymphonyRealtimeScope::violation_count() == 0);
+}
+
+TEST_CASE("[Symphony][Playback] RT-scope flags compile alloc free mutex ObjectDB container") {
+	SymphonyRealtimeAssertSuppressor suppress;
+	SymphonyRealtimeScope::reset_violations();
+	GraphPackageRetirement::drain();
+
+	CompiledGraph *compiled_in_scope = nullptr;
+	{
+		SymphonyRealtimeScope rt_scope;
+		GraphCompiler::CompileResult ignored = GraphCompiler::compile(_make_io_graph(), 48000.0f);
+		compiled_in_scope = ignored.graph;
+	}
+	CHECK(SymphonyRealtimeScope::violation_count(SymphonyRTViolation::Compile) >= 1);
+	if (compiled_in_scope) {
+		memdelete(compiled_in_scope);
+	}
+
+	SymphonyRealtimeScope::reset_violations();
+	{
+		SymphonyRealtimeScope rt_scope;
+		ArenaAllocator arena;
+		CHECK(arena.init(1024));
+		arena.free();
+	}
+	CHECK(SymphonyRealtimeScope::violation_count(SymphonyRTViolation::Alloc) >= 1);
+	CHECK(SymphonyRealtimeScope::violation_count(SymphonyRTViolation::Free) >= 1);
+
+	SymphonyRealtimeScope::reset_violations();
+	{
+		SymphonyRealtimeScope rt_scope;
+		GraphPackageRetirement::drain();
+	}
+	CHECK(SymphonyRealtimeScope::violation_count(SymphonyRTViolation::Free) >= 1);
+
+	REQUIRE(SharedPCMCache::get_singleton() != nullptr);
+	SymphonyRealtimeScope::reset_violations();
+	{
+		SymphonyRealtimeScope rt_scope;
+		(void)SharedPCMCache::get_singleton()->get_entry_count();
+	}
+	CHECK(SymphonyRealtimeScope::violation_count(SymphonyRTViolation::Mutex) >= 1);
+
+	Ref<AudioStreamSymphony> stream;
+	stream.instantiate();
+	stream->set_mix_rate(48000.0f);
+	stream->set_graph_description(_make_io_graph());
+	Ref<AudioStreamPlayback> base = stream->instantiate_playback();
+	Ref<AudioStreamPlaybackSymphony> playback = base;
+	REQUIRE(playback.is_valid());
+
+	SymphonyRealtimeScope::reset_violations();
+	{
+		SymphonyRealtimeScope rt_scope;
+		playback->process_manager_requests();
+	}
+	CHECK(SymphonyRealtimeScope::violation_count(SymphonyRTViolation::ObjectDB) >= 1);
+
+	SymphonyVoiceManager *mgr = SymphonyVoiceManager::get_singleton();
+	REQUIRE(mgr != nullptr);
+	SymphonyRealtimeScope::reset_violations();
+	{
+		SymphonyRealtimeScope rt_scope;
+		(void)mgr->get_debug_metrics();
+	}
+	CHECK(SymphonyRealtimeScope::violation_count(SymphonyRTViolation::ContainerMutation) >= 1);
+	CHECK(mgr->get_rt_violation_count() >= 1);
 }
 
 } // namespace TestSymphonyPlayback

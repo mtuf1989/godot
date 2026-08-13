@@ -4,6 +4,7 @@
 #include "symphony_runtime_metrics.h"
 #include "symphony_memory_budget.h"
 #include "symphony_graph_package_retirement.h"
+#include "symphony_realtime_scope.h"
 #include "core/object/class_db.h"
 #include "core/object/object.h"
 #include "core/variant/dictionary.h"
@@ -34,6 +35,7 @@ void SymphonyVoiceManager::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_packages_destroyed_count"), &SymphonyVoiceManager::get_packages_destroyed_count);
 	ClassDB::bind_method(D_METHOD("get_retirement_pending_count"), &SymphonyVoiceManager::get_retirement_pending_count);
 	ClassDB::bind_method(D_METHOD("get_retirement_peak_pending_count"), &SymphonyVoiceManager::get_retirement_peak_pending_count);
+	ClassDB::bind_method(D_METHOD("get_rt_violation_count"), &SymphonyVoiceManager::get_rt_violation_count);
 	ClassDB::bind_method(D_METHOD("get_debug_metrics"), &SymphonyVoiceManager::get_debug_metrics);
 
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "max_voices"), "set_max_voices", "get_max_voices");
@@ -68,6 +70,7 @@ SymphonyVoiceManager::~SymphonyVoiceManager() {
 }
 
 void SymphonyVoiceManager::_mix_callback(void *p_userdata) {
+	SymphonyRealtimeScope rt_scope;
 	SymphonyVoiceManager *mgr = static_cast<SymphonyVoiceManager *>(p_userdata);
 	mgr->enforce_voice_limits();
 }
@@ -78,16 +81,20 @@ void SymphonyVoiceManager::_update_callback(void *p_userdata) {
 }
 
 void SymphonyVoiceManager::register_voice(AudioStreamPlaybackSymphony *p_voice) {
+	symphony_rt_note(SymphonyRTViolation::ContainerMutation, "SymphonyVoiceManager::register_voice");
 	active_voices.insert(p_voice);
 }
 
 void SymphonyVoiceManager::unregister_voice(AudioStreamPlaybackSymphony *p_voice) {
+	symphony_rt_note(SymphonyRTViolation::ContainerMutation, "SymphonyVoiceManager::unregister_voice");
 	active_voices.erase(p_voice);
 }
 
 void SymphonyVoiceManager::process_deferred_lod() {
 	// Main thread: apply per-voice stop/LOD atomics written by the audio callback.
 	// At most one LOD compilation per update to avoid allocation bursts (plan §5).
+	symphony_rt_note(SymphonyRTViolation::ObjectDB, "SymphonyVoiceManager::process_deferred_lod");
+	symphony_rt_note(SymphonyRTViolation::ContainerMutation, "SymphonyVoiceManager::process_deferred_lod");
 	bool lod_compiled = false;
 
 	for (auto it = active_voices.begin(); it != active_voices.end(); ++it) {
@@ -156,6 +163,10 @@ uint32_t SymphonyVoiceManager::get_retirement_peak_pending_count() const {
 	return GraphPackageRetirement::get_peak_pending_count();
 }
 
+uint32_t SymphonyVoiceManager::get_rt_violation_count() const {
+	return SymphonyRealtimeScope::violation_count();
+}
+
 void SymphonyVoiceManager::note_crossfade_transition() {
 	metric_crossfade_transitions.fetch_add(1, std::memory_order_relaxed);
 }
@@ -165,6 +176,7 @@ void SymphonyVoiceManager::note_fallback_transition() {
 }
 
 Dictionary SymphonyVoiceManager::get_debug_metrics() const {
+	symphony_rt_note(SymphonyRTViolation::ContainerMutation, "SymphonyVoiceManager::get_debug_metrics");
 	Dictionary d;
 	d["active_voice_count"] = get_active_voice_count();
 	d["total_budget_percent"] = get_total_budget_percent();
@@ -179,6 +191,7 @@ Dictionary SymphonyVoiceManager::get_debug_metrics() const {
 	d["retirement_pending"] = (int)get_retirement_pending_count();
 	d["retirement_peak_pending"] = (int)get_retirement_peak_pending_count();
 	d["packages_destroyed"] = (int64_t)get_packages_destroyed_count();
+	d["rt_violations"] = (int)get_rt_violation_count();
 
 	if (SymphonyMemoryBudget *budget = SymphonyMemoryBudget::get_singleton()) {
 		const SymphonyMemoryBudget::Snapshot snap = budget->get_snapshot();

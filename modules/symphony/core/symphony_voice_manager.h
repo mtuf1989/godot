@@ -74,6 +74,7 @@ public:
 	[[nodiscard]] uint64_t get_packages_destroyed_count() const;
 	[[nodiscard]] uint32_t get_retirement_pending_count() const;
 	[[nodiscard]] uint32_t get_retirement_peak_pending_count() const;
+	[[nodiscard]] uint32_t get_rt_violation_count() const;
 	// Aggregated read-only diagnostics for editor / GDScript (memory + transitions + triggers).
 	[[nodiscard]] Dictionary get_debug_metrics() const;
 
