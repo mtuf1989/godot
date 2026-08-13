@@ -3,6 +3,9 @@
 #include "core/object/class_db.h"
 #include "core/os/os.h"
 
+#include <cfloat>
+#include <cstdint>
+
 SymphonyEventDispatcher *SymphonyEventDispatcher::singleton = nullptr;
 
 SymphonyEventDispatcher::SymphonyEventDispatcher() {
@@ -27,34 +30,115 @@ void SymphonyEventDispatcher::_bind_methods() {
 }
 
 int SymphonyEventDispatcher::dispatch(const Ref<SoundEvent> &p_event, PlayResult &r_result) {
-	ERR_FAIL_COND_V(p_event.is_null(), -1);
+	StringName unused_reason;
+	return dispatch(p_event, r_result, unused_reason);
+}
 
-	// --- instance_id Sharing Semantics ---
-	// Cooldown, voice limiting, and variation state are keyed by the SoundEvent's
-	// Object instance_id. This means:
-	//
-	// • All scripts referencing the same loaded .tres resource SHARE cooldown and
-	//   voice limits (Godot's resource cache returns one instance per path).
-	//   This is the standard middleware behavior (Wwise/FMOD global event limiting).
-	//
-	// • Calling event.duplicate() creates a NEW instance_id → independent cooldown
-	//   and voice limits. Use this when per-emitter limiting is needed.
-	//
-	// • Dynamically created SoundEvent.new() instances each get unique instance_ids
-	//   even if configured identically — they won't share cooldown.
-	//
-	// • Variation sequence/shuffle state is also per-instance_id, so all callers
-	//   sharing a .tres advance the same sequence counter.
+int SymphonyEventDispatcher::_select_steal_victim(uint64_t p_event_id, int p_incoming_priority, SoundEvent::StealMode p_mode, bool p_same_event_only, StringName &r_reason) const {
+	SymphonyVoicePool *pool = SymphonyVoicePool::get_singleton();
+	if (!pool) {
+		return -1;
+	}
+
+	int best_idx = -1;
+	uint64_t best_start = UINT64_MAX;
+	float best_rms = FLT_MAX;
+	float best_dist = -1.0f;
+	float best_importance = FLT_MAX;
+
+	Vector3 listener = pool->get_listener_position();
+
+	for (int i = 0; i < pool->get_pool_size(); i++) {
+		const SymphonyVoicePool::VoiceSlot *slot = pool->get_slot(i);
+		if (!slot) {
+			continue;
+		}
+		if (slot->state != SymphonyVoicePool::VOICE_PLAYING && slot->state != SymphonyVoicePool::VOICE_TO_PLAY) {
+			continue;
+		}
+		if (p_same_event_only) {
+			if (slot->event_id != p_event_id) {
+				continue;
+			}
+		} else if (slot->priority > p_incoming_priority) {
+			continue;
+		}
+
+		bool better = false;
+		float dist = listener.distance_to(slot->position);
+		float rms_metric = slot->rms_valid ? slot->rms : slot->importance;
+
+		if (best_idx < 0) {
+			better = true;
+		} else {
+			switch (p_mode) {
+				case SoundEvent::STEAL_OLDEST:
+					if (slot->start_time < best_start) {
+						better = true;
+					} else if (slot->start_time == best_start) {
+						if (slot->importance < best_importance || (slot->importance == best_importance && i < best_idx)) {
+							better = true;
+						}
+					}
+					break;
+				case SoundEvent::STEAL_QUIETEST:
+					if (rms_metric < best_rms) {
+						better = true;
+					} else if (rms_metric == best_rms) {
+						if (slot->importance < best_importance || (slot->importance == best_importance && i < best_idx)) {
+							better = true;
+						}
+					}
+					break;
+				case SoundEvent::STEAL_FARTHEST:
+					if (dist > best_dist) {
+						better = true;
+					} else if (dist == best_dist) {
+						if (slot->importance < best_importance || (slot->importance == best_importance && i < best_idx)) {
+							better = true;
+						}
+					}
+					break;
+			}
+		}
+
+		if (better) {
+			best_idx = i;
+			best_start = slot->start_time;
+			best_rms = rms_metric;
+			best_dist = dist;
+			best_importance = slot->importance;
+		}
+	}
+
+	if (best_idx >= 0) {
+		switch (p_mode) {
+			case SoundEvent::STEAL_OLDEST:
+				r_reason = StringName("oldest");
+				break;
+			case SoundEvent::STEAL_QUIETEST:
+				r_reason = StringName("quietest");
+				break;
+			case SoundEvent::STEAL_FARTHEST:
+				r_reason = StringName("farthest");
+				break;
+		}
+	}
+	return best_idx;
+}
+
+int SymphonyEventDispatcher::dispatch(const Ref<SoundEvent> &p_event, PlayResult &r_result, StringName &r_steal_reason) {
+	ERR_FAIL_COND_V(p_event.is_null(), -1);
+	r_steal_reason = StringName();
+
 	uint64_t event_id = p_event->get_instance_id();
 	uint64_t now = OS::get_singleton()->get_ticks_usec();
 
-	// Check: no streams
 	if (p_event->get_streams().size() == 0) {
 		r_result = RESULT_REJECTED_NO_STREAMS;
 		return -1;
 	}
 
-	// Check: cooldown
 	float cooldown_ms = p_event->get_cooldown_ms();
 	if (cooldown_ms > 0.0f) {
 		if (cooldown_map.has(event_id)) {
@@ -66,39 +150,61 @@ int SymphonyEventDispatcher::dispatch(const Ref<SoundEvent> &p_event, PlayResult
 		}
 	}
 
-	// Check: per-event voice limit
-	int max_voices = p_event->get_max_voices();
-	if (max_voices > 0) {
-		int current = event_voice_counts.has(event_id) ? event_voice_counts[event_id] : 0;
-		if (current >= max_voices) {
-			r_result = RESULT_REJECTED_VOICE_LIMIT;
-			return -1;
-		}
-	}
-
-	// Acquire voice slot
 	SymphonyVoicePool *pool = SymphonyVoicePool::get_singleton();
 	ERR_FAIL_NULL_V(pool, -1);
 
-	int slot = pool->acquire_slot(p_event->get_priority());
-	if (slot < 0) {
-		r_result = RESULT_REJECTED_VOICE_LIMIT;
-		return -1;
+	const int incoming_priority = p_event->get_priority();
+	const int max_voices = p_event->get_max_voices();
+	const int current_event_voices = event_voice_counts.has(event_id) ? event_voice_counts[event_id] : 0;
+	const bool at_event_cap = max_voices > 0 && current_event_voices >= max_voices;
+
+	int slot = -1;
+	bool stole = false;
+
+	if (at_event_cap) {
+		slot = _select_steal_victim(event_id, incoming_priority, p_event->get_steal_mode(), true, r_steal_reason);
+		if (slot < 0) {
+			r_result = RESULT_REJECTED_VOICE_LIMIT;
+			return -1;
+		}
+		SymphonyVoicePool::VoiceSlot *victim = pool->get_slot(slot);
+		uint64_t victim_event = victim ? victim->event_id : 0;
+		if (victim_event != 0) {
+			on_voice_stopped(victim_event);
+		}
+		pool->reclaim_slot(slot, incoming_priority, r_steal_reason);
+		stole = true;
+	} else {
+		slot = pool->acquire_slot(incoming_priority);
+		if (slot < 0) {
+			slot = _select_steal_victim(event_id, incoming_priority, p_event->get_steal_mode(), false, r_steal_reason);
+			if (slot < 0) {
+				r_result = RESULT_REJECTED_VOICE_LIMIT;
+				return -1;
+			}
+			SymphonyVoicePool::VoiceSlot *victim = pool->get_slot(slot);
+			uint64_t victim_event = victim ? victim->event_id : 0;
+			if (victim_event != 0) {
+				on_voice_stopped(victim_event);
+			}
+			pool->reclaim_slot(slot, incoming_priority, r_steal_reason);
+			stole = true;
+		}
 	}
 
-	// Success — update tracking
 	cooldown_map[event_id] = now;
 	on_voice_started(event_id);
 
-	// Set slot metadata
 	SymphonyVoicePool::VoiceSlot *vs = pool->get_slot(slot);
 	if (vs) {
 		vs->event_id = event_id;
-		vs->priority = p_event->get_priority();
-		vs->importance = (float)p_event->get_priority();
+		vs->priority = incoming_priority;
+		vs->importance = (float)incoming_priority * p_event->get_importance_weight();
+		vs->importance_weight = p_event->get_importance_weight();
+		vs->category = (int)p_event->get_category();
 	}
 
-	r_result = RESULT_PLAYED;
+	r_result = stole ? RESULT_STOLEN : RESULT_PLAYED;
 	return slot;
 }
 
@@ -165,7 +271,8 @@ void SymphonyEventDispatcher::on_voice_stopped(uint64_t p_event_id) {
 Dictionary SymphonyEventDispatcher::play_event(const Ref<SoundEvent> &p_event) {
 	Dictionary result;
 	PlayResult pr;
-	int slot = dispatch(p_event, pr);
+	StringName steal_reason;
+	int slot = dispatch(p_event, pr, steal_reason);
 	int stream_index = -1;
 	float volume_offset_db = 0.0f;
 	float pitch_scale = 1.0f;
@@ -173,13 +280,8 @@ Dictionary SymphonyEventDispatcher::play_event(const Ref<SoundEvent> &p_event) {
 	if (slot >= 0) {
 		stream_index = resolve_variation(p_event);
 
-		// Item 27: Validate resolved stream is non-null before returning success.
-		// A SoundEvent may have non-empty streams array but contain null entries
-		// (e.g., removed AudioStream references in .tres). Reject here rather than
-		// letting the game layer crash when assigning null to a player.
 		TypedArray<AudioStream> streams = p_event->get_streams();
 		if (stream_index < 0 || stream_index >= streams.size() || Variant(streams[stream_index]).get_type() == Variant::NIL) {
-			// Release the slot we just acquired — stream is invalid
 			SymphonyVoicePool *pool = SymphonyVoicePool::get_singleton();
 			if (pool) {
 				pool->release_slot(slot, true);
@@ -189,10 +291,6 @@ Dictionary SymphonyEventDispatcher::play_event(const Ref<SoundEvent> &p_event) {
 			slot = -1;
 			stream_index = -1;
 		} else {
-			// Compute per-instance randomized offsets (Wwise/FMOD additive model):
-			// - volume_offset_db: random dB offset from volume_range (additive in dB domain)
-			// - pitch_scale: random multiplier from pitch_range
-			// The game layer combines these with RTPC-driven offsets and bus volume.
 			Vector2 vol_range = p_event->get_volume_range();
 			if (vol_range.x != vol_range.y) {
 				volume_offset_db = vol_range.x + rng.randf() * (vol_range.y - vol_range.x);
@@ -215,13 +313,8 @@ Dictionary SymphonyEventDispatcher::play_event(const Ref<SoundEvent> &p_event) {
 	result["volume_offset_db"] = volume_offset_db;
 	result["pitch_scale"] = pitch_scale;
 
-	// Log the event to the ring buffer
 	SymphonyVoicePool *pool = SymphonyVoicePool::get_singleton();
 	if (pool) {
-		// Item 26: Generate a meaningful fallback name for dynamic Resources.
-		// get_path() is empty for Resources created at runtime (SoundEvent.new()).
-		// get_name() is also empty unless explicitly set by the user.
-		// Fallback: "SoundEvent#<instance_id>" to keep event logs debuggable.
 		StringName event_name;
 		if (p_event.is_valid()) {
 			String path = p_event->get_path().get_file();
@@ -236,14 +329,16 @@ Dictionary SymphonyEventDispatcher::play_event(const Ref<SoundEvent> &p_event) {
 		float importance = (slot >= 0 && pool->get_slot(slot)) ? pool->get_slot(slot)->importance : 0.0f;
 
 		SymphonyVoicePool::EventResult log_result;
-		StringName reason;
+		StringName reason = steal_reason;
 		switch (pr) {
 			case RESULT_PLAYED:
 				log_result = SymphonyVoicePool::EVENT_PLAYED;
 				break;
 			case RESULT_STOLEN:
 				log_result = SymphonyVoicePool::EVENT_STOLEN;
-				reason = StringName("lowest_importance");
+				if (reason == StringName()) {
+					reason = StringName("stolen");
+				}
 				break;
 			case RESULT_REJECTED_COOLDOWN:
 				log_result = SymphonyVoicePool::EVENT_REJECTED_COOLDOWN;

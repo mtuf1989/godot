@@ -6,20 +6,22 @@
 #include "../../core/symphony_trigger.h"
 
 #include <atomic>
+#include <cstdint>
 
 // Exposes a named trigger input to the game thread (GDScript API).
-// Game thread writes pending triggers; audio thread drains them at micro-block start.
-// Outputs a TRIGGER pin.
+// Fixed 64-entry SPSC queue: game thread produces, audio drains (plan §9).
 class SymphonyTriggerInput : public SymphonyOperator {
 private:
 	TriggerBuffer *output = nullptr;
 
-	// Lock-free pending trigger from game thread.
-	// Simple approach: one pending trigger per micro-block (game tick >> audio block rate).
-	std::atomic<float> pending_value{ 0.0f };
-	std::atomic<bool> pending_flag{ false };
+	static constexpr uint32_t QUEUE_CAPACITY = 64;
+	struct QueueEntry {
+		float value = 1.0f;
+	};
+	QueueEntry queue[QUEUE_CAPACITY];
+	std::atomic<uint32_t> write_pos{ 0 };
+	std::atomic<uint32_t> read_pos{ 0 };
 
-	// When true, fire(1.0) is called automatically when playback starts.
 	bool auto_trigger_on_play = true;
 
 public:
@@ -30,18 +32,34 @@ public:
 	}
 
 	virtual void execute(int32_t p_num_frames) override {
-		// Output buffer is already cleared by CompiledGraph::execute().
-		if (pending_flag.load(std::memory_order_acquire)) {
-			float val = pending_value.load(std::memory_order_relaxed);
-			output->push(0, val); // Fire at sample 0 of this micro-block.
-			pending_flag.store(false, std::memory_order_release);
+		(void)p_num_frames;
+		if (!output) {
+			return;
 		}
+		uint32_t r = read_pos.load(std::memory_order_relaxed);
+		uint32_t w = write_pos.load(std::memory_order_acquire);
+		while (r != w) {
+			if (!output->push(0, queue[r % QUEUE_CAPACITY].value)) {
+				symphony_note_dropped_trigger();
+				// Leave remaining entries queued for the next block.
+				break;
+			}
+			r++;
+		}
+		read_pos.store(r, std::memory_order_release);
 	}
 
-	// Called from game thread via trigger() routing.
-	void fire(float p_value = 1.0f) {
-		pending_value.store(p_value, std::memory_order_relaxed);
-		pending_flag.store(true, std::memory_order_release);
+	// Called from game thread via trigger() routing. Returns false if queue is full.
+	bool fire(float p_value = 1.0f) {
+		uint32_t w = write_pos.load(std::memory_order_relaxed);
+		uint32_t r = read_pos.load(std::memory_order_acquire);
+		if ((w - r) >= QUEUE_CAPACITY) {
+			symphony_note_dropped_trigger();
+			return false;
+		}
+		queue[w % QUEUE_CAPACITY].value = p_value;
+		write_pos.store(w + 1, std::memory_order_release);
+		return true;
 	}
 
 	bool get_auto_trigger_on_play() const { return auto_trigger_on_play; }
@@ -59,6 +77,7 @@ public:
 	}
 
 	static SymphonyOperator *create(ArenaAllocator &p_arena, const HashMap<StringName, Variant> &p_params, float p_mix_rate) {
+		(void)p_mix_rate;
 		void *mem = p_arena.alloc(sizeof(SymphonyTriggerInput), alignof(SymphonyTriggerInput));
 		SymphonyTriggerInput *op = new (mem) SymphonyTriggerInput();
 		const Variant *v = p_params.getptr(StringName("auto_trigger_on_play"));

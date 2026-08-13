@@ -104,7 +104,9 @@ public:
 					case 0: // No loop
 						playing = false;
 						if (finished_output) {
-							finished_output->push(i, 1.0f);
+							if (!finished_output->push(i, 1.0f)) {
+								symphony_note_dropped_trigger();
+							}
 						}
 						for (int32_t j = i + 1; j < p_num_frames; j++) {
 							output[j] = 0.0f;

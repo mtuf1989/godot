@@ -41,6 +41,9 @@ void SymphonyVoicePool::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_slot_state", "index"), &SymphonyVoicePool::get_slot_state);
 	ClassDB::bind_method(D_METHOD("acquire_slot", "priority"), &SymphonyVoicePool::acquire_slot);
 	ClassDB::bind_method(D_METHOD("release_slot", "index", "immediate"), &SymphonyVoicePool::release_slot, DEFVAL(false));
+	ClassDB::bind_method(D_METHOD("reclaim_slot", "index", "priority", "steal_reason"), &SymphonyVoicePool::reclaim_slot, DEFVAL(StringName()));
+	ClassDB::bind_method(D_METHOD("set_slot_rms", "index", "rms"), &SymphonyVoicePool::set_slot_rms);
+	ClassDB::bind_method(D_METHOD("is_slot_rms_valid", "index"), &SymphonyVoicePool::is_slot_rms_valid);
 	ClassDB::bind_method(D_METHOD("virtualize", "index"), &SymphonyVoicePool::virtualize);
 	ClassDB::bind_method(D_METHOD("devirtualize", "index"), &SymphonyVoicePool::devirtualize);
 	ClassDB::bind_method(D_METHOD("process_frame"), &SymphonyVoicePool::process_frame);
@@ -105,46 +108,42 @@ void SymphonyVoicePool::_bind_methods() {
 	ADD_SIGNAL(MethodInfo("voice_devirtualized", PropertyInfo(Variant::INT, "slot_index")));
 }
 
+static void _activate_slot(SymphonyVoicePool::VoiceSlot &slot, int p_priority) {
+	slot.state = SymphonyVoicePool::VOICE_TO_PLAY;
+	slot.priority = p_priority;
+	slot.importance = (float)p_priority;
+	slot.rms = 0.0f;
+	slot.rms_valid = false;
+	slot.fade_progress = 0.0f;
+	slot.fade_speed = 1.0f / SymphonyVoicePool::ANTI_CLICK_SAMPLES;
+	slot.start_time = OS::get_singleton()->get_ticks_usec();
+	slot.local_param_count = 0;
+	slot.attenuation_volume = 1.0f;
+	slot.lod_threshold_1 = 0.3f;
+	slot.lod_threshold_2 = 0.7f;
+	slot.current_lod = 0;
+	slot.target_lod = 0;
+	slot.lod_forced = false;
+}
+
 int SymphonyVoicePool::acquire_slot(int p_priority) {
+	// Free-only: EventDispatcher owns stealing (plan §10).
 	for (int i = 0; i < pool_size; i++) {
 		if (slots[i].state == VOICE_FREE) {
-			slots[i].state = VOICE_TO_PLAY;
-			slots[i].priority = p_priority;
-			slots[i].importance = (float)p_priority;
-			slots[i].rms = 0.0f;
-			slots[i].fade_progress = 0.0f;
-			slots[i].fade_speed = 1.0f / ANTI_CLICK_SAMPLES;
-			slots[i].start_time = OS::get_singleton()->get_ticks_usec();
-			slots[i].local_param_count = 0;
-			slots[i].attenuation_volume = 1.0f;
-			slots[i].lod_threshold_1 = 0.3f;
-			slots[i].lod_threshold_2 = 0.7f;
+			_activate_slot(slots[i], p_priority);
 			slot_attenuation_curves[i] = Ref<Curve>();
 			return i;
 		}
 	}
-	int stolen = steal_lowest_importance();
-	if (stolen >= 0) {
-		slots[stolen].state = VOICE_TO_PLAY;
-		slots[stolen].priority = p_priority;
-		slots[stolen].importance = (float)p_priority;
-		slots[stolen].rms = 0.0f;
-		slots[stolen].fade_progress = 0.0f;
-		slots[stolen].fade_speed = 1.0f / ANTI_CLICK_SAMPLES;
-		slots[stolen].start_time = OS::get_singleton()->get_ticks_usec();
-		slots[stolen].local_param_count = 0;
-		slots[stolen].attenuation_volume = 1.0f;
-		slots[stolen].lod_threshold_1 = 0.3f;
-		slots[stolen].lod_threshold_2 = 0.7f;
-		slot_attenuation_curves[stolen] = Ref<Curve>();
-	}
-	return stolen;
+	return -1;
 }
 
 void SymphonyVoicePool::release_slot(int p_index, bool p_immediate) {
 	ERR_FAIL_INDEX(p_index, pool_size);
 	if (p_immediate) {
 		slots[p_index].state = VOICE_FREE;
+		slots[p_index].event_id = 0;
+		slots[p_index].rms_valid = false;
 	} else {
 		slots[p_index].state = VOICE_STOPPING;
 		slots[p_index].fade_progress = 1.0f;
@@ -152,26 +151,44 @@ void SymphonyVoicePool::release_slot(int p_index, bool p_immediate) {
 	}
 }
 
-int SymphonyVoicePool::steal_lowest_importance() {
+void SymphonyVoicePool::reclaim_slot(int p_index, int p_priority, const StringName &p_steal_reason) {
+	ERR_FAIL_INDEX(p_index, pool_size);
+	(void)p_steal_reason;
+	_activate_slot(slots[p_index], p_priority);
+	slots[p_index].event_id = 0;
+	slot_attenuation_curves[p_index] = Ref<Curve>();
+	stolen_this_frame++;
+}
+
+int SymphonyVoicePool::find_lowest_importance_slot() const {
 	int worst_idx = -1;
 	float worst_importance = FLT_MAX;
-
 	for (int i = 0; i < pool_size; i++) {
 		if (slots[i].state == VOICE_PLAYING || slots[i].state == VOICE_TO_PLAY) {
-			if (slots[i].importance < worst_importance) {
+			if (slots[i].importance < worst_importance ||
+					(slots[i].importance == worst_importance && (worst_idx < 0 || i < worst_idx))) {
 				worst_importance = slots[i].importance;
 				worst_idx = i;
 			}
 		}
 	}
-
-	if (worst_idx >= 0) {
-		// Log the steal event with the victim's info
-		_log_event(StringName(), EVENT_STOLEN, worst_idx, worst_importance, StringName("lowest_importance"));
-		slots[worst_idx].state = VOICE_FREE;
-		stolen_this_frame++;
-	}
 	return worst_idx;
+}
+
+int SymphonyVoicePool::steal_lowest_importance() {
+	// Select-only (compat). Prefer EventDispatcher + reclaim_slot for correct event counts.
+	return find_lowest_importance_slot();
+}
+
+void SymphonyVoicePool::set_slot_rms(int p_index, float p_rms) {
+	ERR_FAIL_INDEX(p_index, pool_size);
+	slots[p_index].rms = p_rms;
+	slots[p_index].rms_valid = true;
+}
+
+bool SymphonyVoicePool::is_slot_rms_valid(int p_index) const {
+	ERR_FAIL_INDEX_V(p_index, pool_size, false);
+	return slots[p_index].rms_valid;
 }
 
 void SymphonyVoicePool::virtualize(int p_index) {

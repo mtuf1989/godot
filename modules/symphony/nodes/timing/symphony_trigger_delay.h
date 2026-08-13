@@ -49,7 +49,9 @@ public:
 			if (pending[i].remaining_samples <= 0) {
 				int32_t offset = p_num_frames + pending[i].remaining_samples;
 				if (offset < 0) offset = 0;
-				output->push(offset, pending[i].value);
+				if (!output->push(offset, pending[i].value)) {
+					symphony_note_dropped_trigger();
+				}
 				// Remove by swapping with last
 				pending[i] = pending[pending_count - 1];
 				pending_count--;

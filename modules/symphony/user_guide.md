@@ -2041,7 +2041,7 @@ Per-transition override: `"coherence_override": true` suppresses warnings for ar
 - `Gain` — Reports `activity=0` and fast-paths to memset when gain ≈ 0
 
 **New API:**
-- `SymphonyVoiceManager.process_deferred_lod()` — Called automatically by `AudioManager._process()`. Executes LOD transitions that were identified by the audio thread but require main-thread compilation.
+- `SymphonyVoiceManager.process_deferred_lod()` — Optional; also runs automatically from the AudioServer update callback. Applies per-voice stop/LOD atomics queued by the audio thread (main-thread compile/stop only).
 
 **Graph design guidance:**
 - Place gating operators (ADSR, Gain) as early in the chain as possible for maximum silence propagation benefit

@@ -51,7 +51,9 @@ public:
 				} else {
 					value = (float)tick_index / subdivision;
 				}
-				output->push(i, value);
+				if (!output->push(i, value)) {
+					symphony_note_dropped_trigger();
+				}
 				tick_index++;
 				if (tick_index >= sub_int) {
 					tick_index = 0;

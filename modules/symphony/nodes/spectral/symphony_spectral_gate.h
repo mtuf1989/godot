@@ -326,6 +326,8 @@ public:
 		if (!sg->input_ring || !sg->output_ring || !sg->window_lut ||
 				!sg->fft_workspace || !sg->analysis_frame || !sg->fft_buffer ||
 				!sg->ifft_buffer) {
+			pffft_destroy_setup(sg->pffft_setup);
+			sg->pffft_setup = nullptr;
 			return nullptr;
 		}
 

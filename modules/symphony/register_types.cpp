@@ -4,6 +4,7 @@
 #include "stream/audio_stream_playback_symphony.h"
 #include "core/symphony_operator_registry.h"
 #include "core/symphony_memory_budget.h"
+#include "core/symphony_graph_package_retirement.h"
 #include "core/symphony_voice_manager.h"
 #include "core/shared_pcm_cache.h"
 #include "runtime/sound_event.h"
@@ -74,6 +75,7 @@ void initialize_symphony_module(ModuleInitializationLevel p_level) {
 		// Create operator registry and register all built-in operators
 		OperatorRegistry::create_singleton();
 		SymphonyMemoryBudget::create_singleton();
+		GraphPackageRetirement::initialize();
 
 		// Generators
 		SymphonyOscillator::register_operator();
@@ -230,6 +232,7 @@ void uninitialize_symphony_module(ModuleInitializationLevel p_level) {
 		if (SharedPCMCache::get_singleton()) {
 			memdelete(SharedPCMCache::get_singleton());
 		}
+		GraphPackageRetirement::uninitialize();
 		SymphonyMemoryBudget::destroy_singleton();
 		OperatorRegistry::destroy_singleton();
 	}

@@ -4,6 +4,7 @@
 #include "audio_stream_symphony.h"
 #include "../core/symphony_pin_types.h"
 #include "../core/symphony_compiled_graph.h"
+#include "../core/symphony_prepared_graph_package.h"
 #include "../nodes/io/symphony_graph_output.h"
 #include "../nodes/io/symphony_graph_input.h"
 #include "../nodes/io/symphony_trigger_input.h"
@@ -19,46 +20,57 @@ private:
 	Ref<AudioStreamSymphony> stream;
 	std::atomic<bool> active{ false };
 	bool registered_with_manager = false;
-	std::atomic<bool> stop_pending{ false }; // Deferred stop: graph deletion happens in mix()
+	std::atomic<bool> stop_pending{ false };
 
-	// The currently executing graph (owned, freed on audio thread via deferred stop).
-	CompiledGraph *current_graph = nullptr;
-
-	// Atomic slot for hot-swap: main thread writes here, audio thread picks up.
-	std::atomic<CompiledGraph *> pending_graph{ nullptr };
-
-	// When true, the pending_graph is an LOD transition (crossfade needed).
-	// When false, it's a regular hot-swap (graveyard pattern).
+	// Live / pending packages (plan §4). Superseded packages go to GraphPackageRetirement.
+	PreparedGraphPackage *current_package = nullptr;
+	std::atomic<PreparedGraphPackage *> pending_package{ nullptr };
 	std::atomic<bool> pending_is_lod{ false };
 
-	// Graveyard: old graphs waiting to be freed on the main thread.
-	CompiledGraph *graveyard = nullptr;
+	// Transition state (plan §5). At most current + outgoing (+ held incoming for fallback).
+	enum class TransitionMode : uint8_t {
+		Idle,
+		EqualPowerCrossfade, // dual-graph 40 ms
+		FallbackFadeOut, // single-graph fade out over 64 samples
+		FallbackFadeIn, // single-graph fade in over 64 samples
+	};
+	TransitionMode transition_mode = TransitionMode::Idle;
+	PreparedGraphPackage *outgoing_package = nullptr;
+	PreparedGraphPackage *incoming_package = nullptr; // held during FallbackFadeOut
+	float transition_progress = 1.0f;
+	float transition_speed = 0.0f;
+	bool holds_crossfade_token = false;
+	int current_lod_tier = 0;
 
-	// --- LOD crossfade (Option B: parallel execution during transition) ---
-	CompiledGraph *lod_outgoing_graph = nullptr;   // Old graph being faded out
-	SymphonyGraphOutput *lod_outgoing_output = nullptr;
-	float lod_crossfade_progress = 1.0f;  // 0 = fully outgoing, 1 = fully current (no crossfade)
-	float lod_crossfade_speed = 0.0f;     // Progress increment per sample
-	int current_lod_tier = 0;             // Current active LOD (0=full, 1=simplified, 2=minimal)
-	static constexpr int LOD_CROSSFADE_SAMPLES = 2048; // ~42ms at 48kHz
+	static constexpr float CROSSFADE_SECONDS = 0.040f;
+	static constexpr int FALLBACK_FADE_SAMPLES = 64;
 
-	// Pointer to the GraphOutput operator in the current graph.
+	// Convenience mirrors of current_package (audio-thread only for writes).
+	CompiledGraph *current_graph = nullptr;
 	SymphonyGraphOutput *graph_output_node = nullptr;
 
-	// Parameter/trigger routing tables (rebuilt on graph swap).
-	HashMap<StringName, SymphonyGraphInput *> parameter_map;
-	HashMap<StringName, SymphonyTriggerInput *> trigger_map;
-
-	// --- Profiling ---
-	float last_mix_time_us = 0.0f;   // Total mix() time in microseconds
-	float last_rms = 0.0f;           // RMS of last mix() output
-	int32_t last_frame_count = 0;    // Frame count of last mix() call
+	float last_mix_time_us = 0.0f;
+	float last_rms = 0.0f;
+	int32_t last_frame_count = 0;
 	float mix_rate_cached = 44100.0f;
 
-	void cleanup_graveyard();
-	void find_graph_output();
-	void rebuild_routing_tables();
-	void _finalize_stop(); // Deferred graph deletion — always called from audio thread context
+	// Cached Resource-derived fields for audio-thread reads (plan §6).
+	int cached_priority = 50;
+	int cached_max_lod = 0;
+
+	// Manager → main-thread requests (audio writes atomics only).
+	std::atomic<int32_t> requested_lod_tier{ -1 }; // -1 = none
+	std::atomic<bool> manager_stop_request{ false };
+
+	void _install_package(PreparedGraphPackage *p_package);
+	void _finalize_stop();
+	void _release_crossfade_token();
+	void _abort_transition_packages();
+	enum class AdmitResult : uint8_t { Denied, AdmittedNoToken, AdmittedWithToken };
+	[[nodiscard]] AdmitResult _try_admit_crossfade();
+	void _begin_equal_power_crossfade(PreparedGraphPackage *p_new_package);
+	void _begin_fallback_transition(PreparedGraphPackage *p_new_package);
+	void _cache_stream_metadata();
 
 protected:
 	static void _bind_methods();
@@ -72,19 +84,26 @@ public:
 	virtual void seek(double p_time) override;
 	virtual int mix(AudioFrame *p_buffer, float p_rate_scale, int p_frames) override;
 
-	// Hot-swap: publish a new compiled graph (called from main thread).
+	// Hot-swap: wraps the compiled graph in a PreparedGraphPackage (main thread).
 	void swap_graph(CompiledGraph *p_graph);
 
-	// LOD transition: initiate parallel crossfade to a new LOD tier (called from main thread).
 	void transition_to_lod(int p_lod_tier);
 	[[nodiscard]] int get_current_lod_tier() const { return current_lod_tier; }
-	[[nodiscard]] bool is_lod_transitioning() const { return lod_crossfade_progress < 1.0f; }
+	[[nodiscard]] bool is_lod_transitioning() const {
+		return transition_mode != TransitionMode::Idle || requested_lod_tier.load(std::memory_order_relaxed) >= 0;
+	}
 
-	// GDScript API — overrides AudioStreamPlayback virtuals.
+	// Audio-thread-safe request writers (SymphonyVoiceManager).
+	void request_lod_tier(int32_t p_lod_tier);
+	void request_manager_stop();
+	// Main thread: apply pending manager requests for this voice.
+	void process_manager_requests();
+
+	[[nodiscard]] int get_cached_max_lod() const { return cached_max_lod; }
+
 	virtual void set_parameter(const StringName &p_name, const Variant &p_value) override;
-	void trigger(const StringName &p_name, float p_value = 1.0f);
+	bool trigger(const StringName &p_name, float p_value = 1.0f);
 
-	// Profiling API
 	[[nodiscard]] float get_voice_cpu_microseconds() const;
 	[[nodiscard]] float get_budget_percent() const;
 	[[nodiscard]] float get_last_rms() const;

@@ -1,8 +1,9 @@
 #pragma once
 
+#include "core/os/memory.h"
+
 #include <cstddef>
 #include <cstdint>
-#include <cstdlib>
 #include <cstring>
 
 // Single-allocation bump-pointer arena for operator states and audio buffers.

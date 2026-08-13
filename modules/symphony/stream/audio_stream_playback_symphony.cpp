@@ -1,5 +1,7 @@
 #include "audio_stream_playback_symphony.h"
 #include "../core/symphony_voice_manager.h"
+#include "../core/symphony_graph_package_retirement.h"
+#include "../core/symphony_fast_math.h"
 #include "../core/symphony_platform_time.h"
 #include "core/object/class_db.h"
 #include "core/os/thread.h"
@@ -13,33 +15,141 @@ void AudioStreamPlaybackSymphony::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_last_rms"), &AudioStreamPlaybackSymphony::get_last_rms);
 }
 
+void AudioStreamPlaybackSymphony::_install_package(PreparedGraphPackage *p_package) {
+	current_package = p_package;
+	current_graph = p_package ? p_package->graph : nullptr;
+	graph_output_node = p_package ? p_package->graph_output : nullptr;
+}
+
+void AudioStreamPlaybackSymphony::_release_crossfade_token() {
+	if (!holds_crossfade_token) {
+		return;
+	}
+	holds_crossfade_token = false;
+	SymphonyVoiceManager *mgr = SymphonyVoiceManager::get_singleton();
+	if (mgr) {
+		mgr->release_crossfade_token();
+	}
+}
+
+void AudioStreamPlaybackSymphony::_abort_transition_packages() {
+	_release_crossfade_token();
+	if (outgoing_package) {
+		GraphPackageRetirement::retire(outgoing_package);
+		outgoing_package = nullptr;
+	}
+	if (incoming_package) {
+		GraphPackageRetirement::retire(incoming_package);
+		incoming_package = nullptr;
+	}
+	transition_mode = TransitionMode::Idle;
+	transition_progress = 1.0f;
+	transition_speed = 0.0f;
+}
+
+AudioStreamPlaybackSymphony::AdmitResult AudioStreamPlaybackSymphony::_try_admit_crossfade() {
+	// Only admit a dual-graph crossfade from a fully idle transition state.
+	if (transition_mode != TransitionMode::Idle) {
+		return AdmitResult::Denied;
+	}
+	SymphonyVoiceManager *mgr = SymphonyVoiceManager::get_singleton();
+	if (!mgr) {
+		return AdmitResult::AdmittedNoToken;
+	}
+	// get_total_budget_percent() is 0–100+; thresholds are 0–1 fractions.
+	float cpu_fraction = mgr->get_total_budget_percent() / 100.0f;
+	if (cpu_fraction >= mgr->get_critical_threshold() || cpu_fraction >= mgr->get_warning_threshold()) {
+		return AdmitResult::Denied;
+	}
+	if (!mgr->try_acquire_crossfade_token()) {
+		return AdmitResult::Denied;
+	}
+	return AdmitResult::AdmittedWithToken;
+}
+
+void AudioStreamPlaybackSymphony::_begin_equal_power_crossfade(PreparedGraphPackage *p_new_package) {
+	outgoing_package = current_package;
+	_install_package(p_new_package);
+	transition_mode = TransitionMode::EqualPowerCrossfade;
+	transition_progress = 0.0f;
+	float samples = mix_rate_cached > 0.0f ? mix_rate_cached * CROSSFADE_SECONDS : 2048.0f;
+	transition_speed = 1.0f / samples;
+}
+
+void AudioStreamPlaybackSymphony::_begin_fallback_transition(PreparedGraphPackage *p_new_package) {
+	_release_crossfade_token();
+	if (outgoing_package) {
+		GraphPackageRetirement::retire(outgoing_package);
+		outgoing_package = nullptr;
+	}
+	if (incoming_package) {
+		GraphPackageRetirement::retire(incoming_package);
+	}
+	incoming_package = p_new_package;
+	if (!current_package) {
+		// Nothing to fade out — install and fade in.
+		_install_package(incoming_package);
+		incoming_package = nullptr;
+		transition_mode = TransitionMode::FallbackFadeIn;
+	} else {
+		transition_mode = TransitionMode::FallbackFadeOut;
+	}
+	transition_progress = 0.0f;
+	transition_speed = 1.0f / (float)FALLBACK_FADE_SAMPLES;
+}
+
+void AudioStreamPlaybackSymphony::_cache_stream_metadata() {
+	if (!stream.is_valid()) {
+		mix_rate_cached = 44100.0f;
+		cached_priority = 50;
+		cached_max_lod = 0;
+		return;
+	}
+	mix_rate_cached = stream->get_mix_rate();
+	cached_priority = stream->get_voice_priority();
+	cached_max_lod = MAX(0, stream->get_lod_count() - 1);
+}
+
+void AudioStreamPlaybackSymphony::request_lod_tier(int32_t p_lod_tier) {
+	requested_lod_tier.store(p_lod_tier, std::memory_order_release);
+}
+
+void AudioStreamPlaybackSymphony::request_manager_stop() {
+	manager_stop_request.store(true, std::memory_order_release);
+}
+
+void AudioStreamPlaybackSymphony::process_manager_requests() {
+	if (manager_stop_request.exchange(false, std::memory_order_acquire)) {
+		stop();
+		requested_lod_tier.store(-1, std::memory_order_relaxed);
+		return;
+	}
+	int32_t lod = requested_lod_tier.exchange(-1, std::memory_order_acquire);
+	if (lod >= 0) {
+		transition_to_lod(lod);
+	}
+}
+
 void AudioStreamPlaybackSymphony::start(double p_from_pos) {
 	active.store(true, std::memory_order_release);
-	if (stream.is_valid()) {
-		mix_rate_cached = stream->get_mix_rate();
-	}
-	CompiledGraph *pending = pending_graph.exchange(nullptr, std::memory_order_acquire);
+	_cache_stream_metadata();
+	PreparedGraphPackage *pending = pending_package.exchange(nullptr, std::memory_order_acquire);
 	if (pending) {
-		if (current_graph) {
-			cleanup_graveyard();
-			graveyard = current_graph;
+		if (current_package) {
+			GraphPackageRetirement::retire(current_package);
 		}
-		current_graph = pending;
-		find_graph_output();
-		rebuild_routing_tables();
+		_install_package(pending);
 	}
 
-	// Auto-fire triggers that have auto_trigger_on_play enabled.
-	for (const KeyValue<StringName, SymphonyTriggerInput *> &E : trigger_map) {
-		if (E.value->get_auto_trigger_on_play()) {
-			E.value->fire(1.0f);
+	if (current_package) {
+		for (int i = 0; i < current_package->trigger_routes.size(); i++) {
+			SymphonyTriggerInput *tin = current_package->trigger_routes[i].input;
+			if (tin && tin->get_auto_trigger_on_play()) {
+				tin->fire(1.0f);
+			}
 		}
 	}
 
-	// Only register with voice manager during game runtime, not in the editor.
-	// In the editor, voice limiting is unnecessary and the mix callback's
-	// enforce_voice_limits() can call stop() on playbacks mid-frame, causing
-	// graph destruction while AudioServer still expects the playback to be alive.
 #ifndef TOOLS_ENABLED
 	SymphonyVoiceManager *mgr = SymphonyVoiceManager::get_singleton();
 	if (mgr) {
@@ -60,8 +170,6 @@ void AudioStreamPlaybackSymphony::stop() {
 		registered_with_manager = false;
 	}
 
-	// Defer graph deletion to the next mix() call on the audio thread.
-	// This ensures no one is mid-execution on the graph when we delete it.
 	stop_pending.store(true, std::memory_order_relaxed);
 }
 
@@ -82,8 +190,6 @@ void AudioStreamPlaybackSymphony::seek(double p_time) {
 
 int AudioStreamPlaybackSymphony::mix(AudioFrame *p_buffer, float p_rate_scale, int p_frames) {
 	if (!active.load(std::memory_order_acquire)) {
-		// Finalize deferred stop: delete graph safely now that we know
-		// no one is mid-execution (we're the only reader of current_graph).
 		if (stop_pending.load(std::memory_order_relaxed)) {
 			_finalize_stop();
 		}
@@ -92,31 +198,18 @@ int AudioStreamPlaybackSymphony::mix(AudioFrame *p_buffer, float p_rate_scale, i
 
 	uint64_t t_start = symphony_time_usec();
 
-	// Hot-swap check: pick up new graph if available.
-	CompiledGraph *pending = pending_graph.exchange(nullptr, std::memory_order_acquire);
+	PreparedGraphPackage *pending = pending_package.exchange(nullptr, std::memory_order_acquire);
 	if (pending) {
-		// pending_is_lod visibility is already guaranteed by the acquire on pending_graph
-		// above (writer stores pending_is_lod with release BEFORE pending_graph with acq_rel,
-		// so acquiring pending_graph transitively publishes pending_is_lod). Relaxed suffices.
-		bool is_lod = pending_is_lod.exchange(false, std::memory_order_relaxed);
-		if (is_lod && current_graph) {
-			// LOD transition: set up parallel crossfade from current → new.
-			// If already in a crossfade, discard the old outgoing graph.
-			if (lod_outgoing_graph) {
-				memdelete(lod_outgoing_graph);
-			}
-			lod_outgoing_graph = current_graph;
-			lod_outgoing_output = graph_output_node;
-			lod_crossfade_progress = 0.0f;
-			lod_crossfade_speed = 1.0f / (float)LOD_CROSSFADE_SAMPLES;
+		pending_is_lod.exchange(false, std::memory_order_relaxed);
+		AdmitResult admit = current_package ? _try_admit_crossfade() : AdmitResult::Denied;
+		if (admit != AdmitResult::Denied) {
+			holds_crossfade_token = (admit == AdmitResult::AdmittedWithToken);
+			_begin_equal_power_crossfade(pending);
+		} else if (current_package || incoming_package || outgoing_package || transition_mode != TransitionMode::Idle) {
+			_begin_fallback_transition(pending);
 		} else {
-			// Regular hot-swap: graveyard the old graph.
-			cleanup_graveyard();
-			graveyard = current_graph;
+			_install_package(pending);
 		}
-		current_graph = pending;
-		find_graph_output();
-		rebuild_routing_tables();
 	}
 
 	if (!current_graph || !graph_output_node) {
@@ -134,53 +227,86 @@ int AudioStreamPlaybackSymphony::mix(AudioFrame *p_buffer, float p_rate_scale, i
 		graph_output_node->set_output(p_buffer, frames_processed);
 		current_graph->execute(chunk);
 
-		// LOD crossfade: if outgoing graph exists, execute it too and blend
-		if (lod_outgoing_graph && lod_outgoing_output && lod_crossfade_progress < 1.0f) {
-			// Temporary buffer for outgoing graph output
+		if (transition_mode == TransitionMode::EqualPowerCrossfade && outgoing_package &&
+				outgoing_package->graph && outgoing_package->graph_output) {
 			AudioFrame outgoing_buf[SYMPHONY_MICRO_BLOCK_SIZE];
-			lod_outgoing_output->set_output(outgoing_buf, 0);
-			lod_outgoing_graph->execute(chunk);
+			outgoing_package->graph_output->set_output(outgoing_buf, 0);
+			outgoing_package->graph->execute(chunk);
 
-			// Blend: crossfade from outgoing to current
 			for (int s = 0; s < chunk; s++) {
-				float mix_new = lod_crossfade_progress;
-				float mix_old = 1.0f - mix_new;
+				float gain_old = 1.0f;
+				float gain_new = 0.0f;
+				SymphonyFastMath::equal_power_gains(transition_progress, gain_old, gain_new);
 				int buf_idx = frames_processed + s;
-				p_buffer[buf_idx].left = p_buffer[buf_idx].left * mix_new + outgoing_buf[s].left * mix_old;
-				p_buffer[buf_idx].right = p_buffer[buf_idx].right * mix_new + outgoing_buf[s].right * mix_old;
+				p_buffer[buf_idx].left = p_buffer[buf_idx].left * gain_new + outgoing_buf[s].left * gain_old;
+				p_buffer[buf_idx].right = p_buffer[buf_idx].right * gain_new + outgoing_buf[s].right * gain_old;
 
-				lod_crossfade_progress += lod_crossfade_speed;
-				if (lod_crossfade_progress >= 1.0f) {
-					lod_crossfade_progress = 1.0f;
-					lod_crossfade_speed = 0.0f;
-					break; // Crossfade complete mid-chunk
+				transition_progress += transition_speed;
+				if (transition_progress >= 1.0f) {
+					transition_progress = 1.0f;
+					break;
 				}
 			}
 
-			// If crossfade complete, destroy outgoing graph
-			if (lod_crossfade_progress >= 1.0f) {
-				memdelete(lod_outgoing_graph);
-				lod_outgoing_graph = nullptr;
-				lod_outgoing_output = nullptr;
+			if (transition_progress >= 1.0f) {
+				GraphPackageRetirement::retire(outgoing_package);
+				outgoing_package = nullptr;
+				_release_crossfade_token();
+				transition_mode = TransitionMode::Idle;
+				transition_speed = 0.0f;
+			}
+		} else if (transition_mode == TransitionMode::FallbackFadeOut) {
+			for (int s = 0; s < chunk; s++) {
+				float gain = 1.0f - transition_progress;
+				int buf_idx = frames_processed + s;
+				p_buffer[buf_idx].left *= gain;
+				p_buffer[buf_idx].right *= gain;
+				transition_progress += transition_speed;
+				if (transition_progress >= 1.0f) {
+					transition_progress = 1.0f;
+					break;
+				}
+			}
+			if (transition_progress >= 1.0f) {
+				if (current_package) {
+					GraphPackageRetirement::retire(current_package);
+				}
+				_install_package(incoming_package);
+				incoming_package = nullptr;
+				transition_mode = TransitionMode::FallbackFadeIn;
+				transition_progress = 0.0f;
+				transition_speed = 1.0f / (float)FALLBACK_FADE_SAMPLES;
+			}
+		} else if (transition_mode == TransitionMode::FallbackFadeIn) {
+			for (int s = 0; s < chunk; s++) {
+				float gain = transition_progress;
+				int buf_idx = frames_processed + s;
+				p_buffer[buf_idx].left *= gain;
+				p_buffer[buf_idx].right *= gain;
+				transition_progress += transition_speed;
+				if (transition_progress >= 1.0f) {
+					transition_progress = 1.0f;
+					break;
+				}
+			}
+			if (transition_progress >= 1.0f) {
+				transition_mode = TransitionMode::Idle;
+				transition_speed = 0.0f;
 			}
 		}
 
 		frames_processed += chunk;
 	}
 
-	// Timing
 	uint64_t t_end = symphony_time_usec();
 	last_mix_time_us = (float)(t_end - t_start);
 	last_frame_count = p_frames;
 
-	// RMS computation (both channels)
 	float sum_sq = 0.0f;
 	for (int i = 0; i < p_frames; i++) {
 		sum_sq += p_buffer[i].left * p_buffer[i].left + p_buffer[i].right * p_buffer[i].right;
 	}
 	float rms_candidate = sqrtf(sum_sq / (2.0f * (float)p_frames));
-	// Guard against NaN/Inf from broken upstream operators propagating into
-	// voice manager stealing decisions (Bug 2 pattern: chained math domain errors).
 	if (unlikely(std::isnan(rms_candidate) || std::isinf(rms_candidate))) {
 		rms_candidate = 0.0f;
 	}
@@ -190,21 +316,10 @@ int AudioStreamPlaybackSymphony::mix(AudioFrame *p_buffer, float p_rate_scale, i
 }
 
 void AudioStreamPlaybackSymphony::swap_graph(CompiledGraph *p_graph) {
-	// STATE MIGRATION SAFETY NOTE:
-	// This reads current_graph->operators[i]->export_state() on the MAIN thread while
-	// the audio thread may be concurrently calling execute() on those same operators.
-	// This is safe IF AND ONLY IF export_state() only reads state that:
-	//   (a) Is updated atomically (e.g., phase as a plain float that converges), OR
-	//   (b) Is a small POD that can be torn-read without catastrophic consequences
-	//       (e.g., reading a slightly stale float phase value is inaudible).
-	//
-	// If any operator's export_state() ever reads dynamically-sized state (vectors,
-	// pointers to resizable buffers) or state where partial reads cause crashes,
-	// this must be redesigned — e.g., by having the audio thread perform the export
-	// into a lock-free mailbox before the swap.
-	//
-	// Current operators (Oscillator, ADSR, filters) only export float state, so
-	// torn reads produce at worst a slight phase discontinuity on the new graph.
+	if (!p_graph) {
+		return;
+	}
+
 	if (current_graph && p_graph) {
 		uint8_t state_buf[256];
 		for (int32_t old_i = 0; old_i < current_graph->operator_count; old_i++) {
@@ -223,27 +338,38 @@ void AudioStreamPlaybackSymphony::swap_graph(CompiledGraph *p_graph) {
 		}
 	}
 
-	CompiledGraph *old_pending = pending_graph.exchange(p_graph, std::memory_order_release);
+	PreparedGraphPackage *pkg = PreparedGraphPackage::create_from_graph(p_graph);
+	if (!pkg) {
+		memdelete(p_graph);
+		return;
+	}
+
+	PreparedGraphPackage *old_pending = pending_package.exchange(pkg, std::memory_order_release);
 	if (old_pending) {
-		memdelete(old_pending);
+		PreparedGraphPackage::destroy(old_pending);
 	}
 }
 
 void AudioStreamPlaybackSymphony::set_parameter(const StringName &p_name, const Variant &p_value) {
-	SymphonyGraphInput **ptr = parameter_map.getptr(p_name);
-	if (ptr) {
-		(*ptr)->set_value((float)p_value);
+	if (!current_package) {
+		return;
+	}
+	SymphonyGraphInput *input = current_package->find_param(p_name);
+	if (input) {
+		input->set_value((float)p_value);
 	}
 }
 
-void AudioStreamPlaybackSymphony::trigger(const StringName &p_name, float p_value) {
-	SymphonyTriggerInput **ptr = trigger_map.getptr(p_name);
-	if (ptr) {
-		(*ptr)->fire(p_value);
+bool AudioStreamPlaybackSymphony::trigger(const StringName &p_name, float p_value) {
+	if (!current_package) {
+		return false;
 	}
+	SymphonyTriggerInput *tin = current_package->find_trigger(p_name);
+	if (!tin) {
+		return false;
+	}
+	return tin->fire(p_value);
 }
-
-// --- Profiling API ---
 
 float AudioStreamPlaybackSymphony::get_voice_cpu_microseconds() const {
 	return last_mix_time_us;
@@ -262,78 +388,22 @@ float AudioStreamPlaybackSymphony::get_last_rms() const {
 }
 
 int AudioStreamPlaybackSymphony::get_effective_priority() const {
-	if (stream.is_valid()) {
-		return stream->get_voice_priority();
-	}
-	return 50;
-}
-
-// --- Internal ---
-
-void AudioStreamPlaybackSymphony::cleanup_graveyard() {
-	if (graveyard) {
-		memdelete(graveyard);
-		graveyard = nullptr;
-	}
+	return cached_priority;
 }
 
 void AudioStreamPlaybackSymphony::_finalize_stop() {
-	// Called from the audio thread (inside mix()) when stop_pending is true.
-	// Safe to delete the graph here because mix() has already returned early
-	// due to active==false, so no code path is using current_graph.
 	stop_pending.store(false, std::memory_order_relaxed);
 
-	cleanup_graveyard();
-	if (current_graph) {
-		memdelete(current_graph);
-		current_graph = nullptr;
-	}
-	if (lod_outgoing_graph) {
-		memdelete(lod_outgoing_graph);
-		lod_outgoing_graph = nullptr;
-		lod_outgoing_output = nullptr;
-	}
-	graph_output_node = nullptr;
-	parameter_map.clear();
-	trigger_map.clear();
+	_abort_transition_packages();
 
-	// Discard any pending graph that was queued for hot-swap.
-	CompiledGraph *pending = pending_graph.exchange(nullptr, std::memory_order_acquire);
+	if (current_package) {
+		GraphPackageRetirement::retire(current_package);
+		_install_package(nullptr);
+	}
+
+	PreparedGraphPackage *pending = pending_package.exchange(nullptr, std::memory_order_acquire);
 	if (pending) {
-		memdelete(pending);
-	}
-}
-
-void AudioStreamPlaybackSymphony::find_graph_output() {
-	graph_output_node = nullptr;
-	if (!current_graph) {
-		return;
-	}
-	for (int32_t i = 0; i < current_graph->operator_count; i++) {
-		SymphonyGraphOutput *out = dynamic_cast<SymphonyGraphOutput *>(current_graph->operators[i]);
-		if (out) {
-			graph_output_node = out;
-			break;
-		}
-	}
-}
-
-void AudioStreamPlaybackSymphony::rebuild_routing_tables() {
-	parameter_map.clear();
-	trigger_map.clear();
-	if (!current_graph) {
-		return;
-	}
-	for (int32_t i = 0; i < current_graph->operator_count; i++) {
-		SymphonyGraphInput *gi = dynamic_cast<SymphonyGraphInput *>(current_graph->operators[i]);
-		if (gi && current_graph->node_names[i] != StringName()) {
-			parameter_map[current_graph->node_names[i]] = gi;
-			continue;
-		}
-		SymphonyTriggerInput *ti = dynamic_cast<SymphonyTriggerInput *>(current_graph->operators[i]);
-		if (ti && current_graph->node_names[i] != StringName()) {
-			trigger_map[current_graph->node_names[i]] = ti;
-		}
+		GraphPackageRetirement::retire(pending);
 	}
 }
 
@@ -344,22 +414,24 @@ AudioStreamPlaybackSymphony::~AudioStreamPlaybackSymphony() {
 			mgr->unregister_voice(this);
 		}
 	}
-	// If stop was deferred but mix() was never called again (e.g., scene exit),
-	// finalize here. This runs on the main thread but is safe because the
-	// AudioServer has already removed this playback from its processing list.
-	cleanup_graveyard();
-	if (current_graph) {
-		memdelete(current_graph);
-		current_graph = nullptr;
+	_release_crossfade_token();
+	if (outgoing_package) {
+		PreparedGraphPackage::destroy(outgoing_package);
+		outgoing_package = nullptr;
 	}
-	if (lod_outgoing_graph) {
-		memdelete(lod_outgoing_graph);
-		lod_outgoing_graph = nullptr;
+	if (incoming_package) {
+		PreparedGraphPackage::destroy(incoming_package);
+		incoming_package = nullptr;
 	}
-	CompiledGraph *pending = pending_graph.exchange(nullptr, std::memory_order_acquire);
+	if (current_package) {
+		PreparedGraphPackage::destroy(current_package);
+		_install_package(nullptr);
+	}
+	PreparedGraphPackage *pending = pending_package.exchange(nullptr, std::memory_order_acquire);
 	if (pending) {
-		memdelete(pending);
+		PreparedGraphPackage::destroy(pending);
 	}
+	GraphPackageRetirement::drain();
 }
 
 void AudioStreamPlaybackSymphony::transition_to_lod(int p_lod_tier) {
@@ -367,37 +439,27 @@ void AudioStreamPlaybackSymphony::transition_to_lod(int p_lod_tier) {
 		return;
 	}
 	if (p_lod_tier == current_lod_tier) {
-		return; // Already at requested LOD
+		return;
 	}
 	if (p_lod_tier < 0 || p_lod_tier >= stream->get_lod_count()) {
-		return; // Invalid tier
+		return;
 	}
 
-	// Compile the new LOD graph on the main thread.
 	CompiledGraph *new_graph = stream->compile_lod_graph(p_lod_tier);
 	if (!new_graph) {
-		return; // Compilation failed
+		return;
 	}
 
-	// Publish via the atomic pending_graph slot.
-	// The audio thread will pick this up at the next mix() block boundary
-	// and initiate the crossfade there (thread-safe).
-	//
-	// Memory ordering chain (ensures audio thread sees pending_is_lod correctly):
-	//   Writer (this function, main thread):
-	//     pending_is_lod.store(true, release)   -- sequenced before --
-	//     pending_graph.exchange(ptr, acq_rel)   [release semantics publish pending_is_lod]
-	//   Reader (mix(), audio thread):
-	//     pending_graph.exchange(nullptr, acquire)  [acquires all writes before writer's release]
-	//     pending_is_lod.exchange(false, relaxed)   [already visible via the chain above]
-	//
-	// Do NOT reorder these two stores — pending_is_lod MUST be visible before
-	// pending_graph becomes non-null, or the audio thread may take the wrong
-	// code path (regular hot-swap instead of LOD crossfade).
+	PreparedGraphPackage *pkg = PreparedGraphPackage::create_from_graph(new_graph, 0, 0, p_lod_tier);
+	if (!pkg) {
+		memdelete(new_graph);
+		return;
+	}
+
 	pending_is_lod.store(true, std::memory_order_release);
-	CompiledGraph *old_pending = pending_graph.exchange(new_graph, std::memory_order_acq_rel);
+	PreparedGraphPackage *old_pending = pending_package.exchange(pkg, std::memory_order_acq_rel);
 	if (old_pending) {
-		memdelete(old_pending);
+		PreparedGraphPackage::destroy(old_pending);
 	}
 
 	current_lod_tier = p_lod_tier;

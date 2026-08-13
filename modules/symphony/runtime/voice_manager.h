@@ -57,6 +57,7 @@ public:
 		int priority = 50;
 		float importance = 0.0f;
 		float rms = 0.0f;
+		bool rms_valid = false;
 		Vector3 position;
 		float fade_progress = 0.0f;
 		float fade_speed = 0.0f;
@@ -124,11 +125,18 @@ protected:
 public:
 	static SymphonyVoicePool *get_singleton() { return singleton; }
 
-	int acquire_slot(int p_priority);
+	int acquire_slot(int p_priority); // Free slots only — never steals (plan §10).
 	void release_slot(int p_index, bool p_immediate = false);
-	int steal_lowest_importance();
+	// Reclaim an occupied slot for a new play (caller updates event voice counts).
+	void reclaim_slot(int p_index, int p_priority, const StringName &p_steal_reason = StringName());
+	// Legacy helper: selects lowest-importance playing slot index, or -1. Does not free.
+	int find_lowest_importance_slot() const;
+	int steal_lowest_importance(); // Deprecated path: find + reclaim for tests/compat
 	void virtualize(int p_index);
 	void devirtualize(int p_index);
+
+	void set_slot_rms(int p_index, float p_rms);
+	[[nodiscard]] bool is_slot_rms_valid(int p_index) const;
 
 	VoiceState get_slot_state(int p_index) const;
 	int get_pool_size() const { return pool_size; }

@@ -4,6 +4,7 @@
 #include "core/object/class_db.h"
 #include "core/templates/safe_list.h"
 #include <atomic>
+#include <cstdint>
 
 class AudioStreamPlaybackSymphony;
 
@@ -11,7 +12,8 @@ class AudioStreamPlaybackSymphony;
 // Lock-free design:
 // - active_voices uses SafeList (lock-free linked list) for registration/iteration.
 // - Metrics published via atomics (audio thread writes, main thread reads).
-// - No mutex anywhere — audio thread never blocks.
+// - Audio mix callback only snapshots + writes per-voice atomics (plan §6).
+// - LOD compile, stop(), ObjectDB, and SafeList cleanup run on the main thread.
 class SymphonyVoiceManager : public Object {
 	GDCLASS(SymphonyVoiceManager, Object)
 
@@ -24,6 +26,13 @@ class SymphonyVoiceManager : public Object {
 	float warning_threshold = 0.70f;
 	float critical_threshold = 0.90f;
 
+#if defined(__EMSCRIPTEN__) || defined(ANDROID_ENABLED) || defined(IOS_ENABLED)
+	static constexpr int32_t DEFAULT_CROSSFADE_TOKENS = 1;
+#else
+	static constexpr int32_t DEFAULT_CROSSFADE_TOKENS = 2;
+#endif
+	std::atomic<int32_t> crossfade_tokens{ DEFAULT_CROSSFADE_TOKENS };
+
 	// --- Lock-free metrics (written by audio thread, read by main thread) ---
 	std::atomic<int32_t> metric_active_count{ 0 };
 	std::atomic<int32_t> metric_stolen_this_frame{ 0 };
@@ -32,19 +41,10 @@ class SymphonyVoiceManager : public Object {
 	std::atomic<int32_t> metric_peak_budget_millipercent{ 0 };
 	std::atomic<int32_t> metric_avg_voice_microseconds_x1000{ 0 };
 
-	// --- Budget-driven auto-LOD demotion ---
-	// Deferred LOD transitions: audio thread identifies which voices to demote,
-	// main thread executes the actual graph compilation + swap (heap allocation).
-	struct PendingLOD {
-		ObjectID voice_id;
-		int32_t target_lod = 0;
-	};
-	static constexpr int32_t MAX_PENDING_LOD = 16;
-	PendingLOD pending_lod_transitions[MAX_PENDING_LOD];
-	std::atomic<int32_t> pending_lod_count{ 0 }; // Written by audio thread, read/cleared by main thread.
+	bool update_callback_registered = false;
 
-	// Mix callback — called once per audio callback cycle.
 	static void _mix_callback(void *p_userdata);
+	static void _update_callback(void *p_userdata);
 
 protected:
 	static void _bind_methods();
@@ -61,6 +61,7 @@ public:
 	[[nodiscard]] float get_peak_budget_percent() const;
 	[[nodiscard]] float get_average_voice_microseconds() const;
 	[[nodiscard]] int32_t get_stolen_this_frame() const;
+	[[nodiscard]] uint64_t get_dropped_trigger_count() const;
 
 	void set_max_voices(int32_t p_max);
 	int32_t get_max_voices() const;
@@ -69,11 +70,16 @@ public:
 	void set_critical_threshold(float p_threshold);
 	float get_critical_threshold() const;
 
-	// Called once per audio callback cycle via mix callback.
+	// Budget-aware dual-graph transition tokens (plan §5).
+	[[nodiscard]] bool try_acquire_crossfade_token();
+	void release_crossfade_token();
+	[[nodiscard]] int32_t get_crossfade_tokens_available() const;
+
+	// Audio thread: snapshot + write per-voice atomics only.
 	void enforce_voice_limits();
 
-	// Called from the MAIN thread each frame (e.g., from AudioManager._process).
-	// Executes any deferred LOD transitions queued by the audio thread.
+	// Main thread: apply stop/LOD requests, SafeList cleanup.
+	// Also invoked automatically from AudioServer update callback.
 	void process_deferred_lod();
 
 	SymphonyVoiceManager();

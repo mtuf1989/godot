@@ -5,7 +5,7 @@ Update this file with each commit that changes a public API.
 
 ## Status
 
-- **Milestone:** M1 — pause for review (core compiler/DSP/silence landed)
+- **Milestone:** M2 in progress — prepared packages publishing (retirement/transitions next)
 - **Branch:** `features/symphony_fixed`
 
 ## Completed
@@ -63,16 +63,73 @@ bin/godot.macos.editor.arm64 --headless --test --test-case='*Symphony*'
 - ADSR release uses note-off envelope value; SVFilter is TPT/ZDF; PitchShifter
   dry-bypasses at ~0 semitones; FDN caches controls and uses `exp2` for RT60 gains.
 
+### PreparedGraphPackage (§4 partial)
+
+- Playback publishes `PreparedGraphPackage*` (compiled graph + GraphOutput +
+  sorted param/trigger routes) through one atomic `pending_package` slot.
+- Audio `mix()` adopts packages without `rebuild_routing_tables()`, HashMap
+  mutation, or `dynamic_cast`.
+- `set_parameter` / `trigger` binary-search sorted routes on the current package.
+- `swap_graph(CompiledGraph*)` still wraps into a package (call sites unchanged).
+
+### GraphPackageRetirement (§6 partial)
+
+- Audio thread pushes superseded / stopped packages onto a lock-free intrusive
+  stack (`GraphPackageRetirement::retire`).
+- `AudioServer` update callback drains and destroys packages on the main thread.
+- Never-adopted pending packages displaced on the main thread are destroyed
+  immediately. Playback destructor also drains any leftover retirement entries.
+
+### Budget-aware transitions (§5 partial)
+
+- Admitted swaps/LOD use a 40 ms equal-power crossfade (`SymphonyFastMath`).
+- Crossfade tokens: 2 desktop / 1 mobile+web (`SymphonyVoiceManager`).
+- Admission denied (no token, at/above warning CPU, or already transitioning)
+  uses a 64-sample single-graph fade-out → swap → fade-in fallback.
+- At most current + outgoing (+ held incoming during fallback).
+
+### VoiceManager deferral (§6 partial)
+
+- Audio `enforce_voice_limits()` only snapshots + writes per-voice atomics
+  (`request_lod_tier` / `request_manager_stop`). No ObjectDB, `Vector`, or `stop()`.
+- Priority / max LOD are cached on the playback at `start()` for audio reads.
+- Main-thread drain runs via `AudioServer` update callback (and still via
+  `process_deferred_lod()` for compatibility). At most one LOD compile per update.
+- GDScript no longer needs to call `process_deferred_lod()` every frame.
+
+### Triggers (§9 partial)
+
+- `TriggerBuffer` capacity equals `SYMPHONY_MICRO_BLOCK_SIZE` (32/64); `push` returns bool.
+- `TriggerInput` uses a fixed 64-entry SPSC queue; `fire()` / playback `trigger()` return `bool`.
+- Dropped triggers increment a process-wide counter (`SymphonyVoiceManager.get_dropped_trigger_count()`).
+
+### RTPCEngine handles (§9 partial)
+
+- `register_global_parameter` / `register_analysis` return a stable `int` handle.
+- `set_parameter_target` / `set_analysis` return `bool` and **do not** auto-register.
+- Missing handles increment `get_missing_handle_count()`.
+- Audio smoothing uses precomputed `block_alpha` (multiply/add only; recompute on rate/frame-size change).
+
+### Voice steal accounting (§10 partial)
+
+- `SymphonyVoicePool.acquire_slot()` is free-only (returns `-1` when full).
+- `EventDispatcher` steals: same-event at cap (steal_mode), else global among
+  `priority <= incoming`. Modes: oldest / quietest / farthest (+ importance, slot index).
+- `reclaim_slot()` + `on_voice_stopped`/`on_voice_started` keep event counts correct.
+- `set_slot_rms()` / `rms_valid`; quietest falls back to importance when RMS unknown.
+- Play result `RESULT_STOLEN` with reason `oldest`/`quietest`/`farthest`.
+
+### PhaseVocoder (§9 partial)
+
+- Absolute `uint64_t` input/analysis positions; skip hops with incomplete windows.
+- Precomputed COLA gain table (`1/Σ w²`) applied at synthesis.
+- PFFFT setup destroyed on arena allocation failure (PhaseVocoder + SpectralGate).
+
 ## Planned (from improve_plan_1_7.md)
 
 - Charge non-arena + SharedPCM into the same reservation path
 - Package counts (active/pending/outgoing/retired) wired to playback
-- FDN fractional-tap smoothing (20 ms) without permanent dual-tap
-- Full rate×micro-block matrix tests (22.05–96 kHz × 32/64)
-- `trigger(name, value)` returns `bool`; dropped-trigger metrics
-- RTPCEngine registration returns stable handles; no audio-thread auto-create
-- `acquire_slot()` free-only; EventDispatcher owns stealing; `set_slot_rms()`
-- Remove required `process_deferred_lod()` from GDScript (main-thread drain)
+- Calibrated incoming transition cost units in admission
 - LOD graph mutation/query APIs and `lod/<tier>/...` serialization
 - Connection `is_feedback` serialization
 - Memory / transition / retirement metrics (read-only)
@@ -81,6 +138,6 @@ bin/godot.macos.editor.arm64 --headless --test --test-case='*Symphony*'
 
 Pending until corresponding C++ APIs land. Expected touch points:
 
-- `AudioManager` / `process_deferred_lod()` call sites
-- Event play paths that assume steal-inside-`acquire_slot`
-- RTPC registration if analysis auto-create is removed
+- `AudioManager` / `process_deferred_lod()` call sites (optional now; safe to remove)
+- Event play paths: `acquire_slot` no longer steals; handle `RESULT_STOLEN`
+- RTPC: must `register_global_parameter` / `register_analysis` before set; handle return values

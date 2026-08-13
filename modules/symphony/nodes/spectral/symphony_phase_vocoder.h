@@ -6,6 +6,8 @@
 #include "core/math/math_funcs.h"
 #include "pffft.h"
 
+#include <cstdint>
+
 // PhaseVocoder: Real-time time-stretching and pitch-shifting via STFT.
 //
 // Algorithm:
@@ -40,8 +42,9 @@ private:
 	// --- Arena-allocated buffers ---
 	float *input_ring = nullptr;      // [fft_size * 2] circular input buffer (double for wraparound-free reads)
 	float *output_ring = nullptr;     // [fft_size * 2] overlap-add accumulator
-	float *window_lut = nullptr;      // [fft_size] precomputed Hanning window
-	float *fft_workspace = nullptr;   // [fft_size] pffft work buffer
+	float *window_lut = nullptr; // [fft_size] precomputed Hanning window
+	float *cola_gain = nullptr; // [fft_size] 1 / Σ w² (COLA normalize)
+	float *fft_workspace = nullptr; // [fft_size] pffft work buffer
 	float *analysis_frame = nullptr;  // [fft_size] windowed frame for FFT input
 	float *fft_buffer = nullptr;      // [fft_size] FFT output (interleaved complex)
 	float *ifft_buffer = nullptr;     // [fft_size] IFFT output
@@ -60,14 +63,14 @@ private:
 	float default_time_stretch = 1.0f;
 	float default_pitch_shift = 0.0f;
 
-	// --- Processing state ---
-	int32_t input_write_pos = 0;      // Write position in input_ring [0, fft_size*2)
-	int32_t input_samples_fed = 0;    // Total input samples written (monotonic counter, wraps)
-	float analysis_pos = 0.0f;        // Fractional analysis position (advances by time_stretch * hop_size per synth frame)
-	int32_t output_read_pos = 0;      // Read position in output_ring [0, fft_size*2)
-	int32_t output_write_pos = 0;     // Write position in output_ring (where OLA writes)
-	int32_t synth_counter = 0;        // Counts output samples; triggers new frame at hop_size boundary
-	bool primed = false;              // True once we have at least fft_size input samples
+	// --- Processing state (absolute 64-bit timeline positions, plan §9) ---
+	uint64_t input_abs_write = 0; // Total samples written (never wraps)
+	uint64_t analysis_abs = 0; // Absolute analysis frame start
+	int32_t input_write_pos = 0; // input_abs_write % ring_size (cached)
+	int32_t output_read_pos = 0;
+	int32_t output_write_pos = 0;
+	int32_t synth_counter = 0;
+	bool primed = false;
 
 	// --- Helpers ---
 
@@ -85,35 +88,31 @@ private:
 
 	// Process one full STFT analysis-modify-resynthesize frame
 	void process_frame(float p_time_stretch, float p_pitch_shift) {
+		if (!pffft_setup) {
+			return;
+		}
 		const float pitch_ratio = Math::pow(2.0f, p_pitch_shift / 12.0f);
 		const float expected_phase_advance = Math::TAU * (float)hop_size / (float)fft_size;
+		const int32_t ring_size = fft_size * 2;
 
-		// --- Step 1: Determine analysis read position ---
-		// analysis_pos tracks where we are in the input timeline (in samples from start).
-		// We advance by (1/time_stretch * hop_size) each synthesis frame.
-		// Convention: time_stretch > 1.0 = longer output (slower playback),
-		//             time_stretch < 1.0 = shorter output (faster playback).
-		//             1.0 = normal speed. Range: [0.5, 2.0].
-		int32_t analysis_center = (int32_t)analysis_pos;
-
-		// Advance analysis position for next frame
-		analysis_pos += (1.0f / p_time_stretch) * (float)hop_size;
-
-		// --- Step 2: Extract analysis frame from input ring buffer ---
-		// Read fft_size samples starting at analysis_center.
-		int32_t ring_size = fft_size * 2;
-		int32_t read_start = analysis_center % ring_size;
-		if (read_start < 0) {
-			read_start += ring_size;
+		// Clamp analysis window into the valid ring span [write-ring_size, write).
+		const uint64_t earliest = (input_abs_write > (uint64_t)ring_size) ? (input_abs_write - (uint64_t)ring_size) : 0;
+		if (analysis_abs < earliest) {
+			analysis_abs = earliest;
+		}
+		if (analysis_abs + (uint64_t)fft_size > input_abs_write) {
+			// Incomplete FFT window — skip this hop (do not read unwritten/overwritten data).
+			return;
 		}
 
-		// Copy with wraparound handling and apply analysis window
+		const int32_t read_start = (int32_t)(analysis_abs % (uint64_t)ring_size);
+		analysis_abs += (uint64_t)MAX(1, (int32_t)Math::round((1.0f / p_time_stretch) * (float)hop_size));
+
 		for (int32_t i = 0; i < fft_size; i++) {
 			int32_t idx = (read_start + i) % ring_size;
 			analysis_frame[i] = input_ring[idx] * window_lut[i];
 		}
 
-		// --- Step 3: Forward FFT ---
 		pffft_transform_ordered(pffft_setup, analysis_frame, fft_buffer, fft_workspace, PFFFT_FORWARD);
 
 		// --- Step 4: Convert to magnitude/phase and compute unwrapped deltas ---
@@ -206,10 +205,11 @@ private:
 		// --- Step 8: Inverse FFT ---
 		pffft_transform_ordered(pffft_setup, fft_buffer, ifft_buffer, fft_workspace, PFFFT_BACKWARD);
 
-		// --- Step 9: Scale by 1/N and apply synthesis window ---
+		// --- Step 9: Scale by 1/N, synthesis window, and COLA gain ---
 		const float inv_fft_size = 1.0f / (float)fft_size;
 		for (int32_t i = 0; i < fft_size; i++) {
-			ifft_buffer[i] *= inv_fft_size * window_lut[i];
+			float g = cola_gain ? cola_gain[i] : 1.0f;
+			ifft_buffer[i] *= inv_fft_size * window_lut[i] * g;
 		}
 
 		// --- Step 10: Overlap-add into output ring buffer ---
@@ -254,34 +254,24 @@ public:
 		const int32_t ring_out_size = fft_size * 2;
 
 		for (int32_t i = 0; i < p_num_frames; i++) {
-			// --- Write input sample to input ring buffer ---
 			float in_sample = audio_in ? audio_in[i] : 0.0f;
 			input_ring[input_write_pos] = in_sample;
 			input_write_pos = (input_write_pos + 1) % ring_in_size;
-			input_samples_fed++;
+			input_abs_write++;
 
-			// Check if we have enough input to start processing
-			if (!primed) {
-				if (input_samples_fed >= fft_size) {
-					primed = true;
-					// Initialize analysis_pos to the beginning of available data
-					analysis_pos = 0.0f;
-				}
+			if (!primed && input_abs_write >= (uint64_t)fft_size) {
+				primed = true;
+				analysis_abs = input_abs_write - (uint64_t)fft_size;
 			}
 
-			// --- Check if we need a new synthesis frame ---
 			synth_counter++;
 			if (primed && synth_counter >= hop_size) {
 				synth_counter = 0;
-
-				// Process one STFT frame
 				process_frame(time_stretch, pitch_shift);
 			}
 
-			// --- Read output from overlap-add buffer ---
 			if (primed) {
 				audio_out[i] = output_ring[output_read_pos];
-				// Clear the sample after reading (for next overlap-add pass)
 				output_ring[output_read_pos] = 0.0f;
 				output_read_pos = (output_read_pos + 1) % ring_out_size;
 			} else {
@@ -291,11 +281,10 @@ public:
 	}
 
 	virtual size_t export_state(uint8_t *p_buffer, size_t p_max_size) const override {
-		// Export critical state for hot-swap
 		struct StateHeader {
+			uint64_t input_abs_write;
+			uint64_t analysis_abs;
 			int32_t input_write_pos;
-			int32_t input_samples_fed;
-			float analysis_pos;
 			int32_t output_read_pos;
 			int32_t output_write_pos;
 			int32_t synth_counter;
@@ -303,7 +292,7 @@ public:
 		};
 
 		size_t phase_bytes = sizeof(float) * num_bins;
-		size_t needed = sizeof(StateHeader) + phase_bytes * 2; // prev_phase + synth_phase
+		size_t needed = sizeof(StateHeader) + phase_bytes * 2;
 		if (!p_buffer) {
 			return needed;
 		}
@@ -312,9 +301,9 @@ public:
 		}
 
 		StateHeader hdr;
+		hdr.input_abs_write = input_abs_write;
+		hdr.analysis_abs = analysis_abs;
 		hdr.input_write_pos = input_write_pos;
-		hdr.input_samples_fed = input_samples_fed;
-		hdr.analysis_pos = analysis_pos;
 		hdr.output_read_pos = output_read_pos;
 		hdr.output_write_pos = output_write_pos;
 		hdr.synth_counter = synth_counter;
@@ -333,9 +322,9 @@ public:
 
 	virtual void import_state(const uint8_t *p_buffer, size_t p_size) override {
 		struct StateHeader {
+			uint64_t input_abs_write;
+			uint64_t analysis_abs;
 			int32_t input_write_pos;
-			int32_t input_samples_fed;
-			float analysis_pos;
 			int32_t output_read_pos;
 			int32_t output_write_pos;
 			int32_t synth_counter;
@@ -349,18 +338,16 @@ public:
 		}
 
 		StateHeader hdr;
-		size_t offset = 0;
-		memcpy(&hdr, p_buffer + offset, sizeof(StateHeader));
-		offset += sizeof(StateHeader);
-
+		memcpy(&hdr, p_buffer, sizeof(StateHeader));
+		input_abs_write = hdr.input_abs_write;
+		analysis_abs = hdr.analysis_abs;
 		input_write_pos = hdr.input_write_pos;
-		input_samples_fed = hdr.input_samples_fed;
-		analysis_pos = hdr.analysis_pos;
 		output_read_pos = hdr.output_read_pos;
 		output_write_pos = hdr.output_write_pos;
 		synth_counter = hdr.synth_counter;
-		primed = (hdr.primed != 0);
+		primed = hdr.primed != 0;
 
+		size_t offset = sizeof(StateHeader);
 		memcpy(prev_phase, p_buffer + offset, phase_bytes);
 		offset += phase_bytes;
 		memcpy(synth_phase, p_buffer + offset, phase_bytes);
@@ -384,8 +371,8 @@ public:
 		// At max fft_size=8192: allocates 7 buffers of N floats (input_ring×2, output_ring×2,
 		// window_lut, fft_workspace, analysis_frame, fft_buffer, ifft_buffer)
 		// + 5 buffers of (N/2+1) floats (prev_phase, synth_phase, magnitude_buf, shifted_mag, shifted_phase).
-		// Total: 7*8192 + 5*4097 = 77829 floats. Plus alignment overhead per alloc (12 allocs × 32 = 384).
-		desc.extra_arena_bytes = sizeof(float) * 77829 + 512;
+		// Total: 7*8192 + 5*4097 = 77829 floats + cola_gain N. Plus alignment overhead.
+		desc.extra_arena_bytes = sizeof(float) * (77829 + 8192) + 512;
 		desc.create_fn = &SymphonyPhaseVocoder::create;
 		OperatorRegistry::get_singleton()->register_operator(desc);
 	}
@@ -417,19 +404,18 @@ public:
 		pv->default_pitch_shift = p_params.has("pitch_shift") ? (float)p_params["pitch_shift"] : 0.0f;
 		pv->default_pitch_shift = CLAMP(pv->default_pitch_shift, -12.0f, 12.0f);
 
-		// --- Create PFFFT setup (heap-allocated — small leak on arena free is acceptable) ---
 		pv->pffft_setup = pffft_new_setup(pv->fft_size, PFFFT_REAL);
 		if (!pv->pffft_setup) {
 			return nullptr;
 		}
 
-		// --- Allocate arena buffers ---
 		const int32_t N = pv->fft_size;
 		const int32_t bins = pv->num_bins;
 
 		pv->input_ring = (float *)p_arena.alloc(sizeof(float) * N * 2, 32);
 		pv->output_ring = (float *)p_arena.alloc(sizeof(float) * N * 2, 32);
 		pv->window_lut = (float *)p_arena.alloc(sizeof(float) * N, 32);
+		pv->cola_gain = (float *)p_arena.alloc(sizeof(float) * N, 32);
 		pv->fft_workspace = (float *)p_arena.alloc(sizeof(float) * N, 32);
 		pv->analysis_frame = (float *)p_arena.alloc(sizeof(float) * N, 32);
 		pv->fft_buffer = (float *)p_arena.alloc(sizeof(float) * N, 32);
@@ -440,15 +426,15 @@ public:
 		pv->shifted_mag = (float *)p_arena.alloc(sizeof(float) * bins, 32);
 		pv->shifted_phase = (float *)p_arena.alloc(sizeof(float) * bins, 32);
 
-		// Verify all allocations succeeded
-		if (!pv->input_ring || !pv->output_ring || !pv->window_lut ||
+		if (!pv->input_ring || !pv->output_ring || !pv->window_lut || !pv->cola_gain ||
 				!pv->fft_workspace || !pv->analysis_frame || !pv->fft_buffer ||
 				!pv->ifft_buffer || !pv->prev_phase || !pv->synth_phase ||
 				!pv->magnitude_buf || !pv->shifted_mag || !pv->shifted_phase) {
+			pffft_destroy_setup(pv->pffft_setup);
+			pv->pffft_setup = nullptr;
 			return nullptr;
 		}
 
-		// --- Zero all buffers ---
 		memset(pv->input_ring, 0, sizeof(float) * N * 2);
 		memset(pv->output_ring, 0, sizeof(float) * N * 2);
 		memset(pv->fft_workspace, 0, sizeof(float) * N);
@@ -461,16 +447,24 @@ public:
 		memset(pv->shifted_mag, 0, sizeof(float) * bins);
 		memset(pv->shifted_phase, 0, sizeof(float) * bins);
 
-		// --- Precompute Hanning window ---
 		for (int32_t i = 0; i < N; i++) {
 			float phase = (float)i / (float)(N - 1);
 			pv->window_lut[i] = 0.5f * (1.0f - Math::cos(Math::TAU * phase));
 		}
 
-		// --- Initialize processing state ---
+		// COLA normalization: Σ w² over hop-aligned overlaps.
+		for (int32_t i = 0; i < N; i++) {
+			float sum = 0.0f;
+			for (int32_t k = 0; k < pv->overlap; k++) {
+				int32_t idx = (i + k * pv->hop_size) % N;
+				sum += pv->window_lut[idx] * pv->window_lut[idx];
+			}
+			pv->cola_gain[i] = (sum > 1e-12f) ? (1.0f / sum) : 0.0f;
+		}
+
+		pv->input_abs_write = 0;
+		pv->analysis_abs = 0;
 		pv->input_write_pos = 0;
-		pv->input_samples_fed = 0;
-		pv->analysis_pos = 0.0f;
 		pv->output_read_pos = 0;
 		pv->output_write_pos = 0;
 		pv->synth_counter = 0;

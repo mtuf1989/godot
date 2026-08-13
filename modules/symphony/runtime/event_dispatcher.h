@@ -48,6 +48,8 @@ public:
 	// Main entry point. Returns voice slot index or -1.
 	// p_result is set to the reason for success/failure.
 	int dispatch(const Ref<SoundEvent> &p_event, PlayResult &r_result);
+	// Same as dispatch, but also returns the steal reason string for logging.
+	int dispatch(const Ref<SoundEvent> &p_event, PlayResult &r_result, StringName &r_steal_reason);
 
 	// Resolve which stream index to play (variation logic)
 	int resolve_variation(const Ref<SoundEvent> &p_event);
@@ -61,6 +63,11 @@ public:
 
 	SymphonyEventDispatcher();
 	~SymphonyEventDispatcher();
+
+private:
+	// Select a steal victim. same_event: only slots for p_event_id.
+	// Otherwise only slots with priority <= p_incoming_priority.
+	int _select_steal_victim(uint64_t p_event_id, int p_incoming_priority, SoundEvent::StealMode p_mode, bool p_same_event_only, StringName &r_reason) const;
 };
 
 VARIANT_ENUM_CAST(SymphonyEventDispatcher::PlayResult);

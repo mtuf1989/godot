@@ -48,7 +48,9 @@ public:
 
 		for (int32_t i = 0; i < p_num_frames; i++) {
 			if (rand_uniform() < threshold) {
-				trigger_out->push(i, 1.0f);
+				if (!trigger_out->push(i, 1.0f)) {
+					symphony_note_dropped_trigger();
+				}
 			}
 		}
 	}
