@@ -137,6 +137,9 @@ bin/godot.macos.editor.arm64 --headless --test --test-case='*Symphony*'
   spectral headers.
 - Spectral tests cover stretch=1 unity (±0.5 dB), stretch=2 finite output,
   underflow counter monotonicity, cleanup idempotence, and FFT-size cost scaling.
+- SpectralGate applies the same COLA `1/Σw²` table as PhaseVocoder; open-threshold
+  (threshold=-96) unity is gated to ±0.5 dB. `threshold_db` remains clamped to
+  ≤0 dB (create + execute).
 
 ### VoiceManager deferral (§6 partial)
 

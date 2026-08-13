@@ -15,7 +15,7 @@
 |-----------|--------|
 | **M1** | Done |
 | **M2** | Closed |
-| **M3** | Nearly complete — remaining: TSan/RT-scope (locked later), optional SpectralGate polish |
+| **M3** | Nearly complete — remaining: TSan/RT-scope (locked later) |
 
 **HEAD (newest first) — prior M3 commits:**
 
@@ -77,17 +77,17 @@ Per-512f equivalent ≈ median/32 (~6.5 / 39 / 76 µs).
 
 ### This session
 1. **Release timing baselines** — `template_release` hard-fails 10/30/50-node mix timing (`32×512f` batches, 3-trial median) at plan ≤+5% median / ≤+10% p99 vs stored macos-arm64 constants. Editor keeps soft ceiling only. Expect flake under heavy host load.
+2. **SpectralGate polish** — COLA `1/Σw²` table (parity with PhaseVocoder / review 6.3); open-threshold unity ±0.5 dB; threshold clamp ≤0 dB covered by attenuation test; arena estimate corrected to 10N floats.
 
 ---
 
 ## Suggested Next (priority)
 
 1. **TSan + RT-scope assertions** (§6) — only when unlocked (currently “TSan later”)  
-2. **SpectralGate polish (optional)** — threshold clamped to ≤0 dB so strong bins rarely attenuate; no COLA table (unlike PhaseVocoder); tests only assert finite/non-NaN  
-3. **GrainCloud / other heavies `extra_cost_fn`** — only if admission still under-calibrated  
-4. **game-template** — separate repo when ready  
+2. **GrainCloud / other heavies `extra_cost_fn`** — only if admission still under-calibrated  
+3. **game-template** — separate repo when ready  
 
-Ask user which slice if unclear.
+Ask user which slice if unclear (default: stop for M3 review unless TSan unlocked).
 
 ---
 
@@ -110,7 +110,7 @@ Ask user which slice if unclear.
 1. Read this file + skim remaining M3 gates in `improve_plan_1_7.md`  
 2. `git checkout features/symphony_fixed` && `git status`  
 3. Rebuild if binary stale; run Symphony tests (commands above)  
-4. Prefer next: ask whether to unlock TSan or do optional SpectralGate polish  
+4. Prefer next: ask whether to unlock TSan, or stop for M3 review  
 5. Update `MIGRATION.md` / `user_guide.md` on API changes; focused commits  
 
 ## Skills / knowledge

@@ -215,6 +215,129 @@ TEST_CASE("[Symphony][Spectral] SpectralGate processes sine without NaN") {
 	arena.free();
 }
 
+TEST_CASE("[Symphony][Spectral] SpectralGate open threshold unity gain within 0.5 dB") {
+	ArenaAllocator arena;
+	REQUIRE(arena.init(SPECTRAL_ARENA));
+
+	HashMap<StringName, Variant> params;
+	params.insert("fft_size", 512.0f);
+	params.insert("overlap", 4.0f);
+	// Floor threshold: strong bins pass; COLA should restore near-unity gain.
+	params.insert("threshold_db", -96.0f);
+	params.insert("reduction_db", 0.0f);
+
+	SymphonySpectralGate *sg = (SymphonySpectralGate *)SymphonySpectralGate::create(arena, params, MIX_RATE);
+	REQUIRE(sg != nullptr);
+
+	float in_buf[SYMPHONY_MICRO_BLOCK_SIZE] = {};
+	float out_buf[SYMPHONY_MICRO_BLOCK_SIZE] = {};
+	void *inputs[] = { in_buf, nullptr, nullptr };
+	void *outputs[] = { out_buf };
+	sg->bind_pins(inputs, outputs);
+
+	const int fft_size = 512;
+	const int total_samples = fft_size * 8;
+	const int latency = fft_size;
+	Vector<float> dry;
+	Vector<float> wet;
+	dry.resize(total_samples);
+	wet.resize(total_samples);
+
+	float phase = 0.0f;
+	const float phase_inc = 440.0f / MIX_RATE;
+	int written = 0;
+	while (written < total_samples) {
+		const int n = MIN(SYMPHONY_MICRO_BLOCK_SIZE, total_samples - written);
+		for (int i = 0; i < n; i++) {
+			in_buf[i] = Math::sin(phase * Math::TAU);
+			dry.write[written + i] = in_buf[i];
+			phase += phase_inc;
+			phase -= Math::floor(phase);
+		}
+		for (int i = n; i < SYMPHONY_MICRO_BLOCK_SIZE; i++) {
+			in_buf[i] = 0.0f;
+		}
+		sg->execute(SYMPHONY_MICRO_BLOCK_SIZE);
+		for (int i = 0; i < n; i++) {
+			wet.write[written + i] = out_buf[i];
+			CHECK(!std::isnan(out_buf[i]));
+			CHECK(!std::isinf(out_buf[i]));
+		}
+		written += n;
+	}
+
+	const int cmp_count = total_samples - latency - fft_size;
+	REQUIRE(cmp_count > 256);
+	const float dry_rms = _rms(dry.ptr() + latency, cmp_count);
+	const float wet_rms = _rms(wet.ptr() + latency, cmp_count);
+	const float err_db = Math::abs(_db_ratio(wet_rms, dry_rms));
+	CHECK(err_db <= 0.5f);
+
+	sg->cleanup();
+	arena.free();
+}
+
+TEST_CASE("[Symphony][Spectral] SpectralGate clamps threshold and attenuates below it") {
+	ArenaAllocator arena;
+	REQUIRE(arena.init(SPECTRAL_ARENA));
+
+	HashMap<StringName, Variant> params;
+	params.insert("fft_size", 512.0f);
+	params.insert("overlap", 4.0f);
+	params.insert("threshold_db", -96.0f);
+	params.insert("reduction_db", 0.0f);
+
+	SymphonySpectralGate *sg_open = (SymphonySpectralGate *)SymphonySpectralGate::create(arena, params, MIX_RATE);
+	REQUIRE(sg_open != nullptr);
+
+	// Second gate in the same arena: closed threshold with deep reduction.
+	params["threshold_db"] = 12.0f; // Must clamp to ≤0 dB at create + execute.
+	params["reduction_db"] = -60.0f;
+	SymphonySpectralGate *sg_shut = (SymphonySpectralGate *)SymphonySpectralGate::create(arena, params, MIX_RATE);
+	REQUIRE(sg_shut != nullptr);
+
+	float in_buf[SYMPHONY_MICRO_BLOCK_SIZE] = {};
+	float out_open[SYMPHONY_MICRO_BLOCK_SIZE] = {};
+	float out_shut[SYMPHONY_MICRO_BLOCK_SIZE] = {};
+	float threshold_pin = 24.0f; // Also clamp live pin > 0.
+	float reduction_pin = -60.0f;
+	void *inputs_open[] = { in_buf, nullptr, nullptr };
+	void *inputs_shut[] = { in_buf, &threshold_pin, &reduction_pin };
+	void *outputs_open[] = { out_open };
+	void *outputs_shut[] = { out_shut };
+	sg_open->bind_pins(inputs_open, outputs_open);
+	sg_shut->bind_pins(inputs_shut, outputs_shut);
+
+	double energy_open = 0.0;
+	double energy_shut = 0.0;
+	float phase = 0.0f;
+	const float phase_inc = 880.0f / MIX_RATE;
+	for (int b = 0; b < 64; b++) {
+		for (int i = 0; i < SYMPHONY_MICRO_BLOCK_SIZE; i++) {
+			// Quiet enough that unnormalized FFT bin mags sit below 0 dB threshold.
+			in_buf[i] = 0.001f * Math::sin(phase * Math::TAU);
+			phase += phase_inc;
+			phase -= Math::floor(phase);
+		}
+		sg_open->execute(SYMPHONY_MICRO_BLOCK_SIZE);
+		sg_shut->execute(SYMPHONY_MICRO_BLOCK_SIZE);
+		for (int i = 0; i < SYMPHONY_MICRO_BLOCK_SIZE; i++) {
+			CHECK(!std::isnan(out_open[i]));
+			CHECK(!std::isnan(out_shut[i]));
+			energy_open += (double)out_open[i] * (double)out_open[i];
+			energy_shut += (double)out_shut[i] * (double)out_shut[i];
+		}
+	}
+
+	CHECK(energy_open > 0.0);
+	// Closed gate should suppress far more energy than the open gate.
+	CHECK(energy_shut < energy_open * 0.25);
+
+	sg_open->cleanup();
+	sg_shut->cleanup();
+	arena.free();
+}
+
 TEST_CASE("[Symphony][Spectral] Graph compile PhaseVocoder reports FFT-scaled cost") {
 	GraphDescription desc;
 

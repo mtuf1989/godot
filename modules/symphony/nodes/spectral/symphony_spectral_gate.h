@@ -39,6 +39,7 @@ private:
 	float *input_ring = nullptr;      // [fft_size * 2] circular input buffer
 	float *output_ring = nullptr;     // [fft_size * 2] overlap-add accumulator
 	float *window_lut = nullptr;      // [fft_size] precomputed Hanning window
+	float *cola_gain = nullptr;       // [fft_size] 1 / Σ w² (COLA normalize)
 	float *fft_workspace = nullptr;   // [fft_size] pffft work buffer
 	float *analysis_frame = nullptr;  // [fft_size] windowed frame for FFT input
 	float *fft_buffer = nullptr;      // [fft_size] FFT output (interleaved complex)
@@ -122,10 +123,11 @@ private:
 		// --- Step 4: Inverse FFT ---
 		pffft_transform_ordered(pffft_setup, fft_buffer, ifft_buffer, fft_workspace, PFFFT_BACKWARD);
 
-		// --- Step 5: Scale by 1/N and apply synthesis window ---
+		// --- Step 5: Scale by 1/N, synthesis window, and COLA gain ---
 		const float inv_fft_size = 1.0f / (float)N;
 		for (int32_t i = 0; i < N; i++) {
-			ifft_buffer[i] *= inv_fft_size * window_lut[i];
+			float g = cola_gain ? cola_gain[i] : 1.0f;
+			ifft_buffer[i] *= inv_fft_size * window_lut[i] * g;
 		}
 
 		// --- Step 6: Overlap-add into output ring buffer ---
@@ -273,10 +275,9 @@ public:
 		desc.params.push_back({ "reduction_db", -40.0f, -96.0f, 0.0f, 0.1f });
 		desc.state_size = sizeof(SymphonySpectralGate);
 		desc.state_align = alignof(SymphonySpectralGate);
-		// At max fft_size=8192: allocates 7 buffers of N floats (input_ring×2, output_ring×2,
-		// window_lut, fft_workspace, analysis_frame, fft_buffer, ifft_buffer).
-		// Total: 7*8192 = 57344 floats. Plus alignment overhead per alloc (7 allocs × 32 = 224).
-		desc.extra_arena_bytes = sizeof(float) * 57344 + 256;
+		// Max fft_size=8192: input_ring 2N + output_ring 2N + window/cola/workspace/
+		// analysis/fft/ifft (6×N) = 10N floats, plus alignment slack.
+		desc.extra_arena_bytes = sizeof(float) * 81920 + 320;
 		desc.cost_per_sample = 4.0f;
 		desc.extra_cost_fn = &SymphonySpectralGate::extra_cost;
 		desc.create_fn = &SymphonySpectralGate::create;
@@ -333,13 +334,14 @@ public:
 		sg->input_ring = (float *)p_arena.alloc(sizeof(float) * N * 2, 32);
 		sg->output_ring = (float *)p_arena.alloc(sizeof(float) * N * 2, 32);
 		sg->window_lut = (float *)p_arena.alloc(sizeof(float) * N, 32);
+		sg->cola_gain = (float *)p_arena.alloc(sizeof(float) * N, 32);
 		sg->fft_workspace = (float *)p_arena.alloc(sizeof(float) * N, 32);
 		sg->analysis_frame = (float *)p_arena.alloc(sizeof(float) * N, 32);
 		sg->fft_buffer = (float *)p_arena.alloc(sizeof(float) * N, 32);
 		sg->ifft_buffer = (float *)p_arena.alloc(sizeof(float) * N, 32);
 
 		// Verify all allocations succeeded
-		if (!sg->input_ring || !sg->output_ring || !sg->window_lut ||
+		if (!sg->input_ring || !sg->output_ring || !sg->window_lut || !sg->cola_gain ||
 				!sg->fft_workspace || !sg->analysis_frame || !sg->fft_buffer ||
 				!sg->ifft_buffer) {
 			pffft_destroy_setup(sg->pffft_setup);
@@ -359,6 +361,16 @@ public:
 		for (int32_t i = 0; i < N; i++) {
 			float phase = (float)i / (float)(N - 1);
 			sg->window_lut[i] = 0.5f * (1.0f - Math::cos(Math::TAU * phase));
+		}
+
+		// COLA normalization: Σ w² over hop-aligned overlaps (same as PhaseVocoder).
+		for (int32_t i = 0; i < N; i++) {
+			float sum = 0.0f;
+			for (int32_t k = 0; k < sg->overlap; k++) {
+				int32_t idx = (i + k * sg->hop_size) % N;
+				sum += sg->window_lut[idx] * sg->window_lut[idx];
+			}
+			sg->cola_gain[i] = (sum > 1e-12f) ? (1.0f / sum) : 0.0f;
 		}
 
 		// --- Initialize processing state ---

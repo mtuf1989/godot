@@ -1790,6 +1790,7 @@ func _on_music_slider_changed(value: float):
 - Connections can be marked **feedback** (`is_feedback`). In the Symphony graph editor use **FB Toggle**; feedback edges draw amber dashed with an `FB` badge.
 - LOD variants serialize under `lod/1/...` and `lod/2/...`. Switching the LOD tier dropdown creates an empty variant if missing — remove unused variants before shipping a resource.
 - Per-tier memory estimate is shown in the editor toolbar (flags budgets over 8 MiB/graph).
+- `SpectralGate` now COLA-normalizes like `PhaseVocoder` (open threshold ≈ unity gain). `threshold_db` is clamped to ≤0 dB.
 
 **Game Audio Layer / GDScript (migrate `game-template` before release):**
 - Register RTPC / analysis names before `set_*` (no auto-create from audio). Prefer handles from `register_*`.
