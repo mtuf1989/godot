@@ -88,6 +88,9 @@ bin/godot.macos.editor.arm64 --headless --test --test-case='*Symphony*'
   hash of exportable state size). Audio adopts pending packages and migrates
   ≤256-byte compatible state at the block boundary; large histories are skipped.
 - Main-thread `swap_graph` no longer torn-reads live operator state.
+- Main-thread `set_parameter` / `trigger` load an atomic `control_package`
+  (published by audio on install), resolve routes, and retry once if a swap
+  races the call — they never read the audio-only `current_package` pointer.
 
 ### GraphPackageRetirement (§6 partial)
 

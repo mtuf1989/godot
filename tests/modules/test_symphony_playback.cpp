@@ -12,6 +12,8 @@ TEST_FORCE_LINK(test_symphony_playback)
 #include "modules/symphony/core/symphony_graph_package_retirement.h"
 #include "modules/symphony/core/symphony_prepared_graph_package.h"
 #include "modules/symphony/core/symphony_operator.h"
+#include "modules/symphony/stream/audio_stream_symphony.h"
+#include "modules/symphony/stream/audio_stream_playback_symphony.h"
 
 #include <cstring>
 
@@ -214,6 +216,44 @@ TEST_CASE("[Symphony][Playback] migrate skips mismatched structural fingerprints
 
 	PreparedGraphPackage::destroy(from);
 	PreparedGraphPackage::destroy(to);
+}
+
+TEST_CASE("[Symphony][Playback] set_parameter and trigger target published control package") {
+	Ref<AudioStreamSymphony> stream;
+	stream.instantiate();
+	stream->set_mix_rate(48000.0f);
+	stream->set_graph_description(_make_io_graph());
+
+	Ref<AudioStreamPlayback> base = stream->instantiate_playback();
+	Ref<AudioStreamPlaybackSymphony> playback = base;
+	REQUIRE(playback.is_valid());
+
+	// Pending only until start() publishes control_package.
+	CHECK(playback->trigger(StringName("gate"), 1.0f) == false);
+	playback->set_parameter(StringName("freq"), 880.0f);
+
+	playback->start();
+	CHECK(playback->trigger(StringName("gate"), 1.0f) == true);
+	playback->set_parameter(StringName("freq"), 660.0f);
+	CHECK(playback->get_estimated_cost_units() > 0.0f);
+
+	AudioFrame buf[64];
+	CHECK(playback->mix(buf, 1.0f, 64) == 64);
+
+	// Hot-swap: control stays on current until mix adopts pending.
+	CompiledGraph *replacement = stream->compile_graph();
+	REQUIRE(replacement != nullptr);
+	playback->swap_graph(replacement);
+	CHECK(playback->trigger(StringName("gate"), 0.5f) == true);
+	playback->set_parameter(StringName("freq"), 220.0f);
+
+	CHECK(playback->mix(buf, 1.0f, 64) == 64);
+	CHECK(playback->trigger(StringName("gate"), 1.0f) == true);
+	playback->set_parameter(StringName("freq"), 110.0f);
+	CHECK(playback->trigger(StringName("missing"), 1.0f) == false);
+
+	playback->stop();
+	GraphPackageRetirement::drain();
 }
 
 } // namespace TestSymphonyPlayback

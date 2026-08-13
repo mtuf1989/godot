@@ -1,7 +1,7 @@
 # Symphony Handoff Notes — Next Session
 
 **Date:** 2026-08-13  
-**Branch:** `features/symphony_fixed` (clean working tree)  
+**Branch:** `features/symphony_fixed`  
 **Plan source of truth:** `modules/symphony/improve_plan_1_7.md`  
 **Do not edit:** `modules/symphony/review_version_1_7.md`  
 **Migration log:** `modules/symphony/MIGRATION.md`  
@@ -15,18 +15,16 @@
 |-----------|--------|
 | **M1** | Done |
 | **M2** | Closed |
-| **M3** | In progress — memory, cost admission, §11 authoring, fingerprints/audio-boundary migrate landed; stress/TSan/metrics/control-path race remain |
+| **M3** | In progress — memory, cost admission, §11 authoring, fingerprints/migrate, control-path race landed; metrics/stress/TSan remain |
 
 **HEAD commits from this session (newest first):**
 
-- (pending) — package fingerprints + audio-boundary state migrate
-- `24ba26e7e6` — Update Symphony handoff notes for the next M3 session.
-- `c2b648d787` — LOD/feedback serialization, authoring APIs, editor cues (amber dashed + FB badge)
-- `f4899ad86c` — calibrated cost estimates for crossfade admission
-- `b77bbfd83b` — exact package memory charging + compile-time cost units
-- `c0334748c3` — WavePlayer sample offsets + validate stream before steal
+- (pending) — handle-safe set_parameter / trigger via atomic control_package
+- `0fb5639861` — Migrate compatible graph state at the audio boundary with package fingerprints
+- `24ba26e7e6` — Update Symphony handoff notes for the next M3 session
+- `c2b648d787` — LOD/feedback serialization, authoring APIs, editor cues
 
-**Tests (last run):** `34/34` Symphony cases pass
+**Tests (last run):** rebuild after control-path slice
 
 ```bash
 scons platform=macos target=editor arch=arm64 tests=yes module_raycast_enabled=no -j$(sysctl -n hw.ncpu)
@@ -74,19 +72,27 @@ bin/godot.macos.editor.arm64 --headless --test --source-file='*symphony*'
 - Feedback overlay: **amber dashed edges + `FB` badge** (plan §11)
 - Serialization round-trip tests green
 
+### Fingerprints + audio-boundary migrate
+- Package fingerprints: node_id + type hash + structural hash (exportable state size)
+- `migrate_compatible_state` on audio adopt (equal-power start + fallback swap); ≤256 bytes
+- `swap_graph` publish-only on main thread
+
+### Handle-safe control path
+- Atomic `control_package` published from `_install_package`
+- `set_parameter` / `trigger` load-check-act with one retry on swap race
+
 ---
 
 ## Suggested Next (priority)
 
-Still open from `improve_plan_1_7.md` M3 / deferred M2 leftovers:
+Still open from `improve_plan_1_7.md` M3 / deferred leftovers:
 
-1. **Handle-safe `set_parameter` / `trigger`** (§4/§6) — stop racing on `current_package` during audio swap
-2. **Full read-only metrics** — transition / trigger / spectral-underflow beyond package counts
-3. **Memory stress + release benchmarks** — many 96 kHz heavy voices; ≤5% median / ≤10% p99 gates
-4. **TSan + RT-scope assertions** (§6 gate)
-5. **Spectral suite depth** — PhaseVocoder hop/COLA/PFFFT (scaffold was replaced only for serialization; spectral tests still thin)
-6. **Wire `extra_cost_fn`** for FFT `N·logN` if admission needs tighter calibration
-7. **game-template** — implement documented API migration in that repo when ready (not this repo)
+1. **Full read-only metrics** — transition / trigger / spectral-underflow beyond package counts
+2. **Memory stress + release benchmarks** — many 96 kHz heavy voices; ≤5% median / ≤10% p99 gates
+3. **TSan + RT-scope assertions** (§6 gate)
+4. **Spectral suite depth** — PhaseVocoder hop/COLA/PFFFT
+5. **Wire `extra_cost_fn`** for FFT `N·logN` if admission needs tighter calibration
+6. **game-template** — implement documented API migration in that repo when ready (not this repo)
 
 Ask user which slice to take first if unclear.
 
@@ -94,8 +100,8 @@ Ask user which slice to take first if unclear.
 
 ## Known leftovers / caveats
 
-- `set_parameter` / `trigger` read `current_package` while audio may swap — **still in this plan**
-- Package fingerprints + audio-boundary migrate — **landed** (match node ID + type + structural hash; ≤256 bytes; main-thread `swap_graph` publish-only)
+- Package fingerprints + audio-boundary migrate — **landed**
+- Handle-safe `set_parameter` / `trigger` — **landed**
 - `extra_cost_fn` unused (fixed `cost_per_sample` only)
 - Editor LOD tier switch auto-creates empty variants if missing — authors should remove unused LODs before shipping (noted in user_guide)
 - Oscillator high-freq AA can overshoot ~±3 (tests allow ±3.1)
@@ -107,9 +113,9 @@ Ask user which slice to take first if unclear.
 
 1. Read this file + skim `improve_plan_1_7.md` remaining M3 gates
 2. Checkout `features/symphony_fixed`; confirm clean + rebuild if needed
-3. Prefer next: handle-safe `set_parameter`/`trigger`, then metrics/stress/TSan
+3. Prefer next: read-only metrics, then stress/TSan
 4. Keep updating `MIGRATION.md` / `user_guide.md` when APIs change; do not edit `review_version_1_7.md`
-5. Prefer focused commits (this session’s style)
+5. Prefer focused commits
 
 ## Knowledge / skills
 

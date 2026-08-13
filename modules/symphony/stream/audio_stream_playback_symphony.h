@@ -26,6 +26,8 @@ private:
 	PreparedGraphPackage *current_package = nullptr;
 	std::atomic<PreparedGraphPackage *> pending_package{ nullptr };
 	std::atomic<bool> pending_is_lod{ false };
+	// Main-thread control target (mirrors current). Audio publishes; main load-check-acts.
+	std::atomic<PreparedGraphPackage *> control_package{ nullptr };
 
 	// Transition state (plan §5). At most current + outgoing (+ held incoming for fallback).
 	enum class TransitionMode : uint8_t {

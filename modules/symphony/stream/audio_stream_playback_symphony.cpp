@@ -40,6 +40,7 @@ void AudioStreamPlaybackSymphony::_install_package(PreparedGraphPackage *p_packa
 	current_package = p_package;
 	current_graph = p_package ? p_package->graph : nullptr;
 	graph_output_node = p_package ? p_package->graph_output : nullptr;
+	control_package.store(p_package, std::memory_order_release);
 }
 
 void AudioStreamPlaybackSymphony::_release_crossfade_token() {
@@ -395,24 +396,48 @@ void AudioStreamPlaybackSymphony::swap_graph(CompiledGraph *p_graph) {
 }
 
 void AudioStreamPlaybackSymphony::set_parameter(const StringName &p_name, const Variant &p_value) {
-	if (!current_package) {
-		return;
-	}
-	SymphonyGraphInput *input = current_package->find_param(p_name);
-	if (input) {
+	// Main thread: never touch current_package directly (audio may swap it).
+	// Load the published control package, resolve the route, re-check, then write.
+	for (int attempt = 0; attempt < 2; attempt++) {
+		PreparedGraphPackage *pkg = control_package.load(std::memory_order_acquire);
+		if (!pkg) {
+			return;
+		}
+		SymphonyGraphInput *input = pkg->find_param(p_name);
+		if (!input) {
+			return;
+		}
+		if (control_package.load(std::memory_order_acquire) != pkg) {
+			continue;
+		}
 		input->set_value((float)p_value);
+		if (control_package.load(std::memory_order_acquire) == pkg) {
+			return;
+		}
+		// Package swapped after the write; retry so the live graph receives the value.
 	}
 }
 
 bool AudioStreamPlaybackSymphony::trigger(const StringName &p_name, float p_value) {
-	if (!current_package) {
-		return false;
+	for (int attempt = 0; attempt < 2; attempt++) {
+		PreparedGraphPackage *pkg = control_package.load(std::memory_order_acquire);
+		if (!pkg) {
+			return false;
+		}
+		SymphonyTriggerInput *tin = pkg->find_trigger(p_name);
+		if (!tin) {
+			return false;
+		}
+		if (control_package.load(std::memory_order_acquire) != pkg) {
+			continue;
+		}
+		const bool ok = tin->fire(p_value);
+		if (control_package.load(std::memory_order_acquire) == pkg) {
+			return ok;
+		}
+		// Swapped after enqueue; retry once against the newly published package.
 	}
-	SymphonyTriggerInput *tin = current_package->find_trigger(p_name);
-	if (!tin) {
-		return false;
-	}
-	return tin->fire(p_value);
+	return false;
 }
 
 float AudioStreamPlaybackSymphony::get_voice_cpu_microseconds() const {
@@ -436,7 +461,8 @@ int AudioStreamPlaybackSymphony::get_effective_priority() const {
 }
 
 float AudioStreamPlaybackSymphony::get_estimated_cost_units() const {
-	return current_package ? current_package->estimated_cost_units : 0.0f;
+	PreparedGraphPackage *pkg = control_package.load(std::memory_order_acquire);
+	return pkg ? pkg->estimated_cost_units : 0.0f;
 }
 
 void AudioStreamPlaybackSymphony::_finalize_stop() {
