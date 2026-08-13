@@ -5,7 +5,7 @@ Update this file with each commit that changes a public API.
 
 ## Status
 
-- **Milestone:** M1 in progress (§1–§2)
+- **Milestone:** M1 — pause for review (core compiler/DSP/silence landed)
 - **Branch:** `features/symphony_fixed`
 
 ## Completed
@@ -56,10 +56,19 @@ bin/godot.macos.editor.arm64 --headless --test --test-case='*Symphony*'
 - Compiler reserves arena bytes before allocation; `CompiledGraph::destroy`
   releases them. Oversized graphs fail with a compile error (approach A).
 
+### Silence behavior + DSP (§7/§8 partial)
+
+- Operators use `SilenceBehavior::{ALWAYS_PROCESS,STATEFUL_TAIL,STATELESS}`.
+- Shared `SymphonyFastMath::fast_sine` (quarter-wave folding).
+- ADSR release uses note-off envelope value; SVFilter is TPT/ZDF; PitchShifter
+  dry-bypasses at ~0 semitones; FDN caches controls and uses `exp2` for RT60 gains.
+
 ## Planned (from improve_plan_1_7.md)
 
 - Charge non-arena + SharedPCM into the same reservation path
 - Package counts (active/pending/outgoing/retired) wired to playback
+- FDN fractional-tap smoothing (20 ms) without permanent dual-tap
+- Full rate×micro-block matrix tests (22.05–96 kHz × 32/64)
 - `trigger(name, value)` returns `bool`; dropped-trigger metrics
 - RTPCEngine registration returns stable handles; no audio-thread auto-create
 - `acquire_slot()` free-only; EventDispatcher owns stealing; `set_slot_rms()`

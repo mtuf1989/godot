@@ -6,6 +6,7 @@
 #include "../../core/symphony_checked_math.h"
 #include "core/math/math_funcs.h"
 
+#include <cmath>
 #include <limits>
 
 // Feedback Delay Network (FDN) reverb operator.
@@ -69,6 +70,48 @@ private:
 	float default_damping = 0.5f;       // 0-1 (0=no damping, 1=maximum damping)
 	float default_pre_delay_ms = 20.0f; // milliseconds
 
+	// Cached micro-block controls (avoid per-block zipper + pow in hot path).
+	float cached_room_size = -1.0f;
+	float cached_decay_time = -1.0f;
+	float cached_damping = -1.0f;
+	float cached_pre_delay_ms = -1.0f;
+	int cached_pre_delay_samples = 0;
+	float damp_coeff = 0.0f;
+	float line_gains[MAX_LINES] = {};
+	float hadamard_scale = 1.0f;
+	uint8_t silent_blocks = 0;
+	static constexpr float ACTIVITY_THRESHOLD = 1e-6f;
+
+	void _refresh_controls(float p_room_size, float p_decay_time, float p_damping, float p_pre_delay_ms) {
+		bool lengths_dirty = (p_room_size != cached_room_size);
+		bool gains_dirty = lengths_dirty || (p_decay_time != cached_decay_time);
+		bool damp_dirty = (p_damping != cached_damping);
+		bool pre_dirty = (p_pre_delay_ms != cached_pre_delay_ms);
+
+		if (lengths_dirty) {
+			_update_delay_lengths(p_room_size);
+			cached_room_size = p_room_size;
+		}
+		if (gains_dirty) {
+			// gain = 10^(-3 * delay_sec / decay) = exp2(log2(10) * -3 * delay_sec / decay)
+			const float log2_10 = 3.321928094887362f;
+			for (int l = 0; l < num_lines; l++) {
+				float delay_sec = (float)delay_lengths[l] / mix_rate;
+				line_gains[l] = exp2f(log2_10 * (-3.0f * delay_sec / p_decay_time));
+			}
+			cached_decay_time = p_decay_time;
+		}
+		if (damp_dirty) {
+			damp_coeff = p_damping * 0.7f;
+			cached_damping = p_damping;
+		}
+		if (pre_dirty) {
+			cached_pre_delay_samples = (int)(p_pre_delay_ms * mix_rate / 1000.0f);
+			cached_pre_delay_samples = MIN(cached_pre_delay_samples, max_pre_delay_samples - 1);
+			cached_pre_delay_ms = p_pre_delay_ms;
+		}
+	}
+
 public:
 	SymphonyFDNReverb(float p_mix_rate, int p_num_lines, int p_max_delay_samples, int p_max_pre_delay_samples,
 			float *p_delay_memory, float *p_pre_delay_memory,
@@ -82,19 +125,17 @@ public:
 			  default_decay_time(p_decay_time),
 			  default_damping(p_damping),
 			  default_pre_delay_ms(p_pre_delay_ms) {
-		// Partition the contiguous delay memory block into per-line buffers
 		for (int l = 0; l < num_lines; l++) {
 			delay_buffers[l] = p_delay_memory + (l * p_max_delay_samples);
 			write_positions[l] = 0;
 			damping_state[l] = 0.0f;
 		}
-		// Zero all buffers
 		memset(p_delay_memory, 0, sizeof(float) * num_lines * p_max_delay_samples);
 		if (pre_delay_buffer) {
 			memset(pre_delay_buffer, 0, sizeof(float) * p_max_pre_delay_samples);
 		}
-		// Compute initial delay lengths from room_size
-		_update_delay_lengths(p_room_size);
+		hadamard_scale = 1.0f / Math::sqrt((float)num_lines);
+		_refresh_controls(p_room_size, p_decay_time, p_damping, p_pre_delay_ms);
 	}
 
 	virtual void bind_pins(void **p_input_ptrs, void **p_output_ptrs) override {
@@ -114,39 +155,18 @@ public:
 		float damping = damping_input ? *damping_input : default_damping;
 		float pre_delay_ms = pre_delay_input ? *pre_delay_input : default_pre_delay_ms;
 
-		// Clamp parameters
 		room_size = CLAMP(room_size, 0.01f, 1.0f);
 		decay_time = CLAMP(decay_time, 0.1f, 20.0f);
 		damping = CLAMP(damping, 0.0f, 1.0f);
 		pre_delay_ms = CLAMP(pre_delay_ms, 0.0f, 200.0f);
 
-		// Update delay lengths based on room_size
-		_update_delay_lengths(room_size);
+		_refresh_controls(room_size, decay_time, damping, pre_delay_ms);
+		const int pre_delay_samples = cached_pre_delay_samples;
 
-		// Pre-delay in samples
-		int pre_delay_samples = (int)(pre_delay_ms * mix_rate / 1000.0f);
-		pre_delay_samples = MIN(pre_delay_samples, max_pre_delay_samples - 1);
-
-		// Damping coefficient for one-pole LP (higher damping = more low-pass)
-		float damp_coeff = damping * 0.7f; // Scale to useful range
-
-		// Compute per-line decay gains
-		// gain_per_line = 10^(-3 * delay_length_sec / decay_time)
-		// This ensures RT60 = decay_time regardless of individual delay lengths
-		float line_gains[MAX_LINES];
-		for (int l = 0; l < num_lines; l++) {
-			float delay_sec = (float)delay_lengths[l] / mix_rate;
-			line_gains[l] = Math::pow(10.0f, -3.0f * delay_sec / decay_time);
-		}
-
-		// Hadamard normalization factor
-		float hadamard_scale = 1.0f / Math::sqrt((float)num_lines);
-
+		float peak = 0.0f;
 		for (int32_t i = 0; i < p_num_frames; i++) {
-			// Get input (may be null if unconnected)
 			float input_sample = audio_in ? audio_in[i] : 0.0f;
 
-			// Apply pre-delay
 			float delayed_input;
 			if (pre_delay_samples > 0 && pre_delay_buffer) {
 				pre_delay_buffer[pre_delay_write_pos] = input_sample;
@@ -160,7 +180,6 @@ public:
 				delayed_input = input_sample;
 			}
 
-			// Read from all delay lines
 			float tap_values[MAX_LINES];
 			for (int l = 0; l < num_lines; l++) {
 				int read_pos = write_positions[l] - delay_lengths[l];
@@ -170,34 +189,35 @@ public:
 				tap_values[l] = delay_buffers[l][read_pos];
 			}
 
-			// Apply Hadamard mixing matrix
 			float mixed[MAX_LINES];
 			_hadamard_mix(tap_values, mixed);
 
-			// Scale by Hadamard normalization
 			for (int l = 0; l < num_lines; l++) {
 				mixed[l] *= hadamard_scale;
 			}
 
-			// Apply damping (one-pole LP) and decay gain, then write back
 			float output_sum = 0.0f;
 			for (int l = 0; l < num_lines; l++) {
-				// One-pole LP: y[n] = (1 - coeff) * x[n] + coeff * y[n-1]
 				damping_state[l] = (1.0f - damp_coeff) * mixed[l] + damp_coeff * damping_state[l];
-
-				// Apply RT60-matched decay gain
 				float feedback = damping_state[l] * line_gains[l];
-
-				// Write input + feedback to delay line
 				delay_buffers[l][write_positions[l]] = delayed_input + feedback;
 				write_positions[l] = (write_positions[l] + 1) % max_delay_samples;
-
-				// Sum taps for output (pre-mixing, for more direct character)
 				output_sum += tap_values[l];
+				peak = MAX(peak, Math::abs(damping_state[l]));
 			}
 
-			// Output: sum of all taps, normalized
 			audio_out[i] = output_sum * hadamard_scale;
+			peak = MAX(peak, Math::abs(audio_out[i]));
+		}
+
+		if (peak < ACTIVITY_THRESHOLD) {
+			if (silent_blocks < 255) {
+				silent_blocks++;
+			}
+			activity = (silent_blocks >= 2) ? 0 : 1;
+		} else {
+			silent_blocks = 0;
+			activity = 1;
 		}
 	}
 
