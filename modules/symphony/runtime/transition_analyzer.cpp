@@ -2,7 +2,7 @@
 #include "core/object/class_db.h"
 #include "core/math/math_funcs.h"
 #include "servers/audio/audio_server.h"
-#include "pffft.h"
+#include "modules/symphony/thirdparty/pffft/pffft.h"
 
 #include <cstring>
 #include <cmath>

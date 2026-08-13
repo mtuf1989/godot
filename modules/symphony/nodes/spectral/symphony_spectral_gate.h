@@ -4,7 +4,7 @@
 #include "../../core/symphony_operator_registry.h"
 #include "../../core/symphony_arena_allocator.h"
 #include "core/math/math_funcs.h"
-#include "pffft.h"
+#include "modules/symphony/thirdparty/pffft/pffft.h"
 
 // SpectralGate: Frequency-domain noise gate for noise suppression and spectral effects.
 //
@@ -277,9 +277,24 @@ public:
 		// window_lut, fft_workspace, analysis_frame, fft_buffer, ifft_buffer).
 		// Total: 7*8192 = 57344 floats. Plus alignment overhead per alloc (7 allocs × 32 = 224).
 		desc.extra_arena_bytes = sizeof(float) * 57344 + 256;
-		desc.cost_per_sample = 32.0f;
+		desc.cost_per_sample = 4.0f;
+		desc.extra_cost_fn = &SymphonySpectralGate::extra_cost;
 		desc.create_fn = &SymphonySpectralGate::create;
 		OperatorRegistry::get_singleton()->register_operator(desc);
+	}
+
+	[[nodiscard]] static float extra_cost(const HashMap<StringName, Variant> &p_params, float p_mix_rate) {
+		(void)p_mix_rate;
+		int32_t fft_sz = p_params.has("fft_size") ? (int32_t)(float)p_params["fft_size"] : 2048;
+		fft_sz = CLAMP(fft_sz, 256, 8192);
+		fft_sz = 1 << (int32_t)Math::floor(Math::log((float)fft_sz) / Math::log(2.0f));
+		int32_t overlap = p_params.has("overlap") ? (int32_t)(float)p_params["overlap"] : 4;
+		overlap = CLAMP(overlap, 2, 8);
+		const int32_t hop = MAX(1, fft_sz / overlap);
+		const float hops_in_block = (float)SYMPHONY_MICRO_BLOCK_SIZE / (float)hop;
+		const float log2n = Math::log((float)fft_sz) / Math::log(2.0f);
+		// Slightly cheaper than PhaseVocoder (no pitch remap / phase accumulate).
+		return hops_in_block * (float)fft_sz * log2n * 0.7f;
 	}
 
 	static SymphonyOperator *create(ArenaAllocator &p_arena, const HashMap<StringName, Variant> &p_params, float p_mix_rate) {

@@ -15,16 +15,17 @@
 |-----------|--------|
 | **M1** | Done |
 | **M2** | Closed |
-| **M3** | In progress — functional gates largely landed; stress/mix timing added; TSan/RT-scope remain |
+| **M3** | In progress — functional + spectral/cost gates largely landed; TSan/RT-scope + release baselines remain |
 
 **HEAD commits from this session (newest first):**
 
-- (pending) — memory stress + 10/30/50 mix timing benchmarks
-- `93ff25a112` — Expose read-only Symphony transition, trigger, spectral, and retirement metrics
-- `5842cf7fce` — Publish an atomic control package for parameter and trigger writes
-- `0fb5639861` — Migrate compatible graph state at the audio boundary with package fingerprints
+- (pending) — spectral suite depth + FFT extra_cost_fn
+- `52cd2e8aaa` — memory stress + 10/30/50 mix timing
+- `93ff25a112` — read-only metrics
+- `5842cf7fce` — atomic control_package
+- `0fb5639861` — fingerprints + audio-boundary migrate
 
-**Tests (last run):** rebuild after stress slice
+**Tests (last run):** `49/49` Symphony cases pass
 
 ```bash
 scons platform=macos target=editor arch=arm64 tests=yes module_raycast_enabled=no -j$(sysctl -n hw.ncpu)
@@ -90,17 +91,21 @@ bin/godot.macos.editor.arm64 --headless --test --source-file='*symphony*'
   failed compile preserves audible package, peak live ≤ current+outgoing+pending,
   retirement/reserved return to baseline, 10/30/50-node median/p99 mix timing
 
+### Spectral suite + FFT cost
+- PhaseVocoder unity (±0.5 dB at stretch=1), stretch=2 finite, underflow counter,
+  cleanup/PFFFT release; SpectralGate finite processing; compile cost scales with FFT size
+- `extra_cost_fn` wires `N·log2(N)·hops` for PhaseVocoder / SpectralGate
+
 ---
 
 ## Suggested Next (priority)
 
 Still open from `improve_plan_1_7.md` M3 / deferred leftovers:
 
-1. **TSan + RT-scope assertions** (§6 gate)
-2. **Spectral suite depth** — PhaseVocoder hop/COLA/PFFFT
-3. **Wire `extra_cost_fn`** for FFT `N·logN` if admission needs tighter calibration
-4. **Release-mode baseline comparison** for ≤5% median / ≤10% p99 gates (stress records absolute timings)
-5. **game-template** — implement documented API migration in that repo when ready (not this repo)
+1. **TSan + RT-scope assertions** (§6 gate) — locked “later”
+2. **Release-mode baseline comparison** for ≤5% median / ≤10% p99 gates
+3. **SpectralGate COLA / threshold dB scale** — gate threshold clamped to ≤0 dB so strong bins rarely attenuate (test covers finite processing only)
+4. **game-template** — implement documented API migration in that repo when ready (not this repo)
 
 Ask user which slice to take first if unclear.
 
@@ -112,7 +117,8 @@ Ask user which slice to take first if unclear.
 - Handle-safe `set_parameter` / `trigger` — **landed**
 - Read-only metrics — **landed**
 - Memory stress + mix timing — **landed** (absolute timings; no historical regression baseline yet)
-- `extra_cost_fn` unused (fixed `cost_per_sample` only)
+- Spectral suite + `extra_cost_fn` — **landed**
+- `extra_cost_fn` unused — **resolved** for PhaseVocoder / SpectralGate
 - Editor LOD tier switch auto-creates empty variants if missing — authors should remove unused LODs before shipping (noted in user_guide)
 - Oscillator high-freq AA can overshoot ~±3 (tests allow ±3.1)
 - Micro-block: 32 on `__EMSCRIPTEN__`, else 64
@@ -123,7 +129,7 @@ Ask user which slice to take first if unclear.
 
 1. Read this file + skim `improve_plan_1_7.md` remaining M3 gates
 2. Checkout `features/symphony_fixed`; confirm clean + rebuild if needed
-3. Prefer next: TSan + RT-scope assertions, then spectral depth
+3. Prefer next: release-mode timing baselines, or TSan when unlocked; SpectralGate dB/COLA polish optional
 4. Keep updating `MIGRATION.md` / `user_guide.md` when APIs change; do not edit `review_version_1_7.md`
 5. Prefer focused commits
 

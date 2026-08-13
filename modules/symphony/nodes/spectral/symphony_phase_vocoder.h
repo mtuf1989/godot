@@ -5,7 +5,7 @@
 #include "../../core/symphony_arena_allocator.h"
 #include "../../core/symphony_runtime_metrics.h"
 #include "core/math/math_funcs.h"
-#include "pffft.h"
+#include "modules/symphony/thirdparty/pffft/pffft.h"
 
 #include <cstdint>
 
@@ -375,9 +375,24 @@ public:
 		// + 5 buffers of (N/2+1) floats (prev_phase, synth_phase, magnitude_buf, shifted_mag, shifted_phase).
 		// Total: 7*8192 + 5*4097 = 77829 floats + cola_gain N. Plus alignment overhead.
 		desc.extra_arena_bytes = sizeof(float) * (77829 + 8192) + 512;
-		desc.cost_per_sample = 48.0f; // Spectral: roughly N·logN class work
+		// Base wiring cost; FFT work comes from extra_cost_fn (N·log2(N)·hops).
+		desc.cost_per_sample = 4.0f;
+		desc.extra_cost_fn = &SymphonyPhaseVocoder::extra_cost;
 		desc.create_fn = &SymphonyPhaseVocoder::create;
 		OperatorRegistry::get_singleton()->register_operator(desc);
+	}
+
+	[[nodiscard]] static float extra_cost(const HashMap<StringName, Variant> &p_params, float p_mix_rate) {
+		(void)p_mix_rate;
+		int32_t fft_sz = p_params.has("fft_size") ? (int32_t)(float)p_params["fft_size"] : 2048;
+		fft_sz = CLAMP(fft_sz, 256, 8192);
+		fft_sz = 1 << (int32_t)Math::floor(Math::log((float)fft_sz) / Math::log(2.0f));
+		int32_t overlap = p_params.has("overlap") ? (int32_t)(float)p_params["overlap"] : 4;
+		overlap = CLAMP(overlap, 2, 8);
+		const int32_t hop = MAX(1, fft_sz / overlap);
+		const float hops_in_block = (float)SYMPHONY_MICRO_BLOCK_SIZE / (float)hop;
+		const float log2n = Math::log((float)fft_sz) / Math::log(2.0f);
+		return hops_in_block * (float)fft_sz * log2n;
 	}
 
 	static SymphonyOperator *create(ArenaAllocator &p_arena, const HashMap<StringName, Variant> &p_params, float p_mix_rate) {

@@ -124,6 +124,14 @@ bin/godot.macos.editor.arm64 --headless --test --test-case='*Symphony*'
   live package caps, retirement teardown, and 10/30/50-node median/p99 mix
   timings (absolute soft ceiling; release regression baselines still open).
 
+### Spectral + cost calibration
+
+- PhaseVocoder/SpectralGate `extra_cost_fn` adds `N·log2(N)·hops` per micro-block
+  (SpectralGate ×0.7). PFFFT includes use the module path so tests can compile
+  spectral headers.
+- Spectral tests cover stretch=1 unity (±0.5 dB), stretch=2 finite output,
+  underflow counter monotonicity, cleanup idempotence, and FFT-size cost scaling.
+
 ### VoiceManager deferral (§6 partial)
 
 - Audio `enforce_voice_limits()` only snapshots + writes per-voice atomics
