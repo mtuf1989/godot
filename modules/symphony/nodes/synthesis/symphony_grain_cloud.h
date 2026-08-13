@@ -499,9 +499,31 @@ public:
 		desc.state_align = alignof(SymphonyGrainCloud);
 		desc.extra_arena_bytes = 0; // Superseded by extra_arena_bytes_fn below.
 		desc.extra_arena_bytes_fn = &SymphonyGrainCloud::calculate_arena_bytes;
+		// Base covers capture + moderate grain load; density/pitch extras via extra_cost_fn.
 		desc.cost_per_sample = 24.0f;
+		desc.extra_cost_fn = &SymphonyGrainCloud::extra_cost;
 		desc.create_fn = &SymphonyGrainCloud::create;
 		OperatorRegistry::get_singleton()->register_operator(desc);
+	}
+
+	[[nodiscard]] static float extra_cost(const HashMap<StringName, Variant> &p_params, float p_mix_rate) {
+		(void)p_mix_rate;
+		float density = p_params.has("density") ? (float)p_params["density"] : 8.0f;
+		density = CLAMP(density, 0.0f, 50.0f);
+		float grain_ms = p_params.has("grain_size_ms") ? (float)p_params["grain_size_ms"] : 50.0f;
+		grain_ms = CLAMP(grain_ms, 10.0f, 200.0f);
+		float pitch_tracking = p_params.has("pitch_tracking") ? (float)p_params["pitch_tracking"] : 0.0f;
+		pitch_tracking = CLAMP(pitch_tracking, 0.0f, 1.0f);
+
+		// Expected concurrent grains ≈ density × duration, capped at MAX_GRAINS.
+		const float concurrent = MIN((float)MAX_GRAINS, density * grain_ms * 0.001f);
+		// cost_per_sample=24 already budgets ~4 overlapping grains; charge surplus loops.
+		const float surplus = MAX(0.0f, concurrent - 4.0f);
+		float cost = surplus * (float)SYMPHONY_MICRO_BLOCK_SIZE * 3.0f;
+		if (pitch_tracking > 0.001f) {
+			cost += (float)SYMPHONY_MICRO_BLOCK_SIZE * 6.0f; // periodic YIN
+		}
+		return cost;
 	}
 
 	// Per-instance arena sizing: returns only what this specific instance needs.

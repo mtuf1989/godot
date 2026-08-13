@@ -140,6 +140,9 @@ bin/godot.macos.editor.arm64 --headless --test --test-case='*Symphony*'
 - SpectralGate applies the same COLA `1/Σw²` table as PhaseVocoder; open-threshold
   (threshold=-96) unity is gated to ±0.5 dB. `threshold_db` remains clamped to
   ≤0 dB (create + execute).
+- GrainCloud `extra_cost_fn` adds surplus concurrent-grain and pitch-tracking cost
+  beyond the base `cost_per_sample=24`. Stress test compares µs/cost_unit against an
+  oscillator reference (must stay ≤2×).
 
 ### VoiceManager deferral (§6 partial)
 

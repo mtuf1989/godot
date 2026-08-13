@@ -78,14 +78,14 @@ Per-512f equivalent ≈ median/32 (~6.5 / 39 / 76 µs).
 ### This session
 1. **Release timing baselines** — `template_release` hard-fails 10/30/50-node mix timing (`32×512f` batches, 3-trial median) at plan ≤+5% median / ≤+10% p99 vs stored macos-arm64 constants. Editor keeps soft ceiling only. Expect flake under heavy host load.
 2. **SpectralGate polish** — COLA `1/Σw²` table (parity with PhaseVocoder / review 6.3); open-threshold unity ±0.5 dB; threshold clamp ≤0 dB covered by attenuation test; arena estimate corrected to 10N floats.
+3. **GrainCloud `extra_cost_fn`** — calibration showed ~1.56× µs/unit vs oscillator at max density+pitch; density/pitch-scaled extra cost + stress ≤2× guard.
 
 ---
 
 ## Suggested Next (priority)
 
 1. **TSan + RT-scope assertions** (§6) — only when unlocked (currently “TSan later”)  
-2. **GrainCloud / other heavies `extra_cost_fn`** — only if admission still under-calibrated  
-3. **game-template** — separate repo when ready  
+2. **game-template** — separate repo when ready  
 
 Ask user which slice if unclear (default: stop for M3 review unless TSan unlocked).
 

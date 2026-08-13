@@ -254,6 +254,121 @@ TEST_CASE("[Symphony][Stress] Retirement and reserved bytes return to baseline a
 	CHECK(guard.budget->get_snapshot().reserved_bytes == reserved_before);
 }
 
+TEST_CASE("[Symphony][Stress] GrainCloud cost units stay conservative vs measured mix") {
+	// If µs/cost_unit for GrainCloud ≫ oscillator reference, admission would under-estimate.
+	BudgetGuard guard;
+
+	auto time_graph_us = [](const GraphDescription &p_desc, float &r_cost_units) -> uint64_t {
+		GraphCompiler::CompileResult result = GraphCompiler::compile(p_desc, 48000.0f);
+		REQUIRE(result.success());
+		PreparedGraphPackage *pkg = PreparedGraphPackage::create_from_graph(result.graph, result.arena_bytes, result.total_package_bytes);
+		REQUIRE(pkg != nullptr);
+		REQUIRE(pkg->graph_output != nullptr);
+		r_cost_units = pkg->estimated_cost_units;
+
+		AudioFrame buf[512];
+		const int frames = 512;
+		const int reps = 16;
+		for (int w = 0; w < 4; w++) {
+			for (int r = 0; r < reps; r++) {
+				for (int off = 0; off < frames; off += SYMPHONY_MICRO_BLOCK_SIZE) {
+					pkg->graph_output->set_output(buf, off);
+					pkg->graph->execute(SYMPHONY_MICRO_BLOCK_SIZE);
+				}
+			}
+		}
+
+		Vector<uint64_t> samples;
+		samples.resize(32);
+		for (int i = 0; i < samples.size(); i++) {
+			const uint64_t t0 = symphony_time_usec();
+			for (int r = 0; r < reps; r++) {
+				for (int off = 0; off < frames; off += SYMPHONY_MICRO_BLOCK_SIZE) {
+					pkg->graph_output->set_output(buf, off);
+					pkg->graph->execute(SYMPHONY_MICRO_BLOCK_SIZE);
+				}
+			}
+			const uint64_t t1 = symphony_time_usec();
+			samples.write[i] = t1 >= t0 ? (t1 - t0) : 0;
+		}
+		uint64_t median = 0;
+		uint64_t p99 = 0;
+		_percentile_us(samples, median, p99);
+		PreparedGraphPackage::destroy(pkg);
+		return median;
+	};
+
+	GraphDescription osc_desc;
+	{
+		NodeDesc osc;
+		osc.id = 1;
+		osc.type_name = "Oscillator";
+		osc.params.insert("frequency", 440.0f);
+		osc_desc.nodes.push_back(osc);
+		NodeDesc out;
+		out.id = 2;
+		out.type_name = "GraphOutput";
+		osc_desc.nodes.push_back(out);
+		ConnectionDesc c;
+		c.from_node = 1;
+		c.from_pin = 0;
+		c.to_node = 2;
+		c.to_pin = 0;
+		osc_desc.connections.push_back(c);
+	}
+
+	GraphDescription grain_desc;
+	{
+		NodeDesc osc;
+		osc.id = 1;
+		osc.type_name = "Oscillator";
+		osc.params.insert("frequency", 220.0f);
+		grain_desc.nodes.push_back(osc);
+		NodeDesc grain;
+		grain.id = 2;
+		grain.type_name = "GrainCloud";
+		grain.params.insert("density", 50.0f);
+		grain.params.insert("grain_size_ms", 100.0f);
+		grain.params.insert("pitch_tracking", 1.0f);
+		grain.params.insert("capture_seconds", 1.0f);
+		grain_desc.nodes.push_back(grain);
+		NodeDesc out;
+		out.id = 3;
+		out.type_name = "GraphOutput";
+		grain_desc.nodes.push_back(out);
+		ConnectionDesc c0;
+		c0.from_node = 1;
+		c0.from_pin = 0;
+		c0.to_node = 2;
+		c0.to_pin = 0;
+		grain_desc.connections.push_back(c0);
+		ConnectionDesc c1;
+		c1.from_node = 2;
+		c1.from_pin = 0;
+		c1.to_node = 3;
+		c1.to_pin = 0;
+		grain_desc.connections.push_back(c1);
+	}
+
+	float osc_cost = 0.0f;
+	float grain_cost = 0.0f;
+	const uint64_t osc_us = time_graph_us(osc_desc, osc_cost);
+	const uint64_t grain_us = time_graph_us(grain_desc, grain_cost);
+	REQUIRE(osc_cost > 0.0f);
+	REQUIRE(grain_cost > 0.0f);
+	REQUIRE(osc_us > 0);
+	REQUIRE(grain_us > 0);
+
+	const double osc_us_per_unit = (double)osc_us / (double)osc_cost;
+	const double grain_us_per_unit = (double)grain_us / (double)grain_cost;
+	MESSAGE("osc_us=", osc_us, " cost=", osc_cost, " us_per_unit=", osc_us_per_unit);
+	MESSAGE("grain_us=", grain_us, " cost=", grain_cost, " us_per_unit=", grain_us_per_unit);
+
+	// Conservative admission: GrainCloud must not be >2× “more expensive per unit”
+	// than a cheap oscillator reference (would mean cost units under-count GrainCloud).
+	CHECK(grain_us_per_unit <= osc_us_per_unit * 2.0);
+}
+
 TEST_CASE("[Symphony][Stress] Mix timing median/p99 for 10/30/50-node graphs") {
 	BudgetGuard guard;
 
