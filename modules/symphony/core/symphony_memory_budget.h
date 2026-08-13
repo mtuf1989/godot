@@ -8,6 +8,7 @@
 #include "core/string/ustring.h"
 #include "core/templates/hash_map.h"
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 
@@ -59,6 +60,9 @@ public:
 	size_t get_shared_pcm_bytes() const { return shared_pcm_bytes; }
 
 	void set_package_counts(uint32_t p_active, uint32_t p_pending, uint32_t p_outgoing, uint32_t p_retired);
+	void adjust_active_packages(int32_t p_delta);
+	void adjust_pending_packages(int32_t p_delta);
+	void adjust_outgoing_packages(int32_t p_delta);
 	Snapshot get_snapshot() const;
 
 private:
@@ -69,8 +73,8 @@ private:
 	size_t reserved_bytes = 0;
 	size_t peak_reserved_bytes = 0;
 	size_t shared_pcm_bytes = 0;
-	uint32_t active_packages = 0;
-	uint32_t pending_packages = 0;
-	uint32_t outgoing_packages = 0;
+	std::atomic<uint32_t> active_packages{ 0 };
+	std::atomic<uint32_t> pending_packages{ 0 };
+	std::atomic<uint32_t> outgoing_packages{ 0 };
 	uint32_t retired_packages = 0;
 };

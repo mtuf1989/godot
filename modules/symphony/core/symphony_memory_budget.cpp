@@ -3,6 +3,7 @@
 /**************************************************************************/
 
 #include "symphony_memory_budget.h"
+#include "symphony_graph_package_retirement.h"
 
 #include "core/string/ustring.h"
 #include "core/error/error_macros.h"
@@ -62,10 +63,40 @@ void SymphonyMemoryBudget::set_shared_pcm_bytes(size_t p_bytes) {
 }
 
 void SymphonyMemoryBudget::set_package_counts(uint32_t p_active, uint32_t p_pending, uint32_t p_outgoing, uint32_t p_retired) {
-	active_packages = p_active;
-	pending_packages = p_pending;
-	outgoing_packages = p_outgoing;
+	active_packages.store(p_active, std::memory_order_relaxed);
+	pending_packages.store(p_pending, std::memory_order_relaxed);
+	outgoing_packages.store(p_outgoing, std::memory_order_relaxed);
 	retired_packages = p_retired;
+}
+
+static void _adjust_u32(std::atomic<uint32_t> &p_counter, int32_t p_delta) {
+	if (p_delta == 0) {
+		return;
+	}
+	if (p_delta > 0) {
+		p_counter.fetch_add((uint32_t)p_delta, std::memory_order_relaxed);
+		return;
+	}
+	uint32_t cur = p_counter.load(std::memory_order_relaxed);
+	uint32_t sub = (uint32_t)(-p_delta);
+	while (true) {
+		uint32_t next = (cur > sub) ? (cur - sub) : 0;
+		if (p_counter.compare_exchange_weak(cur, next, std::memory_order_relaxed)) {
+			break;
+		}
+	}
+}
+
+void SymphonyMemoryBudget::adjust_active_packages(int32_t p_delta) {
+	_adjust_u32(active_packages, p_delta);
+}
+
+void SymphonyMemoryBudget::adjust_pending_packages(int32_t p_delta) {
+	_adjust_u32(pending_packages, p_delta);
+}
+
+void SymphonyMemoryBudget::adjust_outgoing_packages(int32_t p_delta) {
+	_adjust_u32(outgoing_packages, p_delta);
 }
 
 SymphonyMemoryBudget::Snapshot SymphonyMemoryBudget::get_snapshot() const {
@@ -75,9 +106,9 @@ SymphonyMemoryBudget::Snapshot SymphonyMemoryBudget::get_snapshot() const {
 	snap.reserved_bytes = reserved_bytes;
 	snap.peak_reserved_bytes = peak_reserved_bytes;
 	snap.shared_pcm_bytes = shared_pcm_bytes;
-	snap.active_packages = active_packages;
-	snap.pending_packages = pending_packages;
-	snap.outgoing_packages = outgoing_packages;
-	snap.retired_packages = retired_packages;
+	snap.active_packages = active_packages.load(std::memory_order_relaxed);
+	snap.pending_packages = pending_packages.load(std::memory_order_relaxed);
+	snap.outgoing_packages = outgoing_packages.load(std::memory_order_relaxed);
+	snap.retired_packages = GraphPackageRetirement::get_pending_count();
 	return snap;
 }

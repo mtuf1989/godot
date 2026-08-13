@@ -125,14 +125,18 @@ bin/godot.macos.editor.arm64 --headless --test --test-case='*Symphony*'
 - Precomputed COLA gain table (`1/Σ w²`) applied at synthesis.
 - PFFFT setup destroyed on arena allocation failure (PhaseVocoder + SpectralGate).
 
+### Package count metrics
+
+- `SymphonyMemoryBudget` tracks active/pending/outgoing via atomics; retired count
+  mirrors `GraphPackageRetirement::get_pending_count()` in snapshots.
+
 ## Planned (from improve_plan_1_7.md)
 
 - Charge non-arena + SharedPCM into the same reservation path
-- Package counts (active/pending/outgoing/retired) wired to playback
 - Calibrated incoming transition cost units in admission
 - LOD graph mutation/query APIs and `lod/<tier>/...` serialization
 - Connection `is_feedback` serialization
-- Memory / transition / retirement metrics (read-only)
+- Memory / transition / retirement metrics (read-only) — partial (package counts done)
 
 ## Game Audio Layer (`game-template/`)
 

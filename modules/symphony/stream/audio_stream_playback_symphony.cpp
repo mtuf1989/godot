@@ -1,12 +1,33 @@
 #include "audio_stream_playback_symphony.h"
 #include "../core/symphony_voice_manager.h"
 #include "../core/symphony_graph_package_retirement.h"
+#include "../core/symphony_memory_budget.h"
 #include "../core/symphony_fast_math.h"
 #include "../core/symphony_platform_time.h"
 #include "core/object/class_db.h"
 #include "core/os/thread.h"
 
 #include <cmath>
+
+namespace {
+
+void _pkg_active(int32_t d) {
+	if (SymphonyMemoryBudget *b = SymphonyMemoryBudget::get_singleton()) {
+		b->adjust_active_packages(d);
+	}
+}
+void _pkg_pending(int32_t d) {
+	if (SymphonyMemoryBudget *b = SymphonyMemoryBudget::get_singleton()) {
+		b->adjust_pending_packages(d);
+	}
+}
+void _pkg_outgoing(int32_t d) {
+	if (SymphonyMemoryBudget *b = SymphonyMemoryBudget::get_singleton()) {
+		b->adjust_outgoing_packages(d);
+	}
+}
+
+} // namespace
 
 void AudioStreamPlaybackSymphony::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("trigger", "name", "value"), &AudioStreamPlaybackSymphony::trigger, DEFVAL(1.0f));
@@ -35,10 +56,12 @@ void AudioStreamPlaybackSymphony::_release_crossfade_token() {
 void AudioStreamPlaybackSymphony::_abort_transition_packages() {
 	_release_crossfade_token();
 	if (outgoing_package) {
+		_pkg_outgoing(-1);
 		GraphPackageRetirement::retire(outgoing_package);
 		outgoing_package = nullptr;
 	}
 	if (incoming_package) {
+		_pkg_pending(-1);
 		GraphPackageRetirement::retire(incoming_package);
 		incoming_package = nullptr;
 	}
@@ -68,8 +91,15 @@ AudioStreamPlaybackSymphony::AdmitResult AudioStreamPlaybackSymphony::_try_admit
 }
 
 void AudioStreamPlaybackSymphony::_begin_equal_power_crossfade(PreparedGraphPackage *p_new_package) {
+	// pending → current, current → outgoing
+	_pkg_pending(-1);
+	if (current_package) {
+		_pkg_active(-1);
+		_pkg_outgoing(1);
+	}
 	outgoing_package = current_package;
 	_install_package(p_new_package);
+	_pkg_active(1);
 	transition_mode = TransitionMode::EqualPowerCrossfade;
 	transition_progress = 0.0f;
 	float samples = mix_rate_cached > 0.0f ? mix_rate_cached * CROSSFADE_SECONDS : 2048.0f;
@@ -79,16 +109,20 @@ void AudioStreamPlaybackSymphony::_begin_equal_power_crossfade(PreparedGraphPack
 void AudioStreamPlaybackSymphony::_begin_fallback_transition(PreparedGraphPackage *p_new_package) {
 	_release_crossfade_token();
 	if (outgoing_package) {
+		_pkg_outgoing(-1);
 		GraphPackageRetirement::retire(outgoing_package);
 		outgoing_package = nullptr;
 	}
 	if (incoming_package) {
+		_pkg_pending(-1);
 		GraphPackageRetirement::retire(incoming_package);
 	}
+	// New package stays counted as pending until installed as current.
 	incoming_package = p_new_package;
 	if (!current_package) {
-		// Nothing to fade out — install and fade in.
+		_pkg_pending(-1);
 		_install_package(incoming_package);
+		_pkg_active(1);
 		incoming_package = nullptr;
 		transition_mode = TransitionMode::FallbackFadeIn;
 	} else {
@@ -136,9 +170,12 @@ void AudioStreamPlaybackSymphony::start(double p_from_pos) {
 	PreparedGraphPackage *pending = pending_package.exchange(nullptr, std::memory_order_acquire);
 	if (pending) {
 		if (current_package) {
+			_pkg_active(-1);
 			GraphPackageRetirement::retire(current_package);
 		}
 		_install_package(pending);
+		_pkg_pending(-1);
+		_pkg_active(1);
 	}
 
 	if (current_package) {
@@ -208,7 +245,9 @@ int AudioStreamPlaybackSymphony::mix(AudioFrame *p_buffer, float p_rate_scale, i
 		} else if (current_package || incoming_package || outgoing_package || transition_mode != TransitionMode::Idle) {
 			_begin_fallback_transition(pending);
 		} else {
+			_pkg_pending(-1);
 			_install_package(pending);
+			_pkg_active(1);
 		}
 	}
 
@@ -249,6 +288,7 @@ int AudioStreamPlaybackSymphony::mix(AudioFrame *p_buffer, float p_rate_scale, i
 			}
 
 			if (transition_progress >= 1.0f) {
+				_pkg_outgoing(-1);
 				GraphPackageRetirement::retire(outgoing_package);
 				outgoing_package = nullptr;
 				_release_crossfade_token();
@@ -269,9 +309,12 @@ int AudioStreamPlaybackSymphony::mix(AudioFrame *p_buffer, float p_rate_scale, i
 			}
 			if (transition_progress >= 1.0f) {
 				if (current_package) {
+					_pkg_active(-1);
 					GraphPackageRetirement::retire(current_package);
 				}
+				_pkg_pending(-1);
 				_install_package(incoming_package);
+				_pkg_active(1);
 				incoming_package = nullptr;
 				transition_mode = TransitionMode::FallbackFadeIn;
 				transition_progress = 0.0f;
@@ -344,8 +387,10 @@ void AudioStreamPlaybackSymphony::swap_graph(CompiledGraph *p_graph) {
 		return;
 	}
 
+	_pkg_pending(1);
 	PreparedGraphPackage *old_pending = pending_package.exchange(pkg, std::memory_order_release);
 	if (old_pending) {
+		_pkg_pending(-1);
 		PreparedGraphPackage::destroy(old_pending);
 	}
 }
@@ -397,12 +442,14 @@ void AudioStreamPlaybackSymphony::_finalize_stop() {
 	_abort_transition_packages();
 
 	if (current_package) {
+		_pkg_active(-1);
 		GraphPackageRetirement::retire(current_package);
 		_install_package(nullptr);
 	}
 
 	PreparedGraphPackage *pending = pending_package.exchange(nullptr, std::memory_order_acquire);
 	if (pending) {
+		_pkg_pending(-1);
 		GraphPackageRetirement::retire(pending);
 	}
 }
@@ -416,19 +463,23 @@ AudioStreamPlaybackSymphony::~AudioStreamPlaybackSymphony() {
 	}
 	_release_crossfade_token();
 	if (outgoing_package) {
+		_pkg_outgoing(-1);
 		PreparedGraphPackage::destroy(outgoing_package);
 		outgoing_package = nullptr;
 	}
 	if (incoming_package) {
+		_pkg_pending(-1);
 		PreparedGraphPackage::destroy(incoming_package);
 		incoming_package = nullptr;
 	}
 	if (current_package) {
+		_pkg_active(-1);
 		PreparedGraphPackage::destroy(current_package);
 		_install_package(nullptr);
 	}
 	PreparedGraphPackage *pending = pending_package.exchange(nullptr, std::memory_order_acquire);
 	if (pending) {
+		_pkg_pending(-1);
 		PreparedGraphPackage::destroy(pending);
 	}
 	GraphPackageRetirement::drain();
@@ -457,8 +508,10 @@ void AudioStreamPlaybackSymphony::transition_to_lod(int p_lod_tier) {
 	}
 
 	pending_is_lod.store(true, std::memory_order_release);
+	_pkg_pending(1);
 	PreparedGraphPackage *old_pending = pending_package.exchange(pkg, std::memory_order_acq_rel);
 	if (old_pending) {
+		_pkg_pending(-1);
 		PreparedGraphPackage::destroy(old_pending);
 	}
 
