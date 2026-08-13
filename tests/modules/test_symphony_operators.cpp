@@ -28,7 +28,7 @@ namespace TestSymphonyOperators {
 
 // --- S1.3: PolyBLEP Oscillator Tests ---
 
-TEST_CASE("[Symphony][Oscillator] Sine produces valid output") {
+TEST_CASE("[Symphony][Operators][Oscillator] Sine produces valid output") {
 	ArenaAllocator arena;
 	arena.init(ARENA_SIZE);
 
@@ -39,7 +39,8 @@ TEST_CASE("[Symphony][Oscillator] Sine produces valid output") {
 	SymphonyOscillator *osc = (SymphonyOscillator *)SymphonyOscillator::create(arena, params, MIX_RATE);
 
 	float out_buf[SYMPHONY_MICRO_BLOCK_SIZE] = {};
-	void *inputs[] = { nullptr }; // Use default freq
+	// Descriptor pins: frequency (AUDIO), pulse_width (FLOAT) — both optional.
+	void *inputs[] = { nullptr, nullptr };
 	void *outputs[] = { out_buf };
 	osc->bind_pins(inputs, outputs);
 	osc->execute(SYMPHONY_MICRO_BLOCK_SIZE);
@@ -55,7 +56,7 @@ TEST_CASE("[Symphony][Oscillator] Sine produces valid output") {
 	arena.free();
 }
 
-TEST_CASE("[Symphony][Oscillator] Saw PolyBLEP output bounded") {
+TEST_CASE("[Symphony][Operators][Oscillator] Saw PolyBLEP output bounded") {
 	ArenaAllocator arena;
 	arena.init(ARENA_SIZE);
 
@@ -66,7 +67,7 @@ TEST_CASE("[Symphony][Oscillator] Saw PolyBLEP output bounded") {
 	SymphonyOscillator *osc = (SymphonyOscillator *)SymphonyOscillator::create(arena, params, MIX_RATE);
 
 	float out_buf[SYMPHONY_MICRO_BLOCK_SIZE] = {};
-	void *inputs[] = { nullptr };
+	void *inputs[] = { nullptr, nullptr };
 	void *outputs[] = { out_buf };
 	osc->bind_pins(inputs, outputs);
 
@@ -86,7 +87,7 @@ TEST_CASE("[Symphony][Oscillator] Saw PolyBLEP output bounded") {
 	arena.free();
 }
 
-TEST_CASE("[Symphony][Oscillator] Square PolyBLEP output bounded") {
+TEST_CASE("[Symphony][Operators][Oscillator] Square PolyBLEP output bounded") {
 	ArenaAllocator arena;
 	arena.init(ARENA_SIZE);
 
@@ -97,7 +98,7 @@ TEST_CASE("[Symphony][Oscillator] Square PolyBLEP output bounded") {
 	SymphonyOscillator *osc = (SymphonyOscillator *)SymphonyOscillator::create(arena, params, MIX_RATE);
 
 	float out_buf[SYMPHONY_MICRO_BLOCK_SIZE] = {};
-	void *inputs[] = { nullptr };
+	void *inputs[] = { nullptr, nullptr };
 	void *outputs[] = { out_buf };
 	osc->bind_pins(inputs, outputs);
 
@@ -117,7 +118,7 @@ TEST_CASE("[Symphony][Oscillator] Square PolyBLEP output bounded") {
 
 // --- S1.4: DelayLine Tests ---
 
-TEST_CASE("[Symphony][DelayLine] Impulse delayed by correct sample count") {
+TEST_CASE("[Symphony][Operators][DelayLine] Impulse delayed by correct sample count") {
 	ArenaAllocator arena;
 	arena.init(ARENA_SIZE);
 
@@ -159,7 +160,7 @@ TEST_CASE("[Symphony][DelayLine] Impulse delayed by correct sample count") {
 	arena.free();
 }
 
-TEST_CASE("[Symphony][DelayLine] No NaN or Inf under modulation") {
+TEST_CASE("[Symphony][Operators][DelayLine] No NaN or Inf under modulation") {
 	ArenaAllocator arena;
 	arena.init(ARENA_SIZE);
 
@@ -195,7 +196,7 @@ TEST_CASE("[Symphony][DelayLine] No NaN or Inf under modulation") {
 
 // --- S1.5: FeedbackPath Tests ---
 
-TEST_CASE("[Symphony][FeedbackPath] Outputs zeros on first block") {
+TEST_CASE("[Symphony][Operators][FeedbackPath] Outputs zeros on first block") {
 	ArenaAllocator arena;
 	arena.init(ARENA_SIZE);
 
@@ -226,7 +227,7 @@ TEST_CASE("[Symphony][FeedbackPath] Outputs zeros on first block") {
 	arena.free();
 }
 
-TEST_CASE("[Symphony][FeedbackPath] Energy decays with gain < 1") {
+TEST_CASE("[Symphony][Operators][FeedbackPath] Energy decays with gain < 1") {
 	ArenaAllocator arena;
 	arena.init(ARENA_SIZE);
 
@@ -266,7 +267,7 @@ TEST_CASE("[Symphony][FeedbackPath] Energy decays with gain < 1") {
 
 // --- S1.6: ParameterSmoother Tests ---
 
-TEST_CASE("[Symphony][ParameterSmoother] Snaps on first execution") {
+TEST_CASE("[Symphony][Operators][ParameterSmoother] Snaps on first execution") {
 	ArenaAllocator arena;
 	arena.init(ARENA_SIZE);
 
@@ -288,7 +289,7 @@ TEST_CASE("[Symphony][ParameterSmoother] Snaps on first execution") {
 	arena.free();
 }
 
-TEST_CASE("[Symphony][ParameterSmoother] Smoothly approaches step change") {
+TEST_CASE("[Symphony][Operators][ParameterSmoother] Smoothly approaches step change") {
 	ArenaAllocator arena;
 	arena.init(ARENA_SIZE);
 
@@ -326,7 +327,7 @@ TEST_CASE("[Symphony][ParameterSmoother] Smoothly approaches step change") {
 
 // --- S1.7: StochasticTrigger Tests ---
 
-TEST_CASE("[Symphony][StochasticTrigger] Density=0 produces no triggers") {
+TEST_CASE("[Symphony][Operators][StochasticTrigger] Density=0 produces no triggers") {
 	ArenaAllocator arena;
 	arena.init(ARENA_SIZE);
 
@@ -352,7 +353,7 @@ TEST_CASE("[Symphony][StochasticTrigger] Density=0 produces no triggers") {
 	arena.free();
 }
 
-TEST_CASE("[Symphony][StochasticTrigger] Density=100 produces ~100 triggers/sec") {
+TEST_CASE("[Symphony][Operators][StochasticTrigger] Density=100 produces ~100 triggers/sec") {
 	ArenaAllocator arena;
 	arena.init(ARENA_SIZE);
 
@@ -385,7 +386,7 @@ TEST_CASE("[Symphony][StochasticTrigger] Density=100 produces ~100 triggers/sec"
 
 // --- S1.8: SVFilter Tests ---
 
-TEST_CASE("[Symphony][SVFilter] LP reduces high-frequency energy") {
+TEST_CASE("[Symphony][Operators][SVFilter] LP reduces high-frequency energy") {
 	ArenaAllocator arena;
 	arena.init(ARENA_SIZE);
 
@@ -426,7 +427,7 @@ TEST_CASE("[Symphony][SVFilter] LP reduces high-frequency energy") {
 	arena.free();
 }
 
-TEST_CASE("[Symphony][SVFilter] No instability at extreme parameters") {
+TEST_CASE("[Symphony][Operators][SVFilter] No instability at extreme parameters") {
 	ArenaAllocator arena;
 	arena.init(ARENA_SIZE);
 
