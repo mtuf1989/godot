@@ -5,7 +5,7 @@ Update this file with each commit that changes a public API.
 
 ## Status
 
-- **Milestone:** M3 — RT-scope landed; TSan stress test added (run `use_tsan=yes` to gate)
+- **Milestone:** M3 — RT-scope + TSan suite green (GrainCloud µs/unit gate skipped under sanitizers)
 - **Branch:** `features/symphony_fixed`
 
 ## Completed
@@ -199,21 +199,21 @@ bin/godot.macos.editor.arm64 --headless --test --test-case='*Symphony*'
 - `SymphonyVoiceManager.get_rt_violation_count()` and debug metric `rt_violations`
   expose the process-wide counter (should stay 0 in production).
 - Concurrent stress: `tests/modules/test_symphony_stress.cpp` mixes on a worker
-  thread while the main thread swaps, sets parameters, fires triggers, drains,
-  and stops. Run the Symphony suite under ThreadSanitizer:
+  thread while the main thread swaps, sets parameters, fires triggers, compiles
+  LOD variants, drains, and stops. Run the Symphony suite under ThreadSanitizer:
 
 ```bash
 scons platform=macos target=editor arch=arm64 tests=yes use_tsan=yes module_raycast_enabled=no -j$(sysctl -n hw.ncpu)
-bin/godot.macos.editor.arm64 --headless --test --source-file='*symphony*'
+TSAN_OPTIONS="halt_on_error=1 print_stacktrace=1" bin/godot.macos.editor.arm64.san --headless --test --source-file='*symphony*'
 ```
+
+TSan (2026-08-13, macos arm64 editor `.san`): no data-race reports on the Symphony suite. Concurrent mix + swap/parameter/trigger/LOD/drain/stop is included. GrainCloud µs/unit and release mix-timing gates are skipped or unenforced under sanitizers (instrumentation distorts timings).
 
 ## Planned (from improve_plan_1_7.md)
 
-- Charge non-arena + SharedPCM into the same reservation path
-- Calibrated incoming transition cost units in admission
-- LOD graph mutation/query APIs and `lod/<tier>/...` serialization
-- Connection `is_feedback` serialization
-- Memory / transition / retirement metrics (read-only) — partial (package counts done)
+C++ M3 items from the plan are landed (exact accounting, packages, retirement,
+transitions, RT-scope, TSan). Remaining work is Game Audio Layer migration in
+`game-template/` (out of this repo).
 
 ## Game Audio Layer (`game-template/`)
 

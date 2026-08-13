@@ -15,11 +15,11 @@
 |-----------|--------|
 | **M1** | Done |
 | **M2** | Closed |
-| **M3** | In progress — RT-scope landed; **next: TSan editor build + remaining M3 wrap-up** |
+| **M3** | Nearly complete — RT-scope + TSan suite green; **next: M3 wrap-up docs** |
 
 **HEAD (newest first):**
 
-- Thread-local `SymphonyRealtimeScope` + RT-guard tests + concurrent mix stress
+- `f6850bac04` — Thread-local `SymphonyRealtimeScope` + RT-guard tests + concurrent mix stress
 - `c9ed415b3d` — GrainCloud density/pitch `extra_cost_fn` + µs/unit ≤2× stress guard
 - `0d06281342` — SpectralGate COLA + open-threshold unity ±0.5 dB
 - `c657ad4b45` — Strict release mix-timing baselines (+5% / +10%)
@@ -29,7 +29,7 @@
 - `93ff25a112` — Read-only transition / trigger / spectral / retirement metrics
 - `5842cf7fce` — Atomic `control_package` for `set_parameter` / `trigger`
 
-**Tests (last run):** `52/52` Symphony cases pass (editor)
+**Tests (last run):** `55/55` Symphony cases pass (editor). TSan `.san` binary: no data-race reports; GrainCloud µs/unit gate skipped under sanitizers.
 
 ```bash
 # Editor
@@ -40,9 +40,9 @@ bin/godot.macos.editor.arm64 --headless --test --source-file='*symphony*'
 scons platform=macos target=template_release arch=arm64 tests=yes module_raycast_enabled=no -j$(sysctl -n hw.ncpu)
 bin/godot.macos.template_release.arm64 --headless --test --test-case='*Mix timing*'
 
-# Next session — TSan (macos supports use_tsan)
+# TSan (binary suffix .san)
 scons platform=macos target=editor arch=arm64 tests=yes use_tsan=yes module_raycast_enabled=no -j$(sysctl -n hw.ncpu)
-bin/godot.macos.editor.arm64 --headless --test --source-file='*symphony*'
+TSAN_OPTIONS="halt_on_error=1 print_stacktrace=1" bin/godot.macos.editor.arm64.san --headless --test --source-file='*symphony*'
 # Prefer --test-case='*Symphony*' over '[Symphony]' (doctest char-class trap)
 ```
 
@@ -88,20 +88,26 @@ Per-512f equivalent ≈ median/32 (~6.5 / 39 / 76 µs). Strict gates: median ≤
 1. **RT-scope** — `SymphonyRealtimeScope` around mix / `CompiledGraph::execute` / VoiceManager + RTPC mix callbacks
 2. Instrumented Symphony alloc, free, mutex, ObjectDB, compile, and dynamic-container sites (`symphony_rt_note`)
 3. Tests: mix/execute report 0 violations; each kind is detectable with assert suppressor
-4. Concurrent mix + swap/parameter/trigger/drain/stop stress (`THREADS_ENABLED`)
+4. Concurrent mix + swap/parameter/trigger/LOD/drain/stop stress (`THREADS_ENABLED`)
 5. `get_rt_violation_count()` + debug metric `rt_violations`
+6. **TSan** — `bin/godot.macos.editor.arm64.san`; Symphony suite reports no data races. GrainCloud µs/unit gate skipped under TSan/ASan.
 
 ---
 
-## Suggested Next (priority) — TSan build + M3 wrap-up
+## Suggested Next (priority) — M3 wrap-up docs
 
-**Default: run TSan. Do not reopen RT-scope design unless tests fail.**
+**Default: documentation / migration polish. Do not reopen RT-scope or TSan unless a new race appears.**
 
-### Remaining §6 / M3
-1. **TSan editor build** (commands in “How to Resume”) and triage any races the concurrent mix stress surfaces.
-2. Expand stress only if TSan reports a real Symphony race (LOD compile vs mix, registration, teardown).
-3. Gate: TSan clean + RT-scope tests remain green (`rt_violations == 0` on mix/execute).
-4. M3 review wrap-up docs after TSan is clean. `game-template` is still out of scope.
+### Remaining M3
+1. Review `MIGRATION.md` planned section (several items already landed; trim stale bullets).
+2. Finish `user_guide.md` v1.7.1 changelog if any public API is still undocumented.
+3. `game-template` is still out of scope.
+
+```bash
+# TSan (already green 2026-08-13)
+scons platform=macos target=editor arch=arm64 tests=yes use_tsan=yes module_raycast_enabled=no -j$(sysctl -n hw.ncpu)
+TSAN_OPTIONS="halt_on_error=1 print_stacktrace=1" bin/godot.macos.editor.arm64.san --headless --test --source-file='*symphony*'
+```
 
 ---
 
@@ -115,7 +121,8 @@ Per-512f equivalent ≈ median/32 (~6.5 / 39 / 76 µs). Strict gates: median ≤
 - Mix timing release baselines are machine/arch-specific; heavy host load can flake p99 under strict gates
 - SpectralGate FFT magnitudes are **unnormalized** — `threshold_db` ≤0 still lets loud bins pass; tests use very quiet tones for attenuation
 - GrainCloud `trigger_value` unused warning in `register_types` compile (pre-existing)
-- TSan builds are slower; keep `module_raycast_enabled=no`
+- TSan builds are slower; keep `module_raycast_enabled=no`; binary is `godot.macos.editor.arm64.san`
+- GrainCloud µs/unit ≤2× gate is skipped under TSan/ASan (instrumentation distorts relative cost)
 - Do not edit `review_version_1_7.md`
 
 ---
@@ -124,9 +131,9 @@ Per-512f equivalent ≈ median/32 (~6.5 / 39 / 76 µs). Strict gates: median ≤
 
 1. Read this file + `improve_plan_1_7.md` §6 + Verification/TSan bullets  
 2. `git checkout features/symphony_fixed` && `git status` (expect clean)  
-3. Rebuild editor; confirm Symphony tests still green (includes new RT-scope + concurrent mix cases)
-4. **TSan:** `use_tsan=yes` then `--source-file='*symphony*'`; triage races; do not reopen RT-scope unless a guard is wrong
-5. Update `MIGRATION.md` / `user_guide.md` on further API/guard changes; focused commits  
+3. Rebuild editor; confirm Symphony tests still green
+4. TSan binary already exists as `bin/godot.macos.editor.arm64.san` if this machine built it
+5. M3 wrap-up: trim stale `MIGRATION.md` planned bullets; `game-template` remains out of scope  
 
 ## Skills / knowledge
 

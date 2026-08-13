@@ -13,10 +13,10 @@ TEST_FORCE_LINK(test_symphony_stress)
 #include "modules/symphony/core/symphony_memory_budget.h"
 #include "modules/symphony/core/symphony_platform_time.h"
 #include "modules/symphony/core/symphony_prepared_graph_package.h"
+#include "modules/symphony/core/symphony_realtime_scope.h"
+#include "modules/symphony/core/symphony_voice_manager.h"
 #include "modules/symphony/stream/audio_stream_playback_symphony.h"
 #include "modules/symphony/stream/audio_stream_symphony.h"
-
-#include "modules/symphony/core/symphony_realtime_scope.h"
 
 #include "core/os/os.h"
 #include "core/os/thread.h"
@@ -371,7 +371,12 @@ TEST_CASE("[Symphony][Stress] GrainCloud cost units stay conservative vs measure
 
 	// Conservative admission: GrainCloud must not be >2× “more expensive per unit”
 	// than a cheap oscillator reference (would mean cost units under-count GrainCloud).
+	// TSan/ASan instrumentation distorts relative µs/unit; keep the gate for unsanitized builds.
+#if defined(TSAN_ENABLED) || defined(ASAN_ENABLED)
+	MESSAGE("Skipping GrainCloud µs/unit gate under sanitizer.");
+#else
 	CHECK(grain_us_per_unit <= osc_us_per_unit * 2.0);
+#endif
 }
 
 TEST_CASE("[Symphony][Stress] Mix timing median/p99 for 10/30/50-node graphs") {
@@ -469,6 +474,7 @@ TEST_CASE("[Symphony][Stress] Concurrent mix with swap parameter trigger teardow
 	stream.instantiate();
 	stream->set_mix_rate(48000.0f);
 	stream->set_graph_description(AudioStreamSymphony::build_test_graph_10_nodes());
+	CHECK(stream->duplicate_main_to_lod() >= 1);
 
 	Ref<AudioStreamPlayback> base = stream->instantiate_playback();
 	Ref<AudioStreamPlaybackSymphony> playback = base;
@@ -494,6 +500,7 @@ TEST_CASE("[Symphony][Stress] Concurrent mix with swap parameter trigger teardow
 			},
 			&ctx);
 
+	SymphonyVoiceManager *mgr = SymphonyVoiceManager::get_singleton();
 	for (int i = 0; i < 64; i++) {
 		playback->set_parameter(StringName("freq"), 220.0f + (float)i);
 		(void)playback->trigger(StringName("gate"), 1.0f);
@@ -501,6 +508,12 @@ TEST_CASE("[Symphony][Stress] Concurrent mix with swap parameter trigger teardow
 			CompiledGraph *replacement = stream->compile_graph();
 			if (replacement) {
 				playback->swap_graph(replacement);
+			}
+		}
+		if ((i % 12) == 0) {
+			playback->transition_to_lod((i / 12) % 2);
+			if (mgr) {
+				mgr->process_deferred_lod();
 			}
 		}
 		if ((i % 16) == 0) {
