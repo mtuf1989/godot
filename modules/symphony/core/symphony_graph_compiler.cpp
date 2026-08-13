@@ -522,11 +522,25 @@ GraphCompiler::CompileResult GraphCompiler::compile(const GraphDescription &p_de
 	compiled->operator_count = 0;
 
 	// Allocate trigger buffer pointer array
-	compiled->trigger_buffers = (TriggerBuffer **)compiled->arena.alloc(sizeof(TriggerBuffer *) * total_trigger_buffers, 8);
+	if (total_trigger_buffers > 0) {
+		compiled->trigger_buffers = (TriggerBuffer **)compiled->arena.alloc(sizeof(TriggerBuffer *) * total_trigger_buffers, 8);
+		if (!compiled->trigger_buffers) {
+			result.errors.push_back("Failed to allocate trigger buffer pointer array.");
+			memdelete(compiled);
+			return result;
+		}
+	}
 	compiled->trigger_buffer_count = total_trigger_buffers;
 
 	// Allocate promotion array
-	compiled->promotions = (CompiledGraph::Promotion *)compiled->arena.alloc(sizeof(CompiledGraph::Promotion) * total_promotions, 8);
+	if (total_promotions > 0) {
+		compiled->promotions = (CompiledGraph::Promotion *)compiled->arena.alloc(sizeof(CompiledGraph::Promotion) * total_promotions, 8);
+		if (!compiled->promotions) {
+			result.errors.push_back("Failed to allocate promotion array.");
+			memdelete(compiled);
+			return result;
+		}
+	}
 	compiled->promotion_count = total_promotions;
 	int32_t promotion_idx = 0;
 
@@ -541,6 +555,11 @@ GraphCompiler::CompileResult GraphCompiler::compile(const GraphDescription &p_de
 		for (int32_t p = 0; p < out_count; p++) {
 			SymphonyPinType type = node_descs[i]->outputs[p].type;
 			void *buf = compiled->arena.alloc(pin_buffer_size(type), 32);
+			if (!buf) {
+				result.errors.push_back(vformat("Failed to allocate output pin buffer (node index %d, pin %d).", i, p));
+				memdelete(compiled);
+				return result;
+			}
 			output_buffers.write[i].write[p] = buf;
 			if (type == SymphonyPinType::TRIGGER) {
 				compiled->trigger_buffers[trigger_buf_idx++] = (TriggerBuffer *)buf;
@@ -594,8 +613,12 @@ GraphCompiler::CompileResult GraphCompiler::compile(const GraphDescription &p_de
 			const PinSource &src = input_sources[node_idx][p];
 			if (src.source_node_idx >= 0) {
 				if (src.needs_promotion) {
-					// Allocate a 64-float promotion buffer and register the promotion.
 					float *promo_buf = (float *)compiled->arena.alloc(sizeof(float) * SYMPHONY_MICRO_BLOCK_SIZE, 32);
+					if (!promo_buf) {
+						result.errors.push_back(vformat("Failed to allocate promotion buffer (node %d).", nd.id));
+						memdelete(compiled);
+						return result;
+					}
 					compiled->promotions[promotion_idx].src = (const float *)output_buffers[src.source_node_idx][src.source_pin];
 					compiled->promotions[promotion_idx].dst = promo_buf;
 					promotion_idx++;
@@ -626,17 +649,30 @@ GraphCompiler::CompileResult GraphCompiler::compile(const GraphDescription &p_de
 		node_idx_to_exec_order.insert(sorted_order[s], s);
 	}
 
-	// Mark operators as non-skippable based on category.
-	// Generators, IO nodes, and timing nodes produce output regardless of input.
+	// Mark operators with silence behavior from the descriptor (improve_plan §7).
 	for (int32_t s = 0; s < node_count; s++) {
 		int32_t node_idx = sorted_order[s];
 		const OperatorDescriptor *desc = node_descs[node_idx];
+		SilenceBehavior behavior = desc->silence_behavior;
+
+		// Category defaults when descriptor still uses the safe STATEFUL_TAIL default
+		// but type is known to be a generator/IO/timing source.
 		String cat = desc->category;
-		// Non-skippable categories: they produce output without depending on audio input.
 		if (cat == "Generators" || cat == "IO" || cat == "Timing" || cat == "Synthesis") {
-			compiled->operators[s]->skippable = 0;
+			behavior = SilenceBehavior::ALWAYS_PROCESS;
 		}
-		// Also never skip if the operator has NO audio inputs (it's a source).
+		if (desc->type_name == StringName("FeedbackPath")) {
+			behavior = SilenceBehavior::ALWAYS_PROCESS;
+		}
+		if (desc->type_name == StringName("Gain") || desc->type_name == StringName("Mix") ||
+				desc->type_name == StringName("MathAdd") || desc->type_name == StringName("MapRange") ||
+				desc->type_name == StringName("CrossFade") || desc->type_name == StringName("RingMod")) {
+			behavior = SilenceBehavior::STATELESS;
+		}
+
+		compiled->operators[s]->silence_behavior = (uint8_t)behavior;
+		compiled->operators[s]->skippable = (behavior == SilenceBehavior::ALWAYS_PROCESS) ? 0 : 1;
+
 		bool has_audio_input = false;
 		for (int32_t p = 0; p < desc->inputs.size(); p++) {
 			if (desc->inputs[p].type == SymphonyPinType::AUDIO) {
@@ -645,6 +681,7 @@ GraphCompiler::CompileResult GraphCompiler::compile(const GraphDescription &p_de
 			}
 		}
 		if (!has_audio_input) {
+			compiled->operators[s]->silence_behavior = (uint8_t)SilenceBehavior::ALWAYS_PROCESS;
 			compiled->operators[s]->skippable = 0;
 		}
 	}

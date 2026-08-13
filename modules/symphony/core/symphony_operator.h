@@ -11,15 +11,17 @@ public:
 	// Activity flag for silence propagation (set by execute(), read by CompiledGraph).
 	// 0 = output is silent/zero this block (downstream may skip).
 	// 1 = output is active (default, safe conservative value).
-	// Operators that can produce silence (ADSR in IDLE, Gain at 0, gated signals)
-	// should set this to 0 when their output is all zeros. If unsure, leave at 1.
 	uint8_t activity = 1;
 
-	// If true, this operator can be skipped when all its audio inputs are inactive.
-	// Set by the compiler based on operator category. Generators (oscillators, noise,
-	// wave players) and IO nodes always execute regardless of input activity.
-	// Default: true (most operators are passthrough/processors).
+	// If true, this operator can be skipped when silence rules allow.
+	// Set by the compiler from SilenceBehavior. ALWAYS_PROCESS forces 0.
 	uint8_t skippable = 1;
+
+	// Copied from OperatorDescriptor at compile time for audio-thread decisions.
+	uint8_t silence_behavior = 1; // SilenceBehavior::STATEFUL_TAIL
+
+	// Consecutive inactive blocks for stateful-tail hysteresis (improve_plan §7).
+	uint8_t inactive_blocks = 0;
 
 	virtual ~SymphonyOperator() = default;
 

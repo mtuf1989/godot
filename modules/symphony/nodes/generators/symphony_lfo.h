@@ -3,6 +3,7 @@
 #include "../../core/symphony_operator.h"
 #include "../../core/symphony_operator_registry.h"
 #include "../../core/symphony_arena_allocator.h"
+#include "../../core/symphony_fast_math.h"
 #include "core/math/math_funcs.h"
 
 // Low-frequency oscillator. Outputs a Float pin (control-rate, one value per micro-block).
@@ -19,15 +20,9 @@ private:
 	int32_t waveform = 0;
 	float mix_rate = 48000.0f;
 
-	// Fast polynomial sine approximation (5th-order minimax).
-	// Input: phase in [0, 1), Output: sine in [-1, 1].
-	// ~6 instructions, -50dB harmonic error — inaudible at LFO rates.
+	// Fast polynomial sine approximation via shared helper.
 	static inline float fast_sine(float p_phase) {
-		// Map [0,1) to [-1,1) for the polynomial domain
-		float x = 2.0f * p_phase - 1.0f;
-		float x2 = x * x;
-		// Minimax 5th-order coefficients for sin(x * pi/2) over [-1, 1]
-		return x * (1.5707963f + x2 * (-0.6459641f + x2 * 0.0796926f));
+		return SymphonyFastMath::fast_sine(p_phase);
 	}
 
 public:

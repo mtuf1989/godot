@@ -41,6 +41,11 @@ private:
 	// Raised-cosine crossfade zone length (in samples)
 	int32_t fade_length = 0;
 
+	// Zero-shift dry bypass (C11): fade between processed and dry over 64 samples.
+	float bypass_mix = 1.0f; // 1 = fully dry, 0 = fully processed
+	static constexpr float BYPASS_FADE_SAMPLES = 64.0f;
+	static constexpr float ZERO_SHIFT_EPS = 0.01f;
+
 	inline float read_linear(float pos) const {
 		// Wrap position into buffer bounds
 		while (pos < 0.0f) pos += (float)buffer_size;
@@ -69,73 +74,81 @@ public:
 			for (int32_t i = 0; i < p_num_frames; i++) {
 				audio_out[i] = 0.0f;
 			}
+			activity = 0;
 			return;
 		}
 
 		float semitones = shift_input ? *shift_input : default_shift_semitones;
 		semitones = CLAMP(semitones, -12.0f, 12.0f);
+		const bool want_bypass = Math::abs(semitones) < ZERO_SHIFT_EPS;
+		const float bypass_step = 1.0f / BYPASS_FADE_SAMPLES;
 
-		// Read rate relative to write: 2^(semitones/12)
-		// If semitones > 0, read faster (pitch up); if < 0, read slower (pitch down)
 		float read_rate = Math::pow(2.0f, semitones / 12.0f);
+		float peak = 0.0f;
 
 		for (int32_t i = 0; i < p_num_frames; i++) {
-			// Write input to buffer
-			buffer[write_pos] = audio_in[i];
+			const float dry = audio_in[i];
+			buffer[write_pos] = dry;
 
-			// Read from both pointers
 			float sample_a = read_linear(read_pos_a);
 			float sample_b = read_linear(read_pos_b);
+			float wet = sample_a * crossfade_a + sample_b * crossfade_b;
 
-			// Output = weighted sum of both pointers
-			audio_out[i] = sample_a * crossfade_a + sample_b * crossfade_b;
+			if (want_bypass) {
+				bypass_mix = MIN(1.0f, bypass_mix + bypass_step);
+			} else {
+				bypass_mix = MAX(0.0f, bypass_mix - bypass_step);
+			}
+			audio_out[i] = dry * bypass_mix + wet * (1.0f - bypass_mix);
+			peak = MAX(peak, Math::abs(audio_out[i]));
 
-			// Advance read pointers at the pitch-shifted rate
-			read_pos_a += read_rate;
-			read_pos_b += read_rate;
+			// Keep history advancing even in full dry bypass.
+			read_pos_a += want_bypass ? 1.0f : read_rate;
+			read_pos_b += want_bypass ? 1.0f : read_rate;
 
-			// Wrap read positions
 			if (read_pos_a >= (float)buffer_size) read_pos_a -= (float)buffer_size;
 			if (read_pos_a < 0.0f) read_pos_a += (float)buffer_size;
 			if (read_pos_b >= (float)buffer_size) read_pos_b -= (float)buffer_size;
 			if (read_pos_b < 0.0f) read_pos_b += (float)buffer_size;
 
-			// Compute distance of each read pointer from write position
-			// When a pointer gets close to the write head, crossfade to the other
-			float dist_a = read_pos_a - (float)write_pos;
-			if (dist_a < 0.0f) dist_a += (float)buffer_size;
-			float dist_b = read_pos_b - (float)write_pos;
-			if (dist_b < 0.0f) dist_b += (float)buffer_size;
+			if (!want_bypass || bypass_mix < 1.0f) {
+				float dist_a = read_pos_a - (float)write_pos;
+				if (dist_a < 0.0f) dist_a += (float)buffer_size;
+				float dist_b = read_pos_b - (float)write_pos;
+				if (dist_b < 0.0f) dist_b += (float)buffer_size;
 
-			// Raised-cosine crossfade based on distance from write head
-			// Fade out when approaching within fade_length of write head
-			float fade_f = (float)fade_length;
-			if (dist_a < fade_f) {
-				crossfade_a = 0.5f * (1.0f + Math::cos((float)Math::PI * (1.0f - dist_a / fade_f)));
-			} else if (dist_a > (float)buffer_size - fade_f) {
-				crossfade_a = 0.5f * (1.0f + Math::cos((float)Math::PI * (dist_a - ((float)buffer_size - fade_f)) / fade_f));
+				float fade_f = (float)fade_length;
+				if (dist_a < fade_f) {
+					crossfade_a = 0.5f * (1.0f + Math::cos((float)Math::PI * (1.0f - dist_a / fade_f)));
+				} else if (dist_a > (float)buffer_size - fade_f) {
+					crossfade_a = 0.5f * (1.0f + Math::cos((float)Math::PI * (dist_a - ((float)buffer_size - fade_f)) / fade_f));
+				} else {
+					crossfade_a = 1.0f;
+				}
+
+				if (dist_b < fade_f) {
+					crossfade_b = 0.5f * (1.0f + Math::cos((float)Math::PI * (1.0f - dist_b / fade_f)));
+				} else if (dist_b > (float)buffer_size - fade_f) {
+					crossfade_b = 0.5f * (1.0f + Math::cos((float)Math::PI * (dist_b - ((float)buffer_size - fade_f)) / fade_f));
+				} else {
+					crossfade_b = 1.0f;
+				}
+
+				float total = crossfade_a + crossfade_b;
+				if (total > 0.001f) {
+					crossfade_a /= total;
+					crossfade_b /= total;
+				}
 			} else {
+				// Steady zero-shift: pointer A at unity, B muted (exact dry path above).
 				crossfade_a = 1.0f;
+				crossfade_b = 0.0f;
 			}
 
-			if (dist_b < fade_f) {
-				crossfade_b = 0.5f * (1.0f + Math::cos((float)Math::PI * (1.0f - dist_b / fade_f)));
-			} else if (dist_b > (float)buffer_size - fade_f) {
-				crossfade_b = 0.5f * (1.0f + Math::cos((float)Math::PI * (dist_b - ((float)buffer_size - fade_f)) / fade_f));
-			} else {
-				crossfade_b = 1.0f;
-			}
-
-			// Normalize gains (so total doesn't exceed 1.0)
-			float total = crossfade_a + crossfade_b;
-			if (total > 0.001f) {
-				crossfade_a /= total;
-				crossfade_b /= total;
-			}
-
-			// Advance write position
 			write_pos = (write_pos + 1) % buffer_size;
 		}
+
+		activity = (peak >= 1e-6f) ? 1 : 0;
 	}
 
 	virtual size_t export_state(uint8_t *p_buffer, size_t p_max_size) const override {

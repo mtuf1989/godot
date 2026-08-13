@@ -18,11 +18,13 @@ private:
 
 	float attack_inc = 0.0f;
 	float decay_inc = 0.0f;
-	float release_inc = 0.0f;
+	float release_time = 0.1f;
+	float mix_rate = 48000.0f;
 	float sustain_level = 0.7f;
 
 	State state = IDLE;
 	float envelope_value = 0.0f;
+	float release_inc = 0.0f;
 
 	void process_audio(int32_t p_from, int32_t p_to) {
 		for (int32_t i = p_from; i < p_to; i++) {
@@ -54,7 +56,7 @@ private:
 					}
 					break;
 			}
-			output[i] = input[i] * envelope_value;
+			output[i] = (input ? input[i] : 0.0f) * envelope_value;
 		}
 	}
 
@@ -62,16 +64,23 @@ private:
 		if (p_event.value > 0.0f) {
 			state = ATTACK;
 		} else {
+			// Release from the value present at note-off (C2), not sustain_level.
 			state = RELEASE;
+			release_inc = (release_time > 0.0f) ? (envelope_value / (release_time * mix_rate)) : 1.0f;
+			if (release_inc <= 0.0f) {
+				release_inc = 1.0f;
+			}
 		}
 	}
 
 public:
 	SymphonyADSR(float p_mix_rate, float p_attack, float p_decay, float p_sustain, float p_release) {
+		mix_rate = p_mix_rate > 1.0f ? p_mix_rate : 48000.0f;
 		sustain_level = p_sustain;
-		attack_inc = (p_attack > 0.0f) ? (1.0f / (p_attack * p_mix_rate)) : 1.0f;
-		decay_inc = (p_decay > 0.0f) ? ((1.0f - sustain_level) / (p_decay * p_mix_rate)) : 1.0f;
-		release_inc = (p_release > 0.0f) ? (sustain_level / (p_release * p_mix_rate)) : 1.0f;
+		release_time = p_release;
+		attack_inc = (p_attack > 0.0f) ? (1.0f / (p_attack * mix_rate)) : 1.0f;
+		decay_inc = (p_decay > 0.0f) ? ((1.0f - sustain_level) / (p_decay * mix_rate)) : 1.0f;
+		release_inc = (p_release > 0.0f) ? (sustain_level / (p_release * mix_rate)) : 1.0f;
 	}
 
 	virtual void bind_pins(void **p_input_ptrs, void **p_output_ptrs) override {

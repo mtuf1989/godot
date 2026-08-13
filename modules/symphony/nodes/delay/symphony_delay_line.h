@@ -18,6 +18,9 @@ private:
 	int32_t write_pos = 0;
 	float mix_rate = 44100.0f;
 	float default_delay_ms = 10.0f;
+	float ring_energy = 0.0f; // Incremental Σ x² for silence activity
+	uint8_t silent_blocks = 0;
+	static constexpr float ACTIVITY_THRESHOLD = 1e-12f; // energy ≈ (-120 dB)² scale
 
 	inline float read_hermite(float delay_samples) const {
 		float read_pos = (float)write_pos - delay_samples;
@@ -58,19 +61,35 @@ public:
 			for (int32_t i = 0; i < p_num_frames; i++) {
 				audio_out[i] = 0.0f;
 			}
+			activity = 0;
 			return;
 		}
 
 		float delay_ms = delay_input ? *delay_input : default_delay_ms;
 		float delay_samples = delay_ms * mix_rate * 0.001f;
-		// Clamp to valid range
 		if (delay_samples < 1.0f) delay_samples = 1.0f;
 		if (delay_samples > (float)(buffer_size - 2)) delay_samples = (float)(buffer_size - 2);
 
 		for (int32_t i = 0; i < p_num_frames; i++) {
-			buffer[write_pos] = audio_in[i];
+			float in_s = audio_in[i];
+			float old = buffer[write_pos];
+			ring_energy += in_s * in_s - old * old;
+			if (ring_energy < 0.0f) {
+				ring_energy = 0.0f;
+			}
+			buffer[write_pos] = in_s;
 			audio_out[i] = read_hermite(delay_samples);
 			write_pos = (write_pos + 1) % buffer_size;
+		}
+
+		if (ring_energy < ACTIVITY_THRESHOLD) {
+			if (silent_blocks < 255) {
+				silent_blocks++;
+			}
+			activity = (silent_blocks >= 2) ? 0 : 1;
+		} else {
+			silent_blocks = 0;
+			activity = 1;
 		}
 	}
 

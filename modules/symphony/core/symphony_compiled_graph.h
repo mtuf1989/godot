@@ -5,6 +5,7 @@
 #include "symphony_trigger.h"
 #include "symphony_pin_types.h"
 #include "symphony_memory_budget.h"
+#include "symphony_operator_registry.h"
 #include "core/string/string_name.h"
 
 // The output of the GraphCompiler: a ready-to-execute graph.
@@ -70,12 +71,10 @@ struct CompiledGraph {
 		for (int32_t i = 0; i < operator_count; i++) {
 			SymphonyOperator *op = operators[i];
 
-			// Silence check: if operator is skippable and ALL audio inputs are inactive,
-			// zero its output buffers and mark it inactive without calling execute().
 			if (op->skippable && audio_input_offsets) {
 				int32_t dep_start = audio_input_offsets[i];
 				int32_t dep_end = audio_input_offsets[i + 1];
-				if (dep_start < dep_end) { // Has audio dependencies
+				if (dep_start < dep_end) {
 					bool all_silent = true;
 					for (int32_t d = dep_start; d < dep_end; d++) {
 						if (operators[audio_input_ops[d]]->activity) {
@@ -84,25 +83,27 @@ struct CompiledGraph {
 						}
 					}
 					if (all_silent) {
-						// Zero all audio output buffers for this operator.
-						int32_t buf_start = output_buffer_offsets[i];
-						int32_t buf_end = output_buffer_offsets[i + 1];
-						for (int32_t b = buf_start; b < buf_end; b++) {
-							memset(output_audio_buffers[b], 0, sizeof(float) * p_num_frames);
+						const bool is_stateless = op->silence_behavior == (uint8_t)SilenceBehavior::STATELESS;
+						const bool is_tail = op->silence_behavior == (uint8_t)SilenceBehavior::STATEFUL_TAIL;
+						// STATELESS: skip immediately. STATEFUL_TAIL: skip only after inactive.
+						if (is_stateless || (is_tail && op->activity == 0)) {
+							int32_t buf_start = output_buffer_offsets[i];
+							int32_t buf_end = output_buffer_offsets[i + 1];
+							for (int32_t b = buf_start; b < buf_end; b++) {
+								memset(output_audio_buffers[b], 0, sizeof(float) * p_num_frames);
+							}
+							op->activity = 0;
+							continue;
 						}
-						op->activity = 0;
-						continue; // Skip execute()
+						// STATEFUL_TAIL with activity still set: fall through and execute.
 					}
 				}
 			}
 
 			op->execute(p_num_frames);
 			// Note: operators that detect silence set activity = 0 in execute().
-			// Operators that don't override keep activity = 1 (conservative default).
 
 #ifdef DEV_ENABLED
-			// Debug: validate all audio output buffers for NaN/Inf after execution.
-			// Catches float domain errors at the source operator before they cascade.
 			if (output_buffer_offsets) {
 				int32_t buf_start = output_buffer_offsets[i];
 				int32_t buf_end = output_buffer_offsets[i + 1];

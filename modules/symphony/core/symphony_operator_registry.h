@@ -5,6 +5,8 @@
 #include "core/templates/hash_map.h"
 #include "core/variant/variant.h"
 
+#include <cstdint>
+
 class SymphonyOperator;
 struct ArenaAllocator;
 
@@ -34,6 +36,13 @@ using OperatorCreateFunc = SymphonyOperator *(*)(ArenaAllocator &p_arena, const 
 // Returns the byte count (excluding state_size which is added separately).
 using ExtraArenaBytesFunc = size_t (*)(const HashMap<StringName, Variant> &p_params, float p_mix_rate);
 
+// Silence propagation behavior (improve_plan §7).
+enum class SilenceBehavior : uint8_t {
+	ALWAYS_PROCESS = 0, // Generators, timing/control, IO — never skip via silence
+	STATEFUL_TAIL = 1, // Filters/delay/reverb/envelopes — run until inactive
+	STATELESS = 2, // Gain/mix/map — skip when all audio predecessors inactive
+};
+
 // Describes an operator type: its pins, state size, and factory function.
 struct OperatorDescriptor {
 	StringName type_name;
@@ -48,6 +57,7 @@ struct OperatorDescriptor {
 	OperatorCreateFunc create_fn = nullptr;
 	bool nonlinear = false; // If true, this operator generates harmonics (saturators, waveshapers).
 	                        // Used by the graph compiler's anti-alias staircase pass (P1b).
+	SilenceBehavior silence_behavior = SilenceBehavior::STATEFUL_TAIL;
 };
 
 // Singleton registry of all known operator types.

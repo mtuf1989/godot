@@ -3,6 +3,7 @@
 #include "../../core/symphony_operator.h"
 #include "../../core/symphony_operator_registry.h"
 #include "../../core/symphony_arena_allocator.h"
+#include "../../core/symphony_fast_math.h"
 #include "core/math/math_funcs.h"
 
 // Multi-waveform oscillator with logistic-curve band-limiting (branch-free).
@@ -34,12 +35,8 @@ private:
 
 	// ── Fast approximations (branch-free building blocks) ──────────────
 
-	// Fast polynomial sine: phase in [0, 1) → output in [-1, 1].
-	// 5th-order minimax, ~6 instructions, -50dB harmonic error.
 	[[nodiscard]] static inline float fast_sine(float p_phase) {
-		float x = 2.0f * p_phase - 1.0f;
-		float x2 = x * x;
-		return x * (1.5707963f + x2 * (-0.6459641f + x2 * 0.0796926f));
+		return SymphonyFastMath::fast_sine(p_phase);
 	}
 
 	// Fast 2^x approximation (~8 ops, 16-bit accuracy).

@@ -3,6 +3,7 @@
 #include "../../core/symphony_operator.h"
 #include "../../core/symphony_operator_registry.h"
 #include "../../core/symphony_arena_allocator.h"
+#include "../../core/symphony_fast_math.h"
 #include "core/math/math_funcs.h"
 
 // Phase Modulation (PM) oscillator with output anti-alias filter.
@@ -42,20 +43,15 @@ private:
 	float lp_coeff = 0.0f;
 	float lp_prev = 0.0f;
 
-	// Fast polynomial sine approximation (5th-order minimax).
-	// Input: phase in [0, 1), Output: sine in [-1, 1].
-	// ~6 instructions, -50dB harmonic error — masked by FM's dense spectra.
+	// Fast polynomial sine approximation via shared helper.
 	static inline float fast_sine(float p_phase) {
-		float x = 2.0f * p_phase - 1.0f;
-		float x2 = x * x;
-		return x * (1.5707963f + x2 * (-0.6459641f + x2 * 0.0796926f));
+		return SymphonyFastMath::fast_sine(p_phase);
 	}
 
 	// Fast sine from arbitrary radian angle (for PM offset computation).
-	// Wraps to [0,1) internally. Used when carrier_phase + pm_offset may exceed [0,1).
 	static inline float fast_sine_rad(float p_radians) {
 		float normalized = p_radians * (1.0f / (float)Math::TAU);
-		normalized -= floorf(normalized); // wrap to [0, 1)
+		normalized -= floorf(normalized);
 		return fast_sine(normalized);
 	}
 
