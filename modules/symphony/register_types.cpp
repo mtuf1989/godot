@@ -62,6 +62,7 @@
 
 #include "spatial/acoustic_material.h"
 #include "spatial/acoustic_body_3d.h"
+#include "spatial/spatial_acoustics_engine.h"
 
 #include "core/object/class_db.h"
 #include "core/config/engine.h"
@@ -167,6 +168,7 @@ void initialize_symphony_module(ModuleInitializationLevel p_level) {
 		GDREGISTER_CLASS(TransitionAnalyzer);
 		GDREGISTER_CLASS(AcousticMaterial);
 		GDREGISTER_CLASS(AcousticBody3D);
+		GDREGISTER_CLASS(SpatialAcousticsEngine);
 
 		// Create voice manager singleton (DSP graph tracking)
 		memnew(SymphonyVoiceManager);
@@ -195,6 +197,10 @@ void initialize_symphony_module(ModuleInitializationLevel p_level) {
 		// Create transition analyzer singleton
 		memnew(TransitionAnalyzer);
 		Engine::get_singleton()->add_singleton(Engine::Singleton("TransitionAnalyzer", TransitionAnalyzer::get_singleton(), "TransitionAnalyzer"));
+
+		// Create spatial acoustics engine singleton
+		memnew(SpatialAcousticsEngine);
+		Engine::get_singleton()->add_singleton(Engine::Singleton("SpatialAcousticsEngine", SpatialAcousticsEngine::get_singleton(), "SpatialAcousticsEngine"));
 #ifdef TOOLS_ENABLED
 	} else if (p_level == MODULE_INITIALIZATION_LEVEL_EDITOR) {
 		GDREGISTER_CLASS(SymphonyNodeInspectorProxy);
@@ -206,6 +212,10 @@ void initialize_symphony_module(ModuleInitializationLevel p_level) {
 
 void uninitialize_symphony_module(ModuleInitializationLevel p_level) {
 	if (p_level == MODULE_INITIALIZATION_LEVEL_SCENE) {
+		if (SpatialAcousticsEngine::get_singleton()) {
+			Engine::get_singleton()->remove_singleton("SpatialAcousticsEngine");
+			memdelete(SpatialAcousticsEngine::get_singleton());
+		}
 		if (BeatClock::get_singleton()) {
 			Engine::get_singleton()->remove_singleton("BeatClock");
 			memdelete(BeatClock::get_singleton());
