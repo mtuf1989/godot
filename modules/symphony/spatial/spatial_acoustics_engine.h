@@ -9,6 +9,9 @@
 #include "symphony_seqlock.h"
 #include "occlusion_solver.h"
 #include "spatial_graph_wrapper.h"
+#include "probe_scheduler.h"
+#include "probe_cache.h"
+#include "room_estimator.h"
 
 // Per-emitter spatial parameters — the output of the main-thread simulation,
 // consumed by the audio thread (via SeqLock) to drive DSP.
@@ -48,6 +51,7 @@ private:
 		bool first_update = true;      // Snap on first update (UE5 pattern)
 		int voice_slot = -1;           // Associated VoicePool slot
 		Vector3 source_position;       // World position of this emitter
+		float last_update_time = 0.0f; // Time since last occlusion solve (seconds)
 
 		// Target values (set by solvers before smoothing)
 		SpatialParams target;
@@ -80,6 +84,16 @@ private:
 	RID physics_space_rid; // Set by AudioManager from World3D.get_space()
 
 	void _solve_occlusion_for_emitter(int p_emitter_idx, PhysicsDirectSpaceState3D *p_space);
+
+	// Room estimation
+	RoomEstimator::Config room_config;
+	bool room_estimation_enabled = true;
+	void _solve_room_for_emitter(int p_emitter_idx, PhysicsDirectSpaceState3D *p_space);
+
+	// Probe scheduler and cache
+	ProbeScheduler scheduler;
+	ProbeCache probe_cache;
+	Vector<int> scheduled_emitters; // Scratch buffer for scheduler output
 
 	// Listener position (updated from AudioManager)
 	Vector3 listener_position;
@@ -123,12 +137,21 @@ public:
 	// --- Occlusion configuration ---
 	void set_occlusion_enabled(bool p_enabled) { occlusion_enabled = p_enabled; }
 	bool get_occlusion_enabled() const { return occlusion_enabled; }
-
 	void set_occlusion_max_hits(int p_max) { occlusion_config.max_hits = CLAMP(p_max, 1, 32); }
 	int get_occlusion_max_hits() const { return occlusion_config.max_hits; }
 
 	void set_occlusion_collision_mask(uint32_t p_mask) { occlusion_config.collision_mask = p_mask; }
 	uint32_t get_occlusion_collision_mask() const { return occlusion_config.collision_mask; }
+
+	// --- Room estimation configuration ---
+	void set_room_estimation_enabled(bool p_enabled) { room_estimation_enabled = p_enabled; }
+	bool get_room_estimation_enabled() const { return room_estimation_enabled; }
+	void set_room_ray_count(int p_count) { room_config.ray_count = CLAMP(p_count, 4, 128); }
+	int get_room_ray_count() const { return room_config.ray_count; }
+	void set_room_max_distance(float p_dist) { room_config.max_distance = MAX(p_dist, 1.0f); }
+	float get_room_max_distance() const { return room_config.max_distance; }
+	void set_room_ignore_floor(bool p_ignore) { room_config.ignore_floor = p_ignore; }
+	bool get_room_ignore_floor() const { return room_config.ignore_floor; }
 
 	void set_listener_body_rid(const RID &p_rid);
 	void clear_listener_body_rid();
@@ -141,6 +164,25 @@ public:
 	// --- Debug ---
 	int get_active_emitter_count() const;
 	int get_max_emitters() const { return MAX_EMITTERS; }
+
+	// --- Scheduler configuration ---
+	void set_ray_budget(int p_budget) { scheduler.set_ray_budget(p_budget); }
+	int get_ray_budget() const { return scheduler.get_ray_budget(); }
+	void set_scheduler_base_rate(float p_hz) { scheduler.set_base_rate_hz(p_hz); }
+	float get_scheduler_base_rate() const { return scheduler.get_base_rate_hz(); }
+
+	// --- Scheduler metrics (for Performance monitors) ---
+	int get_scheduler_rays_issued() const { return scheduler.get_metrics().rays_issued; }
+	int get_scheduler_emitters_serviced() const { return scheduler.get_metrics().emitters_serviced; }
+	int get_scheduler_emitters_skipped() const { return scheduler.get_metrics().emitters_skipped; }
+
+	// --- Probe cache ---
+	void set_cache_cell_size(float p_size) { probe_cache.set_cell_size(p_size); }
+	float get_cache_cell_size() const { return probe_cache.get_cell_size(); }
+	int get_cache_hits() const { return probe_cache.get_metrics().hits; }
+	int get_cache_misses() const { return probe_cache.get_metrics().misses; }
+	void invalidate_cache() { probe_cache.invalidate_all(); }
+	void invalidate_cache_near(const Vector3 &p_position, float p_radius) { probe_cache.invalidate_near(p_position, p_radius); }
 
 	// --- Graph wrapper (GDScript-accessible) ---
 	// Wraps a plain AudioStream in a spatial-processing Symphony graph.

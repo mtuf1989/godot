@@ -71,7 +71,6 @@ bool SpatialAcousticsEngine::has_emitter(int p_voice_slot) const {
 
 void SpatialAcousticsEngine::update(float p_delta) {
 	// Get physics space for occlusion raycasts.
-	// The space RID is set by the caller (AudioManager) via set_physics_space().
 	PhysicsDirectSpaceState3D *space = nullptr;
 	if (occlusion_enabled && physics_space_rid.is_valid()) {
 		PhysicsServer3D *ps = PhysicsServer3D::get_singleton();
@@ -80,16 +79,50 @@ void SpatialAcousticsEngine::update(float p_delta) {
 		}
 	}
 
+	// Advance probe cache time.
+	probe_cache.advance_time(p_delta);
+	probe_cache.reset_metrics();
+
+	// Build emitter info array for the scheduler.
+	ProbeScheduler::EmitterInfo emitter_infos[MAX_EMITTERS];
+	int info_count = 0;
+
 	for (int i = 0; i < MAX_EMITTERS; i++) {
 		if (!emitters[i].active) {
 			continue;
 		}
 
-		// Run occlusion solve.
-		if (occlusion_enabled && space) {
-			_solve_occlusion_for_emitter(i, space);
-		}
+		// Accumulate time since last occlusion solve.
+		emitters[i].last_update_time += p_delta;
 
+		ProbeScheduler::EmitterInfo &info = emitter_infos[info_count];
+		info.emitter_index = i;
+		info.distance_sq = emitters[i].source_position.distance_squared_to(listener_position);
+		info.importance = 1.0f; // Could be sourced from VoicePool importance later.
+		info.audible = true;    // Could check VoicePool virtual state later.
+		info.last_update_time = emitters[i].last_update_time;
+		info_count++;
+	}
+
+	// Run scheduler to determine which emitters get occlusion this frame.
+	if (occlusion_enabled && space) {
+		scheduler.schedule(emitter_infos, info_count, p_delta, scheduled_emitters);
+
+		for (int k = 0; k < scheduled_emitters.size(); k++) {
+			int emitter_idx = scheduled_emitters[k];
+			_solve_occlusion_for_emitter(emitter_idx, space);
+			if (room_estimation_enabled) {
+				_solve_room_for_emitter(emitter_idx, space);
+			}
+			emitters[emitter_idx].last_update_time = 0.0f; // Reset timer after solve.
+		}
+	}
+
+	// Smoothing and publish run for ALL active emitters every frame (cheap).
+	for (int i = 0; i < MAX_EMITTERS; i++) {
+		if (!emitters[i].active) {
+			continue;
+		}
 		_smooth_params(i, p_delta);
 		_publish_params(i);
 	}
@@ -111,6 +144,37 @@ void SpatialAcousticsEngine::_solve_occlusion_for_emitter(int p_emitter_idx, Phy
 	e.target.transmission[0] = result.transmission[0];
 	e.target.transmission[1] = result.transmission[1];
 	e.target.transmission[2] = result.transmission[2];
+}
+
+void SpatialAcousticsEngine::_solve_room_for_emitter(int p_emitter_idx, PhysicsDirectSpaceState3D *p_space) {
+	EmitterState &e = emitters[p_emitter_idx];
+
+	// Check the probe cache first — emitters in the same cell share room data.
+	ProbeCache::RoomProbeResult cached;
+	if (probe_cache.lookup(e.source_position, cached)) {
+		e.target.rt60 = cached.rt60;
+		e.target.reverb_send = cached.reverb_send;
+		return;
+	}
+
+	// Cache miss — cast the Fibonacci ray fan.
+	RoomEstimator::Result room = RoomEstimator::estimate(
+			p_space,
+			e.source_position,
+			exclude_rids,
+			room_config);
+
+	e.target.rt60 = room.rt60;
+	e.target.reverb_send = RoomEstimator::openness_to_reverb_send(room.openness);
+
+	// Store in cache for nearby emitters to reuse.
+	ProbeCache::RoomProbeResult to_cache;
+	to_cache.rt60 = room.rt60;
+	to_cache.volume = room.volume;
+	to_cache.mean_absorption = room.mean_absorption;
+	to_cache.openness = room.openness;
+	to_cache.reverb_send = e.target.reverb_send;
+	probe_cache.store(e.source_position, to_cache);
 }
 
 void SpatialAcousticsEngine::set_emitter_position(int p_voice_slot, const Vector3 &p_position) {
@@ -316,6 +380,33 @@ void SpatialAcousticsEngine::_bind_methods() {
 
 	ClassDB::bind_method(D_METHOD("get_active_emitter_count"), &SpatialAcousticsEngine::get_active_emitter_count);
 	ClassDB::bind_method(D_METHOD("get_max_emitters"), &SpatialAcousticsEngine::get_max_emitters);
+
+	// Scheduler
+	ClassDB::bind_method(D_METHOD("set_ray_budget", "budget"), &SpatialAcousticsEngine::set_ray_budget);
+	ClassDB::bind_method(D_METHOD("get_ray_budget"), &SpatialAcousticsEngine::get_ray_budget);
+	ClassDB::bind_method(D_METHOD("set_scheduler_base_rate", "hz"), &SpatialAcousticsEngine::set_scheduler_base_rate);
+	ClassDB::bind_method(D_METHOD("get_scheduler_base_rate"), &SpatialAcousticsEngine::get_scheduler_base_rate);
+	ClassDB::bind_method(D_METHOD("get_scheduler_rays_issued"), &SpatialAcousticsEngine::get_scheduler_rays_issued);
+	ClassDB::bind_method(D_METHOD("get_scheduler_emitters_serviced"), &SpatialAcousticsEngine::get_scheduler_emitters_serviced);
+	ClassDB::bind_method(D_METHOD("get_scheduler_emitters_skipped"), &SpatialAcousticsEngine::get_scheduler_emitters_skipped);
+
+	// Probe cache
+	ClassDB::bind_method(D_METHOD("set_cache_cell_size", "size"), &SpatialAcousticsEngine::set_cache_cell_size);
+	ClassDB::bind_method(D_METHOD("get_cache_cell_size"), &SpatialAcousticsEngine::get_cache_cell_size);
+	ClassDB::bind_method(D_METHOD("get_cache_hits"), &SpatialAcousticsEngine::get_cache_hits);
+	ClassDB::bind_method(D_METHOD("get_cache_misses"), &SpatialAcousticsEngine::get_cache_misses);
+	ClassDB::bind_method(D_METHOD("invalidate_cache"), &SpatialAcousticsEngine::invalidate_cache);
+	ClassDB::bind_method(D_METHOD("invalidate_cache_near", "position", "radius"), &SpatialAcousticsEngine::invalidate_cache_near);
+
+	// Room estimation
+	ClassDB::bind_method(D_METHOD("set_room_estimation_enabled", "enabled"), &SpatialAcousticsEngine::set_room_estimation_enabled);
+	ClassDB::bind_method(D_METHOD("get_room_estimation_enabled"), &SpatialAcousticsEngine::get_room_estimation_enabled);
+	ClassDB::bind_method(D_METHOD("set_room_ray_count", "count"), &SpatialAcousticsEngine::set_room_ray_count);
+	ClassDB::bind_method(D_METHOD("get_room_ray_count"), &SpatialAcousticsEngine::get_room_ray_count);
+	ClassDB::bind_method(D_METHOD("set_room_max_distance", "distance"), &SpatialAcousticsEngine::set_room_max_distance);
+	ClassDB::bind_method(D_METHOD("get_room_max_distance"), &SpatialAcousticsEngine::get_room_max_distance);
+	ClassDB::bind_method(D_METHOD("set_room_ignore_floor", "ignore"), &SpatialAcousticsEngine::set_room_ignore_floor);
+	ClassDB::bind_method(D_METHOD("get_room_ignore_floor"), &SpatialAcousticsEngine::get_room_ignore_floor);
 
 	// Occlusion configuration
 	ClassDB::bind_method(D_METHOD("set_occlusion_enabled", "enabled"), &SpatialAcousticsEngine::set_occlusion_enabled);
