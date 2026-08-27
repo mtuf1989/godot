@@ -21,6 +21,16 @@ Goal: absorb the addon's acoustic modelling as a native C++ spatial layer inside
 | R9 | Zero allocation on the audio thread; arena-allocated graphs | AGENTS.md invariant |
 | R10 | Cross-platform C++ (desktop, mobile, Web/WASM) | User: "most performant and portable" |
 
+## Reference Paths
+
+| Resource | Path |
+|---|---|
+| SeqLock template & future milestone notes | `/Users/luong.pham/Work/game-template/docs/audio/plan/notes_future_milestone.md` |
+| Spatial audio addon (reference implementation) | `/Users/luong.pham/Work/spatial_audio_player_3d` |
+| Symphony module (this repo) | `/Users/luong.pham/Work/godot/modules/symphony/` |
+| Game audio layer addon | `/Users/luong.pham/Work/game-template/addons/symphony_audio/` |
+| Spatial research study | Knowledge base `audio-research` |
+
 ## Background — Research Findings Applied
 
 Verified constants and algorithms adopted from `study_spatial_audio.md`:
