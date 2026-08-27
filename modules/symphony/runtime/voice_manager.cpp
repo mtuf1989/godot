@@ -68,6 +68,8 @@ void SymphonyVoicePool::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_slot_spatial_mode", "slot", "mode"), &SymphonyVoicePool::set_slot_spatial_mode);
 	ClassDB::bind_method(D_METHOD("set_slot_attenuation_model", "slot", "model"), &SymphonyVoicePool::set_slot_attenuation_model);
 	ClassDB::bind_method(D_METHOD("set_slot_max_distance", "slot", "distance"), &SymphonyVoicePool::set_slot_max_distance);
+	ClassDB::bind_method(D_METHOD("set_slot_inner_radius", "slot", "radius"), &SymphonyVoicePool::set_slot_inner_radius);
+	ClassDB::bind_method(D_METHOD("set_slot_falloff_distance", "slot", "distance"), &SymphonyVoicePool::set_slot_falloff_distance);
 	ClassDB::bind_method(D_METHOD("set_slot_virtualize_when_inaudible", "slot", "virtualize"), &SymphonyVoicePool::set_slot_virtualize_when_inaudible);
 	ClassDB::bind_method(D_METHOD("get_slot_attenuation_volume", "slot"), &SymphonyVoicePool::get_slot_attenuation_volume);
 	ClassDB::bind_method(D_METHOD("set_slot_attenuation_curve", "slot", "curve"), &SymphonyVoicePool::set_slot_attenuation_curve);
@@ -144,6 +146,8 @@ void SymphonyVoicePool::release_slot(int p_index, bool p_immediate) {
 		slots[p_index].state = VOICE_FREE;
 		slots[p_index].event_id = 0;
 		slots[p_index].rms_valid = false;
+		slots[p_index].inner_radius = 0.0f;
+		slots[p_index].falloff_distance = 0.0f;
 	} else {
 		slots[p_index].state = VOICE_STOPPING;
 		slots[p_index].fade_progress = 1.0f;
@@ -340,12 +344,22 @@ void SymphonyVoicePool::set_slot_spatial_mode(int p_slot, int p_mode) {
 
 void SymphonyVoicePool::set_slot_attenuation_model(int p_slot, int p_model) {
 	ERR_FAIL_INDEX(p_slot, pool_size);
-	slots[p_slot].attenuation_model = CLAMP(p_model, 0, 2);
+	slots[p_slot].attenuation_model = CLAMP(p_model, 0, 5);
 }
 
 void SymphonyVoicePool::set_slot_max_distance(int p_slot, float p_distance) {
 	ERR_FAIL_INDEX(p_slot, pool_size);
 	slots[p_slot].max_distance = MAX(p_distance, 1.0f);
+}
+
+void SymphonyVoicePool::set_slot_inner_radius(int p_slot, float p_radius) {
+	ERR_FAIL_INDEX(p_slot, pool_size);
+	slots[p_slot].inner_radius = MAX(p_radius, 0.0f);
+}
+
+void SymphonyVoicePool::set_slot_falloff_distance(int p_slot, float p_distance) {
+	ERR_FAIL_INDEX(p_slot, pool_size);
+	slots[p_slot].falloff_distance = MAX(p_distance, 0.0f);
 }
 
 void SymphonyVoicePool::set_slot_virtualize_when_inaudible(int p_slot, bool p_virtualize) {
@@ -417,39 +431,72 @@ void SymphonyVoicePool::_update_importance_batch(int p_start, int p_count) {
 		float distance = Math::sqrt(distance_sq);
 		float normalized_distance = CLAMP(distance / max_dist, 0.0f, 1.0f);
 
+		float alpha;
+		float effective_max;
+		if (slots[i].inner_radius > 0.0f || slots[i].falloff_distance > 0.0f) {
+			effective_max = slots[i].inner_radius + (slots[i].falloff_distance > 0.0f ? slots[i].falloff_distance : max_dist - slots[i].inner_radius);
+			if (distance <= slots[i].inner_radius) {
+				slots[i].attenuation_volume = 1.0f;
+				// Still check virtualization with effective_max
+				if (distance >= effective_max && slots[i].virtualize_when_inaudible) {
+					if (slots[i].state == VOICE_PLAYING) {
+						_log_event(StringName(), EVENT_VIRTUALIZED, i, slots[i].importance, StringName("distance_exceeded"));
+						slots[i].state = VOICE_VIRTUALIZING;
+						slots[i].fade_progress = 1.0f;
+						slots[i].fade_speed = 1.0f / ANTI_CLICK_SAMPLES;
+					}
+				}
+				continue;
+			}
+			if (distance >= effective_max) {
+				alpha = 1.0f;
+			} else {
+				alpha = (distance - slots[i].inner_radius) / (effective_max - slots[i].inner_radius);
+			}
+		} else {
+			effective_max = max_dist;
+			alpha = normalized_distance; // Same as before
+		}
+
 		float attenuation = 1.0f;
 		switch (slots[i].attenuation_model) {
 			case 0: // Linear
-				attenuation = 1.0f - normalized_distance;
+				attenuation = 1.0f - alpha;
 				break;
-			case 1: // Logarithmic (inverse distance)
-				attenuation = 1.0f / (1.0f + normalized_distance * 9.0f); // 1.0 at 0, ~0.1 at max
+			case 1: // Logarithmic
+				attenuation = 1.0f - (Math::log(alpha * 9.0f + 1.0f) / Math::log(10.0f));
 				break;
 			case 2: { // Custom curve
 				Ref<Curve> curve = slot_attenuation_curves[i];
 				if (curve.is_valid()) {
-					// Curve input: normalized_distance (0=close, 1=max_distance)
-					// Curve output: volume (1.0=full, 0.0=silent)
-					attenuation = CLAMP(curve->sample(normalized_distance), 0.0f, 1.0f);
+					attenuation = CLAMP(curve->sample(alpha), 0.0f, 1.0f);
 				} else {
-					// Fallback to linear if no curve set
-					attenuation = 1.0f - normalized_distance;
+					attenuation = 1.0f - alpha;
 				}
 			} break;
+			case 3: // Natural
+				attenuation = Math::pow(1.0f - alpha, 1.5f);
+				break;
+			case 4: // Log Reverse
+				attenuation = Math::log(1.0f + (1.0f - alpha) * 9.0f) / Math::log(10.0f);
+				break;
+			case 5: // Inverse Square
+				attenuation = 1.0f / (1.0f + alpha * 9.0f);
+				break;
 		}
 
 		slots[i].attenuation_volume = attenuation;
 
-		// Auto-virtualize if beyond max_distance and virtualize_when_inaudible is set
-		if (distance >= max_dist && slots[i].virtualize_when_inaudible) {
+		// Auto-virtualize if beyond effective_max and virtualize_when_inaudible is set
+		if (distance >= effective_max && slots[i].virtualize_when_inaudible) {
 			if (slots[i].state == VOICE_PLAYING) {
 				_log_event(StringName(), EVENT_VIRTUALIZED, i, slots[i].importance, StringName("distance_exceeded"));
 				slots[i].state = VOICE_VIRTUALIZING;
 				slots[i].fade_progress = 1.0f;
 				slots[i].fade_speed = 1.0f / ANTI_CLICK_SAMPLES;
 			}
-		} else if (slots[i].state == VOICE_VIRTUAL && distance < max_dist * 0.95f) {
-			// Devirtualize when listener comes back within 95% of max_distance (hysteresis)
+		} else if (slots[i].state == VOICE_VIRTUAL && distance < effective_max * 0.95f) {
+			// Devirtualize when listener comes back within 95% of effective_max (hysteresis)
 			_log_event(StringName(), EVENT_DEVIRTUALIZED, i, slots[i].importance, StringName("listener_returned"));
 			slots[i].state = VOICE_DEVIRTUALIZING;
 			slots[i].fade_progress = 0.0f;

@@ -40,6 +40,10 @@ void SoundEvent::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_attenuation_curve"), &SoundEvent::get_attenuation_curve);
 	ClassDB::bind_method(D_METHOD("set_max_distance", "distance"), &SoundEvent::set_max_distance);
 	ClassDB::bind_method(D_METHOD("get_max_distance"), &SoundEvent::get_max_distance);
+	ClassDB::bind_method(D_METHOD("set_inner_radius", "radius"), &SoundEvent::set_inner_radius);
+	ClassDB::bind_method(D_METHOD("get_inner_radius"), &SoundEvent::get_inner_radius);
+	ClassDB::bind_method(D_METHOD("set_falloff_distance", "distance"), &SoundEvent::set_falloff_distance);
+	ClassDB::bind_method(D_METHOD("get_falloff_distance"), &SoundEvent::get_falloff_distance);
 	ClassDB::bind_method(D_METHOD("set_loop", "loop"), &SoundEvent::set_loop);
 	ClassDB::bind_method(D_METHOD("get_loop"), &SoundEvent::get_loop);
 	ClassDB::bind_method(D_METHOD("set_virtualize_when_inaudible", "virtualize"), &SoundEvent::set_virtualize_when_inaudible);
@@ -74,9 +78,11 @@ void SoundEvent::_bind_methods() {
 
 	ADD_GROUP("Spatial", "");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "spatial_mode", PROPERTY_HINT_ENUM, "Non-Positional,2D,3D"), "set_spatial_mode", "get_spatial_mode");
-	ADD_PROPERTY(PropertyInfo(Variant::INT, "attenuation_model", PROPERTY_HINT_ENUM, "Linear,Logarithmic,Custom"), "set_attenuation_model", "get_attenuation_model");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "attenuation_model", PROPERTY_HINT_ENUM, "Linear,Logarithmic,Custom,Natural,Log Reverse,Inverse Square"), "set_attenuation_model", "get_attenuation_model");
 	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "attenuation_curve", PROPERTY_HINT_RESOURCE_TYPE, "Curve"), "set_attenuation_curve", "get_attenuation_curve");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "max_distance", PROPERTY_HINT_RANGE, "0,10000,1"), "set_max_distance", "get_max_distance");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "inner_radius", PROPERTY_HINT_RANGE, "0,10000,1"), "set_inner_radius", "get_inner_radius");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "falloff_distance", PROPERTY_HINT_RANGE, "0,10000,1"), "set_falloff_distance", "get_falloff_distance");
 
 	ADD_GROUP("RTPC", "");
 	ADD_PROPERTY(PropertyInfo(Variant::ARRAY, "rtpc_bindings", PROPERTY_HINT_TYPE_STRING, String::num(Variant::DICTIONARY) + ":"), "set_rtpc_bindings", "get_rtpc_bindings");
@@ -99,6 +105,9 @@ void SoundEvent::_bind_methods() {
 	BIND_ENUM_CONSTANT(ATTENUATION_LINEAR);
 	BIND_ENUM_CONSTANT(ATTENUATION_LOGARITHMIC);
 	BIND_ENUM_CONSTANT(ATTENUATION_CUSTOM);
+	BIND_ENUM_CONSTANT(ATTENUATION_NATURAL);
+	BIND_ENUM_CONSTANT(ATTENUATION_LOG_REVERSE);
+	BIND_ENUM_CONSTANT(ATTENUATION_INVERSE_SQUARE);
 
 	BIND_ENUM_CONSTANT(RTPC_PITCH);
 	BIND_ENUM_CONSTANT(RTPC_VOLUME);

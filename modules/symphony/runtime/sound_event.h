@@ -13,7 +13,7 @@ public:
 	enum StealMode { STEAL_OLDEST = 0, STEAL_QUIETEST, STEAL_FARTHEST };
 	enum Category { CATEGORY_SFX = 0, CATEGORY_MUSIC, CATEGORY_UI, CATEGORY_AMBIENT, CATEGORY_VOICE };
 	enum SpatialMode { SPATIAL_NON_POSITIONAL = 0, SPATIAL_2D, SPATIAL_3D };
-	enum AttenuationModel { ATTENUATION_LINEAR = 0, ATTENUATION_LOGARITHMIC, ATTENUATION_CUSTOM };
+	enum AttenuationModel { ATTENUATION_LINEAR = 0, ATTENUATION_LOGARITHMIC, ATTENUATION_CUSTOM, ATTENUATION_NATURAL, ATTENUATION_LOG_REVERSE, ATTENUATION_INVERSE_SQUARE };
 	enum RTPCTarget { RTPC_PITCH = 0, RTPC_VOLUME, RTPC_GRAPH_INPUT, RTPC_PLAYBACK_SPEED };
 
 private:
@@ -32,6 +32,8 @@ private:
 	AttenuationModel attenuation_model = ATTENUATION_LINEAR;
 	Ref<Curve> attenuation_curve; // Used only when attenuation_model == ATTENUATION_CUSTOM
 	float max_distance = 2000.0;
+	float inner_radius = 0.0; // Distance at which sound plays at full volume
+	float falloff_distance = 0.0; // Distance beyond inner_radius over which sound fades. 0 means use max_distance as total range.
 	bool loop = false;
 	bool virtualize_when_inaudible = true;
 
@@ -87,6 +89,12 @@ public:
 
 	void set_max_distance(float p_dist) { max_distance = p_dist; }
 	float get_max_distance() const { return max_distance; }
+
+	void set_inner_radius(float p_radius) { inner_radius = p_radius; }
+	float get_inner_radius() const { return inner_radius; }
+
+	void set_falloff_distance(float p_dist) { falloff_distance = p_dist; }
+	float get_falloff_distance() const { return falloff_distance; }
 
 	void set_loop(bool p_loop) { loop = p_loop; }
 	bool get_loop() const { return loop; }

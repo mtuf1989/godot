@@ -60,6 +60,9 @@
 #include "nodes/io/symphony_trigger_input.h"
 #include "nodes/io/symphony_subgraph.h"
 
+#include "spatial/acoustic_material.h"
+#include "spatial/acoustic_body_3d.h"
+
 #include "core/object/class_db.h"
 #include "core/config/engine.h"
 
@@ -162,6 +165,8 @@ void initialize_symphony_module(ModuleInitializationLevel p_level) {
 		GDREGISTER_CLASS(RTPCEngine);
 		GDREGISTER_CLASS(BusController);
 		GDREGISTER_CLASS(TransitionAnalyzer);
+		GDREGISTER_CLASS(AcousticMaterial);
+		GDREGISTER_CLASS(AcousticBody3D);
 
 		// Create voice manager singleton (DSP graph tracking)
 		memnew(SymphonyVoiceManager);

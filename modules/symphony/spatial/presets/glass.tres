@@ -1,0 +1,10 @@
+[gd_resource type="AcousticMaterial" format=3]
+
+[resource]
+absorption_low = 0.25
+absorption_mid = 0.06
+absorption_high = 0.03
+scattering = 0.05
+transmission_low = 0.06
+transmission_mid = 0.044
+transmission_high = 0.011

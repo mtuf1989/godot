@@ -69,6 +69,8 @@ public:
 		int spatial_mode = 0; // SoundEvent::SpatialMode (0=NonPositional,1=2D,2=3D)
 		int attenuation_model = 0; // SoundEvent::AttenuationModel (0=Linear,1=Log,2=Custom)
 		float max_distance = 2000.0f;
+		float inner_radius = 0.0f;
+		float falloff_distance = 0.0f;
 		float attenuation_volume = 1.0f; // 0.0 (silent) to 1.0 (full volume) — computed each update
 		bool virtualize_when_inaudible = true;
 
@@ -170,6 +172,8 @@ public:
 	void set_slot_spatial_mode(int p_slot, int p_mode);
 	void set_slot_attenuation_model(int p_slot, int p_model);
 	void set_slot_max_distance(int p_slot, float p_distance);
+	void set_slot_inner_radius(int p_slot, float p_radius);
+	void set_slot_falloff_distance(int p_slot, float p_distance);
 	void set_slot_virtualize_when_inaudible(int p_slot, bool p_virtualize);
 	float get_slot_attenuation_volume(int p_slot) const;
 	void set_slot_attenuation_curve(int p_slot, const Ref<Curve> &p_curve);
