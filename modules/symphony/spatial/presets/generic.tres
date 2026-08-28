@@ -1,5 +1,8 @@
 [gd_resource type="AcousticMaterial" format=3]
 
+; Neutral default used for untagged colliders. Kept moderate on purpose so a
+; scene without authored materials still has audible-but-present occlusion.
+; See HANDOFF_NOTES.md (Phase 2.2) — flagged for listening pass.
 [resource]
 absorption_low = 0.1
 absorption_mid = 0.2

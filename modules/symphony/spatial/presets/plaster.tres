@@ -1,10 +1,12 @@
 [gd_resource type="AcousticMaterial" format=3]
 
+; Retuned for forward-only march (Phase 2.2) — see concrete.tres / HANDOFF_NOTES.
+; Plaster/gypsum wall: STL ~35 dB.
 [resource]
 absorption_low = 0.12
 absorption_mid = 0.06
 absorption_high = 0.04
 scattering = 0.05
-transmission_low = 0.056
-transmission_mid = 0.028
+transmission_low = 0.040
+transmission_mid = 0.020
 transmission_high = 0.004

@@ -188,6 +188,16 @@ public:
 	void set_slot_attenuation_curve(int p_slot, const Ref<Curve> &p_curve);
 	Ref<Curve> get_slot_attenuation_curve(int p_slot) const;
 
+	// State pull-through for the SpatialAcousticsEngine (Phase 2.3). The engine
+	// refreshes each emitter from the pool at the top of every frame so moving
+	// sounds re-solve and pan; recycled slots never carry a stale position.
+	Vector3 get_slot_position(int p_slot) const;
+	float get_slot_attenuation(int p_slot) const; // alias of attenuation_volume
+	float get_slot_max_distance(int p_slot) const;
+	// Audible = an active (non-free/stopped) slot that is not virtualized and
+	// whose attenuation volume is above silence. Drives scheduler importance.
+	bool is_slot_audible(int p_slot) const;
+
 	// Propagation delay (Task 11) — deferred one-shot start.
 	// Sets the remaining start delay (seconds); the slot stays in VOICE_TO_PLAY
 	// until it elapses. Clamped to >= 0. Setting 0 starts on the next frame.

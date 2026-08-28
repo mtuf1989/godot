@@ -6,6 +6,7 @@
 
 #include "acoustic_portal_3d.h"
 #include "acoustic_room_3d.h"
+#include "../runtime/voice_manager.h"
 
 SpatialAcousticsEngine *SpatialAcousticsEngine::singleton = nullptr;
 
@@ -110,9 +111,35 @@ void SpatialAcousticsEngine::update(float p_delta) {
 	ProbeScheduler::EmitterInfo emitter_infos[MAX_EMITTERS];
 	int info_count = 0;
 
+	// Phase 2.3: pull live emitter state from the VoicePool once per frame, so
+	// moving sources re-solve + re-pan, recycled slots never carry a stale
+	// position, and the scheduler sees real audibility/importance. set_emitter_*
+	// setters remain as overrides for non-pooled callers.
+	SymphonyVoicePool *pool = SymphonyVoicePool::get_singleton();
+
 	for (int i = 0; i < MAX_EMITTERS; i++) {
 		if (!emitters[i].active) {
 			continue;
+		}
+
+		bool audible = true;
+		float importance = 1.0f;
+		// Pull live state from the pool only when the slot is genuinely an active
+		// pooled voice. A FREE pool slot means this emitter was driven by a
+		// non-pooled caller via set_emitter_position() (e.g. tests, or a custom
+		// integration) — in that case we must NOT clobber its position with the
+		// pool's stale (0,0,0). set_emitter_position stays the override path.
+		if (pool != nullptr && emitters[i].voice_slot >= 0 && emitters[i].voice_slot < pool->get_pool_size() &&
+				pool->get_slot_state(emitters[i].voice_slot) != SymphonyVoicePool::VOICE_FREE) {
+			const int vs = emitters[i].voice_slot;
+			emitters[i].source_position = pool->get_slot_position(vs);
+			emitters[i].target.attenuation = pool->get_slot_attenuation(vs);
+			const float pool_max = pool->get_slot_max_distance(vs);
+			if (pool_max > 0.0f) {
+				emitters[i].max_distance = pool_max;
+			}
+			audible = pool->is_slot_audible(vs);
+			importance = pool->get_slot_importance(vs);
 		}
 
 		// Accumulate time since last occlusion solve.
@@ -121,8 +148,8 @@ void SpatialAcousticsEngine::update(float p_delta) {
 		ProbeScheduler::EmitterInfo &info = emitter_infos[info_count];
 		info.emitter_index = i;
 		info.distance_sq = emitters[i].source_position.distance_squared_to(listener_position);
-		info.importance = 1.0f; // Could be sourced from VoicePool importance later.
-		info.audible = true;    // Could check VoicePool virtual state later.
+		info.importance = importance;
+		info.audible = audible;
 		info.last_update_time = emitters[i].last_update_time;
 		info_count++;
 	}
@@ -334,8 +361,13 @@ void SpatialAcousticsEngine::_solve_occlusion_for_emitter(int p_emitter_idx, Phy
 			exclude_rids,
 			occlusion_config);
 
-	// Spectral transmission (per band) always comes from the direct-path solve;
-	// it drives the occlusion LPF regardless of source size.
+	// Spectral transmission (per band) always comes from the direct-path solve.
+	// Keep the RAW material value for the debug overlay; the EFFECTIVE
+	// transmission[] (which drives the occlusion LPF + spatial gain) may be
+	// blended with volumetric occlusion below.
+	e.target.material_transmission[0] = result.transmission[0];
+	e.target.material_transmission[1] = result.transmission[1];
+	e.target.material_transmission[2] = result.transmission[2];
 	e.target.transmission[0] = result.transmission[0];
 	e.target.transmission[1] = result.transmission[1];
 	e.target.transmission[2] = result.transmission[2];
@@ -353,7 +385,17 @@ void SpatialAcousticsEngine::_solve_occlusion_for_emitter(int p_emitter_idx, Phy
 				listener_position,
 				exclude_rids,
 				vcfg);
-		e.target.occlusion = vres.occlusion;
+
+		// Blend the volumetric occlusion fraction INTO the transmission bands so
+		// it drives level *and* timbre (Steam Audio model). occ=0 → fully the
+		// material value; occ=1 → fully blocked. Only on the volumetric branch:
+		// a point source's result.occlusion is already 1 - mean_transmission, so
+		// blending it back would double-apply.
+		const float occ = vres.occlusion;
+		for (int b = 0; b < 3; b++) {
+			e.target.transmission[b] = (1.0f - occ) + occ * result.transmission[b];
+		}
+		e.target.occlusion = occ;
 	} else {
 		e.target.occlusion = result.occlusion;
 	}
@@ -469,6 +511,9 @@ void SpatialAcousticsEngine::_smooth_params(int p_emitter_idx, float p_delta) {
 	e.smoothed.transmission[0] = a * e.target.transmission[0] + b * e.smoothed.transmission[0];
 	e.smoothed.transmission[1] = a * e.target.transmission[1] + b * e.smoothed.transmission[1];
 	e.smoothed.transmission[2] = a * e.target.transmission[2] + b * e.smoothed.transmission[2];
+	e.smoothed.material_transmission[0] = a * e.target.material_transmission[0] + b * e.smoothed.material_transmission[0];
+	e.smoothed.material_transmission[1] = a * e.target.material_transmission[1] + b * e.smoothed.material_transmission[1];
+	e.smoothed.material_transmission[2] = a * e.target.material_transmission[2] + b * e.smoothed.material_transmission[2];
 	e.smoothed.air_cutoff = a * e.target.air_cutoff + b * e.smoothed.air_cutoff;
 	e.smoothed.reverb_send = a * e.target.reverb_send + b * e.smoothed.reverb_send;
 	e.smoothed.rt60 = a * e.target.rt60 + b * e.smoothed.rt60;

@@ -84,9 +84,9 @@ Ref<AcousticMaterial> AcousticMaterial::create_preset(Preset p_preset) {
 			m->absorption_mid = 0.07f;
 			m->absorption_high = 0.08f;
 			m->scattering = 0.05f;
-			m->transmission_low = 0.015f;
-			m->transmission_mid = 0.011f;
-			m->transmission_high = 0.008f;
+			m->transmission_low = 0.010f;
+			m->transmission_mid = 0.006f;
+			m->transmission_high = 0.004f;
 			break;
 
 		case PRESET_WOOD:
@@ -94,9 +94,9 @@ Ref<AcousticMaterial> AcousticMaterial::create_preset(Preset p_preset) {
 			m->absorption_mid = 0.07f;
 			m->absorption_high = 0.06f;
 			m->scattering = 0.05f;
-			m->transmission_low = 0.070f;
-			m->transmission_mid = 0.014f;
-			m->transmission_high = 0.005f;
+			m->transmission_low = 0.050f;
+			m->transmission_mid = 0.010f;
+			m->transmission_high = 0.004f;
 			break;
 
 		case PRESET_GLASS:
@@ -104,9 +104,9 @@ Ref<AcousticMaterial> AcousticMaterial::create_preset(Preset p_preset) {
 			m->absorption_mid = 0.06f;
 			m->absorption_high = 0.03f;
 			m->scattering = 0.05f;
-			m->transmission_low = 0.060f;
-			m->transmission_mid = 0.044f;
-			m->transmission_high = 0.011f;
+			m->transmission_low = 0.045f;
+			m->transmission_mid = 0.030f;
+			m->transmission_high = 0.008f;
 			break;
 
 		case PRESET_CARPET:
@@ -114,9 +114,9 @@ Ref<AcousticMaterial> AcousticMaterial::create_preset(Preset p_preset) {
 			m->absorption_mid = 0.69f;
 			m->absorption_high = 0.73f;
 			m->scattering = 0.57f;
-			m->transmission_low = 0.020f;
-			m->transmission_mid = 0.005f;
-			m->transmission_high = 0.003f;
+			m->transmission_low = 0.015f;
+			m->transmission_mid = 0.004f;
+			m->transmission_high = 0.002f;
 			break;
 
 		case PRESET_METAL:
@@ -124,9 +124,9 @@ Ref<AcousticMaterial> AcousticMaterial::create_preset(Preset p_preset) {
 			m->absorption_mid = 0.07f;
 			m->absorption_high = 0.06f;
 			m->scattering = 0.05f;
-			m->transmission_low = 0.200f;
-			m->transmission_mid = 0.025f;
-			m->transmission_high = 0.010f;
+			m->transmission_low = 0.140f;
+			m->transmission_mid = 0.018f;
+			m->transmission_high = 0.007f;
 			break;
 
 		case PRESET_BRICK:
@@ -134,9 +134,9 @@ Ref<AcousticMaterial> AcousticMaterial::create_preset(Preset p_preset) {
 			m->absorption_mid = 0.04f;
 			m->absorption_high = 0.07f;
 			m->scattering = 0.05f;
-			m->transmission_low = 0.025f;
-			m->transmission_mid = 0.019f;
-			m->transmission_high = 0.010f;
+			m->transmission_low = 0.016f;
+			m->transmission_mid = 0.010f;
+			m->transmission_high = 0.006f;
 			break;
 
 		case PRESET_PLASTER:
@@ -144,8 +144,8 @@ Ref<AcousticMaterial> AcousticMaterial::create_preset(Preset p_preset) {
 			m->absorption_mid = 0.06f;
 			m->absorption_high = 0.04f;
 			m->scattering = 0.05f;
-			m->transmission_low = 0.056f;
-			m->transmission_mid = 0.028f;
+			m->transmission_low = 0.040f;
+			m->transmission_mid = 0.020f;
 			m->transmission_high = 0.004f;
 			break;
 
@@ -169,9 +169,9 @@ Ref<AcousticMaterial> AcousticMaterial::create_preset(Preset p_preset) {
 			m->absorption_mid = 0.35f;
 			m->absorption_high = 0.55f;
 			m->scattering = 0.45f;
-			m->transmission_low = 0.120f;
-			m->transmission_mid = 0.060f;
-			m->transmission_high = 0.025f;
+			m->transmission_low = 0.100f;
+			m->transmission_mid = 0.050f;
+			m->transmission_high = 0.020f;
 			break;
 
 		case PRESET_MARBLE:
@@ -182,9 +182,9 @@ Ref<AcousticMaterial> AcousticMaterial::create_preset(Preset p_preset) {
 			m->absorption_mid = 0.01f;
 			m->absorption_high = 0.02f;
 			m->scattering = 0.05f;
-			m->transmission_low = 0.010f;
-			m->transmission_mid = 0.006f;
-			m->transmission_high = 0.004f;
+			m->transmission_low = 0.007f;
+			m->transmission_mid = 0.004f;
+			m->transmission_high = 0.003f;
 			break;
 
 		case PRESET_TILE:
@@ -195,9 +195,9 @@ Ref<AcousticMaterial> AcousticMaterial::create_preset(Preset p_preset) {
 			m->absorption_mid = 0.02f;
 			m->absorption_high = 0.02f;
 			m->scattering = 0.05f;
-			m->transmission_low = 0.060f;
-			m->transmission_mid = 0.044f;
-			m->transmission_high = 0.011f;
+			m->transmission_low = 0.045f;
+			m->transmission_mid = 0.030f;
+			m->transmission_high = 0.008f;
 			break;
 
 		default:

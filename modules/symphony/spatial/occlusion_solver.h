@@ -18,18 +18,19 @@ bool occlusion_material_is_total_absorption(const AcousticMaterial *p_mat, float
 void occlusion_material_transmission(const AcousticMaterial *p_mat, float &r_low, float &r_mid, float &r_high);
 
 // Computes direct-path occlusion and 3-band material transmission between
-// a source and listener using alternating-direction ray marching.
+// a source and listener using a forward-only ray march (Phase 2.2).
 //
-// Corrects the reference addon's double-counting bug by:
-// 1. Alternating ray direction (even hits: source→listener, odd: listener→source)
-// 2. Taking sqrt of accumulated transmission when hit_count > 1
-//    (compensates for hitting both entry and exit faces of a wall)
+// The ray marches source → listener, advancing past each surface. A thin plane
+// is one hit; a solid slab is two (entry + exit). Taking sqrt of the accumulated
+// transmission when hit_count > 1 collapses each slab's entry/exit pair back to
+// a single wall attenuation (one wall = t, N walls = tᴺ). This corrects the
+// reference addon's double-counting where one wall resolved to t².
 //
 // Uses PhysicsServer3D direct space state queries — no RayCast3D nodes.
 class OcclusionSolver {
 public:
 	struct Config {
-		int max_hits = 8;                // Maximum ray steps before giving up
+		int max_hits = 8;                // Max ray steps (forward-only: up to 4 solid barriers, 2 hits each)
 		uint32_t collision_mask = 1;     // Physics collision mask for occlusion rays
 		float ray_offset = 0.02f;        // Offset past hit point to avoid re-hitting same face
 		float fallback_transmission_low = 0.1f;   // Used when collider has no AcousticBody3D
@@ -86,26 +87,19 @@ public:
 		float accum_mid = 1.0f;
 		float accum_high = 1.0f;
 
-		// Ray march state — alternating direction (Steam Audio pattern).
-		// Even hits: source → listener direction; odd hits: listener → source.
-		Vector3 forward_pos = p_source;
-		Vector3 backward_pos = p_listener;
+		// Forward-only ray march (Phase 2.2). March source → listener, advancing
+		// the ray origin `ray_offset` past each hit so the next ray continues from
+		// just beyond the last surface. A thin plane is 1 hit (→ t), a thin box is
+		// 2 hits (entry+exit, → t after sqrt), N thick walls are 2N hits (→ tᴺ).
+		Vector3 march_pos = p_source;
 
 		int hit_count = 0;
 
 		for (int step = 0; step < p_config.max_hits; step++) {
-			bool forward = (step % 2 == 0);
+			const Vector3 from = march_pos;
+			const Vector3 to = p_listener;
 
-			Vector3 from, to;
-			if (forward) {
-				from = forward_pos;
-				to = p_listener;
-			} else {
-				from = backward_pos;
-				to = p_source;
-			}
-
-			// Skip if from and to are too close (converged).
+			// Skip if from and to are too close (converged / reached listener).
 			if (from.distance_to(to) < p_config.ray_offset * 2.0f) {
 				break;
 			}
@@ -114,10 +108,10 @@ public:
 			AcousticMaterial *mat = nullptr;
 			bool hit = p_raycast(from, to, hit_pos, &mat);
 			if (!hit) {
-				break; // Clear path in this direction — done.
+				break; // Clear path to the listener — done.
 			}
 
-			// Verify the hit is between the endpoints (not behind us).
+			// Verify the hit is between the endpoints (not behind the listener).
 			float hit_dist_from_source = p_source.distance_to(hit_pos);
 			if (hit_dist_from_source >= total_distance) {
 				break; // Hit is beyond the listener.
@@ -154,19 +148,16 @@ public:
 				break;
 			}
 
-			// Advance the march position past the hit.
+			// Advance the march origin just past the hit toward the listener.
 			Vector3 advance_dir = (to - from).normalized();
-			Vector3 new_pos = hit_pos + advance_dir * p_config.ray_offset;
-			if (forward) {
-				forward_pos = new_pos;
-			} else {
-				backward_pos = new_pos;
-			}
+			march_pos = hit_pos + advance_dir * p_config.ray_offset;
 		}
 
 		result.hit_count = hit_count;
 
-		// sqrt correction for double-counting wall entry/exit faces.
+		// sqrt correction for double-counting wall entry/exit faces. With the
+		// forward-only march, a solid slab is 2 hits and resolves to sqrt(t·t)=t
+		// (one wall = one attenuation), N slabs → 2N hits → tᴺ.
 		if (hit_count > 1 && !result.total_absorption_hit) {
 			accum_low = Math::sqrt(accum_low);
 			accum_mid = Math::sqrt(accum_mid);

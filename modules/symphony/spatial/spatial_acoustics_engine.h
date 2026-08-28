@@ -22,7 +22,8 @@
 struct SpatialParams {
 	float attenuation = 1.0f;        // 0=silent, 1=full (from VoicePool, mirrored for convenience)
 	float occlusion = 0.0f;          // 0=unoccluded, 1=fully occluded
-	float transmission[3] = { 1.0f, 1.0f, 1.0f }; // Low/Mid/High band transmission [0,1]
+	float transmission[3] = { 1.0f, 1.0f, 1.0f }; // Low/Mid/High band transmission [0,1] (EFFECTIVE — volumetric blended in)
+	float material_transmission[3] = { 1.0f, 1.0f, 1.0f }; // Raw material transmission before volumetric blend (Task 18 overlay)
 	float air_cutoff = 20000.0f;     // Air absorption LPF cutoff Hz
 	float reverb_send = 0.0f;        // Reverb send level [0,1]
 	float rt60 = 0.0f;              // Current RT60 estimate for reverb assignment

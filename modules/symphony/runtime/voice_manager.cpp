@@ -388,6 +388,36 @@ Ref<Curve> SymphonyVoicePool::get_slot_attenuation_curve(int p_slot) const {
 	return slot_attenuation_curves[p_slot];
 }
 
+Vector3 SymphonyVoicePool::get_slot_position(int p_slot) const {
+	ERR_FAIL_INDEX_V(p_slot, pool_size, Vector3());
+	return slots[p_slot].position;
+}
+
+float SymphonyVoicePool::get_slot_attenuation(int p_slot) const {
+	ERR_FAIL_INDEX_V(p_slot, pool_size, 1.0f);
+	return slots[p_slot].attenuation_volume;
+}
+
+float SymphonyVoicePool::get_slot_max_distance(int p_slot) const {
+	ERR_FAIL_INDEX_V(p_slot, pool_size, 0.0f);
+	return slots[p_slot].max_distance;
+}
+
+bool SymphonyVoicePool::is_slot_audible(int p_slot) const {
+	ERR_FAIL_INDEX_V(p_slot, pool_size, false);
+	const VoiceSlot &s = slots[p_slot];
+	switch (s.state) {
+		case VOICE_FREE:
+		case VOICE_VIRTUAL:
+		case VOICE_VIRTUALIZING:
+		case VOICE_STOPPED:
+			return false;
+		default:
+			break;
+	}
+	return s.attenuation_volume > 0.0001f;
+}
+
 void SymphonyVoicePool::set_slot_start_delay(int p_slot, float p_delay_s) {
 	ERR_FAIL_INDEX(p_slot, pool_size);
 	slots[p_slot].pending_start_delay_s = MAX(p_delay_s, 0.0f);

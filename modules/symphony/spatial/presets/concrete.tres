@@ -1,10 +1,17 @@
 [gd_resource type="AcousticMaterial" format=3]
 
+; Retuned for the forward-only ray march (Correctness Plan Phase 2.2): one solid
+; wall now resolves to a single transmission `t` (not the old inflated multi-hit
+; accumulation). Transmission values derive from published sound-transmission-loss
+; (STL) data, τ = 10^(-STL/10), with a low floor of ~0.005 so the occlusion LPF
+; keeps headroom, and low > mid > high (bass passes through walls more easily).
+; FLAGGED FOR LISTENING PASS — see HANDOFF_NOTES.md.
+; Concrete: STL ~50 dB. Very opaque.
 [resource]
 absorption_low = 0.05
 absorption_mid = 0.07
 absorption_high = 0.08
 scattering = 0.05
-transmission_low = 0.015
-transmission_mid = 0.011
-transmission_high = 0.008
+transmission_low = 0.010
+transmission_mid = 0.006
+transmission_high = 0.004
