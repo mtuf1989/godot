@@ -10,19 +10,20 @@
 
 ## TL;DR for the next session
 
-Phases **1–5 of the Correctness Plan are done, committed, and green**. Both mandatory
-TSan gates (after 2.3 and after 5.2) passed with **0 data races**. Resume at **Phase 6
-— Complete the authored surface** (wire the bound-but-unread fields). Then Phase 7
-(new C++ tests), Phase 8 (game-template G7 integration), Phase 9 (final verify + docs).
+Phases **1–6 of the Correctness Plan are done, committed, and green**. Both mandatory
+TSan gates (after 2.3 and after 5.2) passed with **0 data races**. Phase 6 (Complete the
+authored surface) added no concurrent code, so no new TSan gate was required. Resume at
+**Phase 7 — new C++ tests** for the solver-level surface. Then Phase 8 (game-template G7
+integration), Phase 9 (final verify + docs).
 
 Working tree is CLEAN in both repos (all phase work committed). `reports/` and
 `test/addons/symphony_audio/` show as untracked in game-template — pre-existing artifacts,
 not this work.
 
-### Verify you're in a good state before starting Phase 6
+### Verify you're in a good state before starting Phase 7
 ```bash
 cd /Users/luong.pham/Work/godot
-git checkout features/up_symphony && git log --oneline -6   # expect Phase 1..5 commits on top
+git checkout features/up_symphony && git log --oneline -7   # expect Phase 1..6 commits on top
 scons platform=macos target=editor arch=arm64 tests=yes module_raycast_enabled=no -j$(sysctl -n hw.ncpu)
 bin/godot.macos.editor.arm64 --headless --test --source-file='*symphony*'   # expect 126/126, 195348 assertions
 ```
@@ -67,6 +68,7 @@ squashed. Cross-repo work IS in scope (game-template too).
 | `dd52c6232d` | 3 — Correctness bugs | godot |
 | `13e82360a1` | 4 — Physical modelling | godot |
 | `e8b1e68f53` | 5 — Budget/perf/hygiene | godot |
+| `761fff69d3` | 6 — Complete the authored surface | godot |
 
 **Test baseline:** 126 C++ cases / 195,348 assertions, 0 failed. game-template GdUnit4 6/6.
 
@@ -176,6 +178,41 @@ or the audio-thread no-alloc guarantee. Pick up in a perf pass if desired.
 ---
 
 ## ▶ NEXT: Phase 6 — Complete the authored surface
+## ✅ DONE: Phase 6 — Complete the authored surface
+
+All six bound-but-unread fields are now wired, plus the two structural items. Build green
+(126/126, 195,348 assertions). No concurrent code added → no new TSan gate. What landed
+(all in `modules/symphony/spatial`):
+
+| Field / target | How it was wired |
+|---|---|
+| `AcousticRoom3D::material`, `reverb_preset_override` | `_solve_room_for_emitter` resolves the emitter's authored room (reusing the `last_src_room_id` membership cache, else one `find_room_for_point`). If `reverb_preset_override` (wins) or `material` is set, RT60 is derived analytically from the room's half-extent **bounds** volume+surface and the material's mean absorption (Sabine < `eyring_threshold`, Eyring above), `damping = absorption_high`, `reverb_send = openness_to_reverb_send(0)`; returns 0 rays. Routed through `target` → `_smooth_params` → publish, so it's smoothed like the estimate. |
+| `AcousticRoom3D::shoebox_dimensions` / `has_authored_shoebox()` | New `SpatialParams::shoebox_dimensions` (Vector3) is set from the room each room-solve (zero when unauthored). New bound accessor `get_emitter_shoebox_dimensions(slot)` returns it (from `target`, not smoothed — dims are discrete). Per-slot `SymphonyEarlyReflections` instantiation remains the game-template side (Phase 8.4). |
+| `AcousticPortal3D::transmission_override` | New `_apply_closed_portal_transmission(e, src_room, lis_room)` — on an **unreachable** path, scans the portal registry for a CLOSED portal that `connects(src, lis)`; folds its `transmission_override` bands (or default `0.05/0.03/0.015`, or `0` for total-absorption) **multiplicatively** into `target.transmission[]` and raises `target.occlusion`. |
+| `AcousticMaterial::total_absorption_transition_speed` | New `EmitterState::smoothing_speed_override`. The occlusion solve sets it from `result.total_absorption_speed` when `total_absorption_hit`, else 0. `_smooth_params` uses `a = 1 - exp(-speed·dt)` when the override > 0, else the global fps-independent alpha. |
+| `AcousticPortal3D::closest_point_on_aperture` | `PortalHop` gained `apparent` + `has_apparent`. The engine sets `hop.apparent = portal->closest_point_on_aperture(listener_position)` per hop; `PortalRouter::apparent_position` returns the last hop's `apparent` when set (else `center`). |
+| `AcousticMaterial::scattering` | Left unused; documented **RESERVED** for future scattered/late-reflection work in `acoustic_material.h`. |
+
+**Also landed:**
+- **`1/aperture_area` folded into the portal edge weight** in BOTH `_rebuild_portal_graph_if_needed()`
+  and `_refresh_portal_edge_geometry()`. `PortalEdge` gained an `aperture_area` field; `PortalGraph::add_edge`
+  takes it. Penalty = `MAX(PORTAL_REF_AREA / area, 1)` with `PORTAL_REF_AREA = 2.0` (matches
+  `PortalRouter::path_gain`'s default ref): a wide arch keeps its pure distance cost, a small door costs more.
+- **`PortalPathSolver` held by pointer.** `spatial_acoustics_engine.h` now holds `PortalPathSolver *portal_solver`;
+  `memnew(DijkstraPathSolver)` in the ctor, `memdelete` in the dtor, call site is `portal_solver->solve(...)`.
+  A baked-probe backend can now substitute without a header edit.
+
+**Phase 6 notes for later phases:**
+- `_solve_room_for_emitter` writes `e.last_src_node = -1` on a fresh room resolve — harmless: the portal pass
+  re-derives the node index when `< 0`. It shares `last_src_room_id` with the portal pass's membership cache.
+- The authored-room fast path runs only for **scheduled** emitters (room solve is in the scheduled loop);
+  unscheduled emitters keep last frame's smoothed values, same as the estimate path. Fine.
+- `SpatialParams` grew by one Vector3 (shoebox dims); the `static_assert(<= 256)` still holds (compiles).
+- **Phase 7 test hooks now available:** the closed-portal fallback, aperture-weighted routing, and the
+  smoothing-speed override are all reachable via the pure `compute<>`/router math or the `Node3D`-based
+  registry (rooms/portals are headless-safe). `get_emitter_shoebox_dimensions` is bound for GdUnit4.
+
+<details><summary>Original Phase 6 plan (for reference)</summary>
 
 Everything below is bound, inspector-visible, and currently read by NOTHING. Wire each.
 (See `Spatial_Correctness_Plan.md` §"Phase 6" for the authoritative table.)
@@ -215,6 +252,8 @@ Everything below is bound, inspector-visible, and currently read by NOTHING. Wir
   but check if you add fields.
 - Room-material override should still be smoothed like the estimate (goes through `target` →
   `_smooth_params` → publish).
+
+</details>
 
 ---
 

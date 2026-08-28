@@ -33,6 +33,12 @@ private:
 	float absorption_high = 0.30f;
 
 	// Scattering: how diffusely the surface reflects. 0=specular, 1=fully diffuse.
+	// RESERVED (Phase 6, Task 6): authored and inspector-visible, but deliberately
+	// unused by the current engine — no diffuse-reflection path exists yet. It is
+	// kept in the material model so future scattered/late-reflection work (e.g. a
+	// diffuse-rain or ray-traced reflection stage) can consume it without a
+	// resource-format migration. Do NOT wire it into occlusion/RT60; those use
+	// absorption + transmission only.
 	float scattering = 0.05f;
 
 	// Transmission: fraction of energy passing through per band [0,1].

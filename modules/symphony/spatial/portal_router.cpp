@@ -7,7 +7,11 @@ Vector3 PortalRouter::apparent_position(const Vector3 &p_true_source, const Vect
 		return p_true_source; // same room — hear the true position
 	}
 	// The last hop is the portal nearest the listener; the sound arrives from it.
-	return p_hops[p_hops.size() - 1].center;
+	// For a wide aperture, point at the nearest point on the opening (Phase 6,
+	// Task 5) rather than its geometric centre so the panner tracks the doorway
+	// edge the listener is actually beside.
+	const PortalHop &last = p_hops[p_hops.size() - 1];
+	return last.has_apparent ? last.apparent : last.center;
 }
 
 float PortalRouter::path_gain(const Vector3 &p_true_source, const Vector3 &p_listener, const LocalVector<PortalHop> &p_hops, float p_reference_area) {

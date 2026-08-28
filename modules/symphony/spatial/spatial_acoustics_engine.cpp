@@ -12,6 +12,9 @@ SpatialAcousticsEngine *SpatialAcousticsEngine::singleton = nullptr;
 
 SpatialAcousticsEngine::SpatialAcousticsEngine() {
 	singleton = this;
+	// Phase 6: default portal backend. Held via the abstract PortalPathSolver*
+	// so a baked-probe backend can substitute without a header edit.
+	portal_solver = memnew(DijkstraPathSolver);
 	smooth_alpha = GLOBAL_DEF("audio/symphony/spatial_smooth_alpha", DEFAULT_SMOOTH_ALPHA);
 	ProjectSettings::get_singleton()->set_custom_property_info(PropertyInfo(
 			Variant::FLOAT, "audio/symphony/spatial_smooth_alpha", PROPERTY_HINT_RANGE, "0.01,0.99,0.01"));
@@ -42,6 +45,10 @@ SpatialAcousticsEngine::SpatialAcousticsEngine() {
 }
 
 SpatialAcousticsEngine::~SpatialAcousticsEngine() {
+	if (portal_solver != nullptr) {
+		memdelete(portal_solver);
+		portal_solver = nullptr;
+	}
 	singleton = nullptr;
 }
 
@@ -315,9 +322,18 @@ void SpatialAcousticsEngine::_rebuild_portal_graph_if_needed() {
 			continue;
 		}
 		const Vector3 center = portal->get_world_center();
-		const float weight = ra->get_global_transform().origin.distance_to(center) +
+		const float aperture_area = portal->get_aperture_area();
+		// Distance proxy through the portal centre, penalized by aperture size so
+		// Dijkstra prefers a wide arch over a small side door between the same
+		// room pair (Phase 6, Task 7). The penalty is (ref_area / area) clamped to
+		// >= 1: a wide opening (area >= ref) keeps its pure distance cost; a small
+		// opening costs more. ref_area matches PortalRouter::path_gain's default.
+		const float dist = ra->get_global_transform().origin.distance_to(center) +
 				center.distance_to(rb->get_global_transform().origin);
-		portal_graph.add_edge(*na, *nb, MAX(weight, 0.01f), portal->is_open(), center, i);
+		const float PORTAL_REF_AREA = 2.0f;
+		const float area_penalty = MAX(PORTAL_REF_AREA / MAX(aperture_area, 0.01f), 1.0f);
+		const float weight = dist * area_penalty;
+		portal_graph.add_edge(*na, *nb, MAX(weight, 0.01f), portal->is_open(), center, i, aperture_area);
 	}
 
 	// Portal state change invalidates cached paths.
@@ -350,9 +366,15 @@ void SpatialAcousticsEngine::_refresh_portal_edge_geometry() {
 		}
 		const Vector3 center = portal->get_world_center();
 		edge.world_center = center;
-		edge.weight = MAX(ra->get_global_transform().origin.distance_to(center) +
-						center.distance_to(rb->get_global_transform().origin),
-				0.01f);
+		// Keep aperture area current (cheap) and apply the same size penalty as
+		// the build path (Phase 6, Task 7) so a moving portal's weight stays
+		// consistent with a rebuilt one.
+		edge.aperture_area = MAX(portal->get_aperture_area(), 0.01f);
+		const float dist = ra->get_global_transform().origin.distance_to(center) +
+				center.distance_to(rb->get_global_transform().origin);
+		const float PORTAL_REF_AREA = 2.0f;
+		const float area_penalty = MAX(PORTAL_REF_AREA / edge.aperture_area, 1.0f);
+		edge.weight = MAX(dist * area_penalty, 0.01f);
 	}
 }
 
@@ -404,13 +426,19 @@ void SpatialAcousticsEngine::_solve_portals_for_emitter(int p_emitter_idx) {
 	// Solve (or fetch cached) the room-to-room path.
 	PortalPath path;
 	if (!portal_path_cache.get(src_node, lis_node, path)) {
-		path = portal_solver.solve(portal_graph, src_node, lis_node);
+		path = portal_solver->solve(portal_graph, src_node, lis_node);
 		portal_path_cache.put(src_node, lis_node, path);
 	}
 
-	// Unreachable (all doors closed) or same-room short-circuit → keep true
-	// position + unity gain; the occlusion/transmission path handles any leak.
+	// Unreachable (all connecting doors closed). Phase 6 (Task 3): if a CLOSED
+	// portal directly connects the source and listener rooms, sound still leaks
+	// through it — governed by its transmission_override material (or a small
+	// default when unauthored). This is Task 15's "closed portals fall back to
+	// transmission-only": keep the true position + unity portal gain (no
+	// diffraction path), but fold the closed portal's transmission into the
+	// emitter's bands so the leak is audibly filtered by the door material.
 	if (!path.reachable || path.edge_ids.is_empty()) {
+		_apply_closed_portal_transmission(e, src_room, lis_room);
 		return;
 	}
 
@@ -426,6 +454,12 @@ void SpatialAcousticsEngine::_solve_portals_for_emitter(int p_emitter_idx) {
 		hop.center = portal->get_world_center();
 		hop.normal = portal->get_world_normal();
 		hop.aperture_area = portal->get_aperture_area();
+		// Phase 6 (Task 5): nearest point on the finite aperture to the listener,
+		// so a wide arch's apparent position tracks the edge beside the listener
+		// rather than the geometric centre. Cheap (one affine_inverse) and only
+		// on the solved path's hops.
+		hop.apparent = portal->closest_point_on_aperture(listener_position);
+		hop.has_apparent = true;
 		hops.push_back(hop);
 	}
 	if (hops.is_empty()) {
@@ -450,7 +484,52 @@ void SpatialAcousticsEngine::_solve_portals_for_emitter(int p_emitter_idx) {
 	e.target.air_cutoff = MIN(e.air_cutoff_base, diff_cut);
 }
 
-// --- Occlusion ---
+void SpatialAcousticsEngine::_apply_closed_portal_transmission(EmitterState &p_emitter, AcousticRoom3D *p_src_room, AcousticRoom3D *p_lis_room) {
+	if (p_src_room == nullptr || p_lis_room == nullptr) {
+		return;
+	}
+	// Find a CLOSED portal directly connecting the two rooms. (An OPEN portal
+	// here would have made the path reachable, so we only reach this fallback
+	// when the direct connector — if any — is closed.)
+	AcousticPortal3D *closed = nullptr;
+	const int portal_count = AcousticPortal3D::get_portal_count();
+	for (int i = 0; i < portal_count; i++) {
+		AcousticPortal3D *portal = AcousticPortal3D::get_portal(i);
+		if (portal == nullptr || portal->is_open()) {
+			continue;
+		}
+		if (portal->connects(p_src_room, p_lis_room)) {
+			closed = portal;
+			break;
+		}
+	}
+	if (closed == nullptr) {
+		return; // no direct closed connector — nothing leaks through a portal
+	}
+
+	// Transmission through the closed door. Authored override wins; otherwise a
+	// small default (a shut door is a strong but not total attenuator).
+	float t_low = 0.05f, t_mid = 0.03f, t_high = 0.015f;
+	Ref<AcousticMaterial> ov = closed->get_transmission_override();
+	if (ov.is_valid()) {
+		if (ov->get_total_absorption()) {
+			t_low = t_mid = t_high = 0.0f;
+		} else {
+			t_low = ov->get_transmission_low();
+			t_mid = ov->get_transmission_mid();
+			t_high = ov->get_transmission_high();
+		}
+	}
+
+	// Fold into the emitter's bands multiplicatively so it stacks with any wall
+	// transmission the occlusion solve already found (both attenuate the leak).
+	// Keep material_transmission[] as the raw material value for the overlay.
+	p_emitter.target.transmission[0] = CLAMP(p_emitter.target.transmission[0] * t_low, 0.0f, 1.0f);
+	p_emitter.target.transmission[1] = CLAMP(p_emitter.target.transmission[1] * t_mid, 0.0f, 1.0f);
+	p_emitter.target.transmission[2] = CLAMP(p_emitter.target.transmission[2] * t_high, 0.0f, 1.0f);
+	const float mean_t = (p_emitter.target.transmission[0] + p_emitter.target.transmission[1] + p_emitter.target.transmission[2]) / 3.0f;
+	p_emitter.target.occlusion = MAX(p_emitter.target.occlusion, 1.0f - mean_t);
+}
 
 int SpatialAcousticsEngine::_solve_occlusion_for_emitter(int p_emitter_idx, PhysicsDirectSpaceState3D *p_space) {
 	EmitterState &e = emitters[p_emitter_idx];
@@ -477,6 +556,16 @@ int SpatialAcousticsEngine::_solve_occlusion_for_emitter(int p_emitter_idx, Phys
 	e.target.transmission[1] = result.transmission[1];
 	e.target.transmission[2] = result.transmission[2];
 
+	// Phase 6 (Task 4): when a total-absorption material is on the direct path,
+	// its total_absorption_transition_speed governs how fast this emitter's
+	// occlusion/transmission settle (a fast-sealing bulkhead vs. a slow blast
+	// door) instead of the global smooth_alpha. Cleared otherwise so the emitter
+	// reverts to the global smoothing once the blocker is gone.
+	if (result.total_absorption_hit) {
+		e.smoothing_speed_override = result.total_absorption_speed;
+	} else {
+		e.smoothing_speed_override = 0.0f;
+	}
 	// Overall occlusion scalar: use graduated volumetric occlusion for finite
 	// sized sources (Task 12), otherwise the binary direct-path occlusion.
 	if (volumetric_occlusion_enabled && e.source_radius >= volumetric_config.min_radius) {
@@ -524,6 +613,75 @@ int SpatialAcousticsEngine::_solve_occlusion_for_emitter(int p_emitter_idx, Phys
 
 int SpatialAcousticsEngine::_solve_room_for_emitter(int p_emitter_idx, PhysicsDirectSpaceState3D *p_space) {
 	EmitterState &e = emitters[p_emitter_idx];
+
+	// Phase 6 (Tasks 1 & 2): resolve the emitter's authored AcousticRoom3D up
+	// front. Reuse the membership cache (last_src_room_id) that the portal pass
+	// maintains — most emitters stay put, so this is a single contains_point in
+	// the common case, else one O(#rooms) scan. The result drives:
+	//   • the authored-overrides-estimate reverb material (Task 1)
+	//   • the authored shoebox dimensions published to the game layer (Task 2)
+	AcousticRoom3D *authored_room = nullptr;
+	if (e.last_src_room_id != 0) {
+		AcousticRoom3D *cached_room = Object::cast_to<AcousticRoom3D>(ObjectDB::get_instance(ObjectID(e.last_src_room_id)));
+		if (cached_room != nullptr && cached_room->contains_point(e.source_position)) {
+			authored_room = cached_room;
+		}
+	}
+	if (authored_room == nullptr) {
+		authored_room = AcousticRoom3D::find_room_for_point(e.source_position);
+		e.last_src_room_id = (authored_room != nullptr) ? (uint64_t)authored_room->get_instance_id() : 0;
+		e.last_src_node = -1; // node index is only meaningful once the graph is built
+	}
+
+	// Publish authored shoebox dims (zero when unauthored → game layer falls back
+	// to the Task 9 estimate for its per-slot SymphonyEarlyReflections).
+	e.target.shoebox_dimensions = (authored_room != nullptr && authored_room->has_authored_shoebox())
+			? authored_room->get_shoebox_dimensions()
+			: Vector3();
+
+	// Authored-overrides-estimate (Task 1): if the room carries an authored
+	// reverb material (reverb_preset_override wins over the surface material),
+	// derive RT60 / damping / reverb send analytically from the room bounds +
+	// material absorption instead of casting the ray fan. Still routed through
+	// `target` → _smooth_params → publish so it's smoothed like the estimate.
+	if (authored_room != nullptr) {
+		Ref<AcousticMaterial> rev_mat = authored_room->get_reverb_preset_override();
+		if (rev_mat.is_null()) {
+			rev_mat = authored_room->get_material();
+		}
+		if (rev_mat.is_valid()) {
+			// Room box from half-extent bounds: full dims w,h,d.
+			const Vector3 b = authored_room->get_bounds();
+			const float w = 2.0f * MAX(b.x, 0.01f);
+			const float h = 2.0f * MAX(b.y, 0.01f);
+			const float d = 2.0f * MAX(b.z, 0.01f);
+			const float volume = w * h * d;
+			const float surface = 2.0f * (w * h + w * d + h * d);
+
+			float alpha = CLAMP(rev_mat->get_mean_absorption(), 0.001f, 1.0f);
+			// Sabine (low α) / Eyring (high α) — mirror RoomEstimator's model.
+			float rt60 = 0.0f;
+			const float SABINE_CONST = 0.161f;
+			if (alpha >= room_config.eyring_threshold) {
+				float one_minus = MAX(1.0f - alpha, 0.001f);
+				float denom = -surface * Math::log(one_minus);
+				if (denom > 0.001f) {
+					rt60 = SABINE_CONST * volume / denom;
+				}
+			} else {
+				float denom = surface * alpha;
+				if (denom > 0.001f) {
+					rt60 = SABINE_CONST * volume / denom;
+				}
+			}
+			e.target.rt60 = CLAMP(rt60, 0.0f, 10.0f);
+			e.target.damping = CLAMP(rev_mat->get_absorption_high(), 0.0f, 1.0f);
+			e.target.room_volume = volume;
+			// Enclosed authored room → full reverb send (openness 0).
+			e.target.reverb_send = RoomEstimator::openness_to_reverb_send(0.0f);
+			return 0; // authored — no rays issued
+		}
+	}
 
 	// Check the probe cache first — emitters in the same cell share room data.
 	ProbeCache::RoomProbeResult cached;
@@ -621,7 +779,18 @@ void SpatialAcousticsEngine::_smooth_params(int p_emitter_idx, float p_delta) {
 	// independent coefficient (Phase 3.5): effective_a = 1 - (1-alpha)^(dt*60),
 	// so the settle time is the same at 30/60/144 fps. smooth_alpha is defined
 	// as the per-frame coefficient at 60 fps.
-	const float a = 1.0f - Math::pow(1.0f - smooth_alpha, p_delta * 60.0f);
+	//
+	// Phase 6 (Task 4): when the occlusion solve hit a total-absorption material,
+	// that material's transition speed (units/sec) overrides the global alpha —
+	// a = 1 - exp(-speed * dt) — so a fast-sealing door snaps and a slow one
+	// eases, independent of frame rate.
+	float a;
+	if (e.smoothing_speed_override > 0.0f) {
+		a = 1.0f - Math::exp(-e.smoothing_speed_override * p_delta);
+	} else {
+		a = 1.0f - Math::pow(1.0f - smooth_alpha, p_delta * 60.0f);
+	}
+	a = CLAMP(a, 0.0f, 1.0f);
 	const float b = 1.0f - a;
 
 	e.smoothed.occlusion = a * e.target.occlusion + b * e.smoothed.occlusion;
@@ -795,6 +964,18 @@ float SpatialAcousticsEngine::get_emitter_portal_gain(int p_voice_slot) const {
 	// Per-hop aperture/incidence gain [0,1]. Its own layer — the GDScript layer
 	// applies it multiplicatively on top of VoicePool attenuation (no double count).
 	return emitters[*idx_ptr].smoothed.portal_gain;
+}
+
+Vector3 SpatialAcousticsEngine::get_emitter_shoebox_dimensions(int p_voice_slot) const {
+	const int *idx_ptr = slot_to_emitter.getptr(p_voice_slot);
+	if (!idx_ptr) {
+		return Vector3();
+	}
+	// Authored room shoebox dims (W,H,D m), or zero when unauthored. The
+	// game-template feeds this to a per-slot SymphonyEarlyReflections, falling
+	// back to the Task 9 estimate on zero (Phase 8.4). Not smoothed — dimensions
+	// are a discrete authored property, not a continuously varying signal.
+	return emitters[*idx_ptr].target.shoebox_dimensions;
 }
 
 // --- Reverb pool accessors (Task 10) ---
@@ -980,4 +1161,5 @@ void SpatialAcousticsEngine::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_portal_graph_edge_count"), &SpatialAcousticsEngine::get_portal_graph_edge_count);
 	ClassDB::bind_method(D_METHOD("get_emitter_apparent_position", "voice_slot"), &SpatialAcousticsEngine::get_emitter_apparent_position);
 	ClassDB::bind_method(D_METHOD("get_emitter_portal_gain", "voice_slot"), &SpatialAcousticsEngine::get_emitter_portal_gain);
+	ClassDB::bind_method(D_METHOD("get_emitter_shoebox_dimensions", "voice_slot"), &SpatialAcousticsEngine::get_emitter_shoebox_dimensions);
 }

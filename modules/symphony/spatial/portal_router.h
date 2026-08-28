@@ -18,6 +18,12 @@ struct PortalHop {
 	Vector3 center;
 	Vector3 normal; // world-space aperture normal (unit)
 	float aperture_area = 1.0f; // m²
+	// Point on the finite aperture rectangle nearest the listener (Phase 6, Task 5).
+	// For apparent-position on WIDE apertures the panner should point at the
+	// nearest edge of a big arch, not its centre. Defaults to `center` when the
+	// engine does not resolve a distinct closest point.
+	Vector3 apparent = Vector3();
+	bool has_apparent = false;
 };
 
 class PortalRouter {

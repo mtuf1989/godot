@@ -36,6 +36,10 @@ struct SpatialParams {
 	                                 // Separate from `attenuation` (which VoicePool owns) so the
 	                                 // GDScript layer applies it as its own gain layer — no double count.
 	Vector3 apparent_position;       // May differ from true position (portal redirect)
+	// Authored shoebox dimensions (W,H,D m) from the emitter's AcousticRoom3D, or
+	// zero when unauthored (the game-template per-slot SymphonyEarlyReflections
+	// then falls back to the Task 9 ray-fan estimate). Phase 6 wiring (Task 16).
+	Vector3 shoebox_dimensions;
 };
 
 static_assert(sizeof(SpatialParams) <= 256, "SpatialParams must fit in SeqLock");
@@ -75,6 +79,13 @@ private:
 		// pair changes or the portal topology epoch bumps.
 		uint64_t last_src_room_id = 0;
 		int last_src_node = -1;
+
+		// Phase 6 (Task 4) — per-emitter smoothing-speed override. When the
+		// occlusion solve hits a total_absorption material, the material's
+		// total_absorption_transition_speed governs how fast this emitter's
+		// transmission/occlusion settle (a fast-sealing door vs. a slow one),
+		// instead of the global smooth_alpha. <= 0 means "use the global alpha".
+		float smoothing_speed_override = 0.0f;
 
 		// Target values (set by solvers before smoothing)
 		SpatialParams target;
@@ -143,7 +154,10 @@ private:
 	// room or portal epoch changes. Paths cached per room-pair, invalidated on
 	// portal state change.
 	PortalGraph portal_graph;
-	DijkstraPathSolver portal_solver;
+	// Held by pointer to the ABSTRACT solver (Phase 6) so a baked-probe backend
+	// can substitute without a header edit. Constructed as DijkstraPathSolver in
+	// the ctor, freed in the dtor.
+	PortalPathSolver *portal_solver = nullptr;
 	PortalPathCache portal_path_cache;
 	bool portal_propagation_enabled = true;
 	uint64_t portal_graph_epoch = 0; // last (room_reg_epoch ^ portal_state_epoch) the graph was built for
@@ -164,6 +178,11 @@ private:
 	uint64_t portal_transform_epoch = 0; // last transform epoch geometry was refreshed for
 	// Resolve portal routing for one emitter and fold results into its target.
 	void _solve_portals_for_emitter(int p_emitter_idx);
+	// Phase 6 (Task 3): when the src↔listener rooms are only connected by a
+	// CLOSED portal, fold that portal's transmission_override (or a small
+	// default) into the emitter's transmission bands so the leak is filtered by
+	// the door material. No-op when no closed portal directly connects them.
+	void _apply_closed_portal_transmission(EmitterState &p_emitter, AcousticRoom3D *p_src_room, AcousticRoom3D *p_lis_room);
 
 	// Listener position (updated from AudioManager)
 	Vector3 listener_position;
@@ -315,6 +334,10 @@ public:
 	// Per-emitter portal routing outputs (smoothed), for the GDScript layer.
 	Vector3 get_emitter_apparent_position(int p_voice_slot) const;
 	float get_emitter_portal_gain(int p_voice_slot) const;
+	// Authored shoebox dims (W,H,D m) for the emitter's room, or zero when
+	// unauthored. The game-template per-slot SymphonyEarlyReflections uses this
+	// (else the Task 9 estimate) — Phase 6 C++ wiring for Task 16 (Phase 8.4).
+	Vector3 get_emitter_shoebox_dimensions(int p_voice_slot) const;
 
 	// --- Graph wrapper (GDScript-accessible) ---
 	// Wraps a plain AudioStream in a spatial-processing Symphony graph.

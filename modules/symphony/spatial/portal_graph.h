@@ -23,6 +23,10 @@ struct PortalEdge {
 	float weight = 1.0f; // traversal cost (distance-based); lower = cheaper
 	bool open = true; // closed edges are skipped by the solver
 	Vector3 world_center; // portal centre (for apparent-position routing, Task 15)
+	float aperture_area = 1.0f; // m² (Phase 6): folded as 1/area into `weight` so
+	                            // Dijkstra prefers a wide arch over a small door
+	                            // between the same room pair; also carried to the
+	                            // hop for closest-point apparent-position.
 	int portal_id = -1; // index back into the source portal registry (routing)
 
 	int other(int p_room) const {
@@ -57,7 +61,7 @@ public:
 	}
 
 	// Add an undirected weighted edge. Returns the edge index.
-	int add_edge(int p_a, int p_b, float p_weight, bool p_open, const Vector3 &p_center = Vector3(), int p_portal_id = -1);
+	int add_edge(int p_a, int p_b, float p_weight, bool p_open, const Vector3 &p_center = Vector3(), int p_portal_id = -1, float p_aperture_area = 1.0f);
 };
 
 // A solved path: the ordered list of edge indices traversed from a start room to

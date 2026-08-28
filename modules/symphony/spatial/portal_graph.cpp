@@ -1,6 +1,6 @@
 #include "portal_graph.h"
 
-int PortalGraph::add_edge(int p_a, int p_b, float p_weight, bool p_open, const Vector3 &p_center, int p_portal_id) {
+int PortalGraph::add_edge(int p_a, int p_b, float p_weight, bool p_open, const Vector3 &p_center, int p_portal_id, float p_aperture_area) {
 	if (p_a < 0 || p_b < 0 || p_a >= node_count || p_b >= node_count) {
 		return -1;
 	}
@@ -10,6 +10,7 @@ int PortalGraph::add_edge(int p_a, int p_b, float p_weight, bool p_open, const V
 	e.weight = MAX(p_weight, 0.0f);
 	e.open = p_open;
 	e.world_center = p_center;
+	e.aperture_area = MAX(p_aperture_area, 0.01f);
 	e.portal_id = p_portal_id;
 	int idx = (int)edges.size();
 	edges.push_back(e);
