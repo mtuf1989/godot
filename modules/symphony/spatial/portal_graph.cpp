@@ -108,16 +108,41 @@ PortalPath DijkstraPathSolver::solve(const PortalGraph &p_graph, int p_start_roo
 }
 
 bool PortalPathCache::get(int p_start, int p_goal, PortalPath &r_path) const {
-	const PortalPath *found = cache.getptr(_key(p_start, p_goal));
+	const Entry *found = cache.getptr(_key(p_start, p_goal));
 	if (found) {
-		r_path = *found;
+		r_path = found->path;
+		// Touch LRU tick (get is const; cast to update bookkeeping only).
+		PortalPathCache *self = const_cast<PortalPathCache *>(this);
+		self->use_tick++;
+		self->cache[_key(p_start, p_goal)].last_use = self->use_tick;
 		return true;
 	}
 	return false;
 }
 
 void PortalPathCache::put(int p_start, int p_goal, const PortalPath &p_path) {
-	cache[_key(p_start, p_goal)] = p_path;
+	const uint64_t key = _key(p_start, p_goal);
+	use_tick++;
+	if (!cache.has(key) && (int)cache.size() >= MAX_ENTRIES) {
+		// Evict the least-recently-used entry.
+		uint64_t oldest_key = 0;
+		uint64_t oldest_use = UINT64_MAX;
+		bool found = false;
+		for (const KeyValue<uint64_t, Entry> &kv : cache) {
+			if (kv.value.last_use < oldest_use) {
+				oldest_use = kv.value.last_use;
+				oldest_key = kv.key;
+				found = true;
+			}
+		}
+		if (found) {
+			cache.erase(oldest_key);
+		}
+	}
+	Entry e;
+	e.path = p_path;
+	e.last_use = use_tick;
+	cache[key] = e;
 }
 
 bool PortalPathCache::check_epoch(uint64_t p_epoch) {

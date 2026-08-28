@@ -4,6 +4,7 @@
 
 LocalVector<AcousticRoom3D *> AcousticRoom3D::rooms;
 uint64_t AcousticRoom3D::registry_epoch = 1;
+uint64_t AcousticRoom3D::transform_epoch = 1;
 
 AcousticRoom3D::AcousticRoom3D() {
 }
@@ -23,8 +24,9 @@ void AcousticRoom3D::_notification(int p_what) {
 			_unregister();
 		} break;
 		case NOTIFICATION_TRANSFORM_CHANGED: {
-			// Movement invalidates any cached membership resolved against old bounds.
-			registry_epoch++;
+			// Movement only — refresh edge weights / centres in place; the path
+			// cache stays valid (Phase 5.3). Topology is unchanged.
+			transform_epoch++;
 		} break;
 	}
 }

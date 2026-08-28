@@ -154,12 +154,28 @@ void SpatialAcousticsEngine::update(float p_delta) {
 		// Accumulate time since last occlusion solve.
 		emitters[i].last_update_time += p_delta;
 
+		// Phase 5.1: predict this emitter's ray cost for the unified budget.
+		//   occlusion: up to occlusion_config.max_hits rays on the forward march
+		//   room:      a full ray fan ONLY if a cache miss is predicted
+		//   volumetric: 2 rays per volume sample (finite-radius sources only)
+		int est_cost = 0;
+		if (occlusion_enabled) {
+			est_cost += occlusion_config.max_hits;
+			if (volumetric_occlusion_enabled && emitters[i].source_radius >= volumetric_config.min_radius) {
+				est_cost += 2 * volumetric_config.sample_count;
+			}
+		}
+		if (room_estimation_enabled && !probe_cache.would_hit(emitters[i].source_position)) {
+			est_cost += room_config.ray_count;
+		}
+
 		ProbeScheduler::EmitterInfo &info = emitter_infos[info_count];
 		info.emitter_index = i;
 		info.distance_sq = emitters[i].source_position.distance_squared_to(listener_position);
 		info.importance = importance;
 		info.audible = audible;
 		info.last_update_time = emitters[i].last_update_time;
+		info.estimated_cost = MAX(est_cost, 1);
 		info_count++;
 	}
 
@@ -168,26 +184,26 @@ void SpatialAcousticsEngine::update(float p_delta) {
 	if (space) {
 		scheduler.schedule(emitter_infos, info_count, p_delta, scheduled_emitters);
 
-		// Budget-scale the volumetric sample count: split the remaining ray
-		// budget across the scheduled emitters (each volumetric sample costs up
-		// to 2 rays), clamped to [2, configured max]. This keeps volumetric
-		// occlusion within the same per-frame ray ceiling as the direct solves.
-		int scheduled = MAX(scheduled_emitters.size(), 1);
-		int rays_left = MAX(scheduler.get_ray_budget() - scheduler.get_metrics().rays_issued, 0);
-		int per_emitter_rays = rays_left / scheduled;
-		int budget_samples = per_emitter_rays / 2; // 2 rays per sample
-		_volumetric_samples_this_frame = CLAMP(budget_samples, 2, volumetric_config.sample_count);
+		// Phase 5.1: volumetric sample count comes straight from config now (the
+		// scheduler already billed for it in estimated_cost); the old
+		// budget-division derivation is gone.
+		_volumetric_samples_this_frame = CLAMP(volumetric_config.sample_count, 2, 128);
+
+		// Count the rays the solvers actually issue this frame so the scheduler
+		// can correct its estimate next frame (report_actual_rays).
+		int actual_rays = 0;
 
 		for (int k = 0; k < scheduled_emitters.size(); k++) {
 			int emitter_idx = scheduled_emitters[k];
 			if (occlusion_enabled) {
-				_solve_occlusion_for_emitter(emitter_idx, space);
+				actual_rays += _solve_occlusion_for_emitter(emitter_idx, space);
 			}
 			if (room_estimation_enabled) {
-				_solve_room_for_emitter(emitter_idx, space);
+				actual_rays += _solve_room_for_emitter(emitter_idx, space);
 			}
 			emitters[emitter_idx].last_update_time = 0.0f; // Reset timer after solve.
 		}
+		scheduler.report_actual_rays(actual_rays);
 	}
 
 	// Portal propagation (Task 15): resolve room-to-room paths and fold apparent
@@ -197,6 +213,16 @@ void SpatialAcousticsEngine::update(float p_delta) {
 	if (portal_propagation_enabled) {
 		_rebuild_portal_graph_if_needed();
 		if (portal_graph.node_count > 0) {
+			// Phase 5.2: resolve the listener's room ONCE per frame (was redone
+			// per emitter). Cached in frame_listener_room/_node for the solve.
+			frame_listener_room = AcousticRoom3D::find_room_for_point(listener_position);
+			frame_listener_node = -1;
+			if (frame_listener_room != nullptr) {
+				int *n = _room_ptr_to_node.getptr(frame_listener_room->get_instance_id());
+				if (n != nullptr) {
+					frame_listener_node = *n;
+				}
+			}
 			for (int i = 0; i < MAX_EMITTERS; i++) {
 				if (emitters[i].active) {
 					_solve_portals_for_emitter(i);
@@ -243,13 +269,20 @@ void SpatialAcousticsEngine::_update_reverb_pool(float p_delta) {
 // --- Portal propagation (Task 15) ---
 
 void SpatialAcousticsEngine::_rebuild_portal_graph_if_needed() {
-	// Combine the room + portal epochs into one signature. Any add/remove/move/
-	// open/close bumps one of them, triggering a rebuild + path-cache flush.
+	// Combine the room + portal TOPOLOGY epochs (Phase 5.3): add/remove/open/
+	// close/bounds/priority. Movement bumps a separate transform_epoch that does
+	// NOT trigger a rebuild or cache flush — edge weights/centres are refreshed
+	// in place below.
 	const uint64_t epoch = AcousticRoom3D::get_registry_epoch() ^ (AcousticPortal3D::get_state_epoch() * 1099511628211ULL);
 	if (epoch == portal_graph_epoch && portal_graph.node_count == AcousticRoom3D::get_room_count()) {
+		// Topology unchanged — refresh edge weights + portal centres in place so
+		// a moving portal (swinging door) tracks without a rebuild/flush.
+		_refresh_portal_edge_geometry();
 		return;
 	}
 	portal_graph_epoch = epoch;
+	// Topology changed — every cached membership is now suspect.
+	membership_epoch++;
 
 	const int room_count = AcousticRoom3D::get_room_count();
 	portal_graph.set_node_count(room_count);
@@ -289,6 +322,38 @@ void SpatialAcousticsEngine::_rebuild_portal_graph_if_needed() {
 
 	// Portal state change invalidates cached paths.
 	portal_path_cache.check_epoch(epoch);
+	// Geometry is current as of this rebuild.
+	portal_transform_epoch = AcousticRoom3D::get_transform_epoch() ^ (AcousticPortal3D::get_transform_epoch() * 1099511628211ULL);
+}
+
+void SpatialAcousticsEngine::_refresh_portal_edge_geometry() {
+	// Only recompute when a room or portal actually moved since last refresh.
+	const uint64_t tepoch = AcousticRoom3D::get_transform_epoch() ^ (AcousticPortal3D::get_transform_epoch() * 1099511628211ULL);
+	if (tepoch == portal_transform_epoch) {
+		return; // nothing moved — cheap no-op
+	}
+	portal_transform_epoch = tepoch;
+
+	// Update each edge's world_center + weight in place. The path cache stays
+	// valid: which rooms a path traverses is unchanged by movement; only the
+	// per-hop geometry (used for apparent-position/gain) and edge weights shift.
+	for (uint32_t i = 0; i < portal_graph.edges.size(); i++) {
+		PortalEdge &edge = portal_graph.edges[i];
+		AcousticPortal3D *portal = AcousticPortal3D::get_portal(edge.portal_id);
+		if (portal == nullptr) {
+			continue;
+		}
+		AcousticRoom3D *ra = portal->get_room_a();
+		AcousticRoom3D *rb = portal->get_room_b();
+		if (ra == nullptr || rb == nullptr) {
+			continue;
+		}
+		const Vector3 center = portal->get_world_center();
+		edge.world_center = center;
+		edge.weight = MAX(ra->get_global_transform().origin.distance_to(center) +
+						center.distance_to(rb->get_global_transform().origin),
+				0.01f);
+	}
 }
 
 void SpatialAcousticsEngine::_solve_portals_for_emitter(int p_emitter_idx) {
@@ -300,26 +365,47 @@ void SpatialAcousticsEngine::_solve_portals_for_emitter(int p_emitter_idx) {
 	e.target.portal_gain = 1.0f;
 	e.target.apparent_position = e.source_position;
 
-	// Resolve which rooms the source and listener occupy.
-	AcousticRoom3D *src_room = AcousticRoom3D::find_room_for_point(e.source_position);
-	AcousticRoom3D *lis_room = AcousticRoom3D::find_room_for_point(listener_position);
+	// Resolve the SOURCE room using the per-emitter membership cache (Phase 5.2):
+	// most emitters stay put frame to frame, so first re-test the cached room
+	// with a single contains_point before falling back to the full O(#rooms)
+	// scan. The cache is invalidated wholesale when the topology epoch bumps.
+	AcousticRoom3D *src_room = nullptr;
+	int src_node = -1;
+	if (e.last_src_room_id != 0 && e.last_src_node >= 0) {
+		AcousticRoom3D *cached_room = Object::cast_to<AcousticRoom3D>(ObjectDB::get_instance(ObjectID(e.last_src_room_id)));
+		if (cached_room != nullptr && cached_room->contains_point(e.source_position)) {
+			src_room = cached_room;
+			src_node = e.last_src_node;
+		}
+	}
+	if (src_room == nullptr) {
+		src_room = AcousticRoom3D::find_room_for_point(e.source_position);
+		if (src_room != nullptr) {
+			int *n = _room_ptr_to_node.getptr(src_room->get_instance_id());
+			src_node = (n != nullptr) ? *n : -1;
+		}
+		// Update the membership cache.
+		e.last_src_room_id = (src_room != nullptr) ? (uint64_t)src_room->get_instance_id() : 0;
+		e.last_src_node = src_node;
+	}
+
+	// Listener room was resolved once this frame (hoisted).
+	AcousticRoom3D *lis_room = frame_listener_room;
+	int lis_node = frame_listener_node;
 
 	// No room info, or same room → no portal effect.
 	if (src_room == nullptr || lis_room == nullptr || src_room == lis_room) {
 		return;
 	}
-
-	int *src_node = _room_ptr_to_node.getptr(src_room->get_instance_id());
-	int *lis_node = _room_ptr_to_node.getptr(lis_room->get_instance_id());
-	if (src_node == nullptr || lis_node == nullptr) {
+	if (src_node < 0 || lis_node < 0) {
 		return;
 	}
 
 	// Solve (or fetch cached) the room-to-room path.
 	PortalPath path;
-	if (!portal_path_cache.get(*src_node, *lis_node, path)) {
-		path = portal_solver.solve(portal_graph, *src_node, *lis_node);
-		portal_path_cache.put(*src_node, *lis_node, path);
+	if (!portal_path_cache.get(src_node, lis_node, path)) {
+		path = portal_solver.solve(portal_graph, src_node, lis_node);
+		portal_path_cache.put(src_node, lis_node, path);
 	}
 
 	// Unreachable (all doors closed) or same-room short-circuit → keep true
@@ -366,7 +452,7 @@ void SpatialAcousticsEngine::_solve_portals_for_emitter(int p_emitter_idx) {
 
 // --- Occlusion ---
 
-void SpatialAcousticsEngine::_solve_occlusion_for_emitter(int p_emitter_idx, PhysicsDirectSpaceState3D *p_space) {
+int SpatialAcousticsEngine::_solve_occlusion_for_emitter(int p_emitter_idx, PhysicsDirectSpaceState3D *p_space) {
 	EmitterState &e = emitters[p_emitter_idx];
 
 	OcclusionSolver::Result result = OcclusionSolver::solve(
@@ -375,6 +461,10 @@ void SpatialAcousticsEngine::_solve_occlusion_for_emitter(int p_emitter_idx, Phy
 			listener_position,
 			exclude_rids,
 			occlusion_config);
+
+	// Rays issued by the forward march: one per hit plus the final clear ray
+	// (bounded by max_hits + 1).
+	int rays = MIN(result.hit_count + 1, occlusion_config.max_hits + 1);
 
 	// Spectral transmission (per band) always comes from the direct-path solve.
 	// Keep the RAW material value for the debug overlay; the EFFECTIVE
@@ -411,6 +501,7 @@ void SpatialAcousticsEngine::_solve_occlusion_for_emitter(int p_emitter_idx, Phy
 			e.target.transmission[b] = (1.0f - occ) + occ * result.transmission[b];
 		}
 		e.target.occlusion = occ;
+		rays += vres.rays_issued;
 	} else {
 		e.target.occlusion = result.occlusion;
 	}
@@ -428,9 +519,10 @@ void SpatialAcousticsEngine::_solve_occlusion_for_emitter(int p_emitter_idx, Phy
 		e.air_cutoff_base = 20000.0f;
 	}
 	e.target.air_cutoff = e.air_cutoff_base;
+	return rays;
 }
 
-void SpatialAcousticsEngine::_solve_room_for_emitter(int p_emitter_idx, PhysicsDirectSpaceState3D *p_space) {
+int SpatialAcousticsEngine::_solve_room_for_emitter(int p_emitter_idx, PhysicsDirectSpaceState3D *p_space) {
 	EmitterState &e = emitters[p_emitter_idx];
 
 	// Check the probe cache first — emitters in the same cell share room data.
@@ -440,7 +532,7 @@ void SpatialAcousticsEngine::_solve_room_for_emitter(int p_emitter_idx, PhysicsD
 		e.target.reverb_send = cached.reverb_send;
 		e.target.damping = cached.high_band_absorption;
 		e.target.room_volume = cached.volume;
-		return;
+		return 0; // cache hit — no rays issued
 	}
 
 	// Cache miss — cast the Fibonacci ray fan.
@@ -464,6 +556,8 @@ void SpatialAcousticsEngine::_solve_room_for_emitter(int p_emitter_idx, PhysicsD
 	to_cache.openness = room.openness;
 	to_cache.reverb_send = e.target.reverb_send;
 	probe_cache.store(e.source_position, to_cache);
+
+	return room.rays_cast; // rays actually issued by the fan
 }
 
 void SpatialAcousticsEngine::set_emitter_position(int p_voice_slot, const Vector3 &p_position) {

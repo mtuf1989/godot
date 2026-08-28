@@ -31,7 +31,8 @@ private:
 	Ref<AcousticMaterial> transmission_override;
 
 	static LocalVector<AcousticPortal3D *> portals;
-	static uint64_t state_epoch; // bumps on open/close or add/remove
+	static uint64_t state_epoch;     // bumps on open/close or add/remove (topology → rebuild + cache flush)
+	static uint64_t transform_epoch; // bumps on movement only (refresh centres in place; cache valid)
 
 	void _register();
 	void _unregister();
@@ -79,6 +80,7 @@ public:
 	static int get_portal_count() { return (int)portals.size(); }
 	static AcousticPortal3D *get_portal(int p_index);
 	static uint64_t get_state_epoch() { return state_epoch; }
+	static uint64_t get_transform_epoch() { return transform_epoch; }
 
 	AcousticPortal3D();
 	~AcousticPortal3D();

@@ -12,11 +12,17 @@ int ProbeScheduler::schedule(const EmitterInfo *p_emitters, int p_count, float p
 		return 0;
 	}
 
-	// How many emitters can we service this frame given the ray budget?
-	int max_emitters_this_frame = config.ray_budget_per_frame / MAX(config.rays_per_emitter, 1);
-	if (max_emitters_this_frame <= 0) {
-		max_emitters_this_frame = 1;
+	// How many total rays can we bill this frame (unified cost pool). Phase 5.1:
+	// carry last frame's actual-vs-estimated error so the running average stays
+	// within the ceiling — if solvers over-issued, next frame's pool shrinks.
+	int cost_budget = config.ray_budget_per_frame;
+	if (last_actual_rays > 0) {
+		int overshoot = last_actual_rays - config.ray_budget_per_frame;
+		if (overshoot > 0) {
+			cost_budget = MAX(config.ray_budget_per_frame - overshoot, config.min_room_probe_budget);
+		}
 	}
+	last_actual_rays = 0; // consume the correction; solvers will re-report.
 
 	// Base update interval (seconds). No emitter updates faster than this.
 	float base_interval = 1.0f / config.base_rate_hz;
@@ -76,26 +82,38 @@ int ProbeScheduler::schedule(const EmitterInfo *p_emitters, int p_count, float p
 		candidates.write[j + 1] = key;
 	}
 
-	// Take up to max_emitters_this_frame from the sorted candidates.
-	// Apply round-robin offset for fairness when budget doesn't cover all due emitters.
+	// Take from the top of the priority-sorted list, billing each emitter's
+	// estimated_cost against the unified pool (Phase 5.1) rather than a fixed
+	// per-emitter count. A round-robin start offset keeps things fair across
+	// frames when the pool can't cover every due emitter; the offset walks the
+	// PRIORITY order, so fairness is preserved (Phase 5.5). The first pick is
+	// always serviced so a lone expensive emitter is never permanently starved.
 	int scheduled = 0;
+	int cost_spent = 0;
 	int num_candidates = candidates.size();
-
-	// Adjust round-robin cursor.
 	if (round_robin_cursor >= num_candidates) {
 		round_robin_cursor = 0;
 	}
 
-	// First pass: take from cursor position (fairness for overflow).
-	for (int k = 0; k < num_candidates && scheduled < max_emitters_this_frame; k++) {
+	for (int k = 0; k < num_candidates; k++) {
 		int idx = (round_robin_cursor + k) % num_candidates;
-		r_to_update.push_back(p_emitters[candidates[idx]].emitter_index);
+		const EmitterInfo &info = p_emitters[candidates[idx]];
+		int cost = MAX(info.estimated_cost, 1);
+		if (scheduled > 0 && cost_spent + cost > cost_budget) {
+			continue; // try the next candidate; a cheaper one may still fit
+		}
+		r_to_update.push_back(info.emitter_index);
+		cost_spent += cost;
 		scheduled++;
+		if (cost_spent >= cost_budget) {
+			break;
+		}
 	}
 
 	round_robin_cursor = (round_robin_cursor + scheduled) % MAX(num_candidates, 1);
 
-	last_metrics.rays_issued = scheduled * config.rays_per_emitter;
+	// rays_issued is the ESTIMATE; report_actual_rays() corrects next frame.
+	last_metrics.rays_issued = cost_spent;
 	last_metrics.emitters_serviced = scheduled;
 	last_metrics.emitters_skipped += (num_candidates - scheduled);
 

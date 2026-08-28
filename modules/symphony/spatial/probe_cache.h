@@ -82,6 +82,11 @@ public:
 	// Returns true if a valid (non-stale) entry exists.
 	bool lookup(const Vector3 &p_position, RoomProbeResult &r_result) const;
 
+	// Side-effect-free prediction (Phase 5.1): would lookup() hit for this
+	// position right now? Same staleness logic as lookup() but touches no
+	// metrics — used by the scheduler cost model to predict a room-probe miss.
+	bool would_hit(const Vector3 &p_position) const;
+
 	// Store a room probe result at the given position.
 	void store(const Vector3 &p_position, const RoomProbeResult &p_result);
 

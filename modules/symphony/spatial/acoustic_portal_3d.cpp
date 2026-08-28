@@ -5,6 +5,7 @@
 
 LocalVector<AcousticPortal3D *> AcousticPortal3D::portals;
 uint64_t AcousticPortal3D::state_epoch = 1;
+uint64_t AcousticPortal3D::transform_epoch = 1;
 
 AcousticPortal3D::AcousticPortal3D() {
 }
@@ -24,7 +25,9 @@ void AcousticPortal3D::_notification(int p_what) {
 			_unregister();
 		} break;
 		case NOTIFICATION_TRANSFORM_CHANGED: {
-			state_epoch++;
+			// Movement only (Phase 5.3): a portal parented to a swinging door
+			// must NOT rebuild the graph / flush the path cache every frame.
+			transform_epoch++;
 		} break;
 	}
 }

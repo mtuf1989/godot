@@ -88,8 +88,17 @@ public:
 // AcousticPortal3D::get_state_epoch()).
 class PortalPathCache {
 private:
-	HashMap<uint64_t, PortalPath> cache;
+	// Phase 5.4: bound the cache so it can't grow O(rooms²) unbounded. Each
+	// entry records a last-use tick; on overflow the least-recently-used entry
+	// is evicted.
+	struct Entry {
+		PortalPath path;
+		uint64_t last_use = 0;
+	};
+	HashMap<uint64_t, Entry> cache;
 	uint64_t last_epoch = 0;
+	uint64_t use_tick = 0;
+	static constexpr int MAX_ENTRIES = 256;
 
 	static uint64_t _key(int p_start, int p_goal) {
 		return (uint64_t(uint32_t(p_start)) << 32) | uint64_t(uint32_t(p_goal));

@@ -42,10 +42,12 @@ private:
 	// Static registry of all rooms currently in the tree.
 	static LocalVector<AcousticRoom3D *> rooms;
 
-	// Membership cache: listener/emitter positions rarely change room frame to
-	// frame. We cache (position hash cell → room id) with an epoch that bumps on
-	// any room add/remove/move so a stale cache never resolves to a freed room.
+	// Phase 5.3 — split epochs. registry_epoch bumps on TOPOLOGY changes
+	// (add/remove, bounds, priority) → the portal graph must fully rebuild and
+	// the path cache flush. transform_epoch bumps on MOVEMENT only → edge
+	// weights / portal centres refresh in place, path cache stays valid.
 	static uint64_t registry_epoch;
+	static uint64_t transform_epoch;
 
 	void _register();
 	void _unregister();
@@ -88,6 +90,7 @@ public:
 	static int get_room_count() { return (int)rooms.size(); }
 	static AcousticRoom3D *get_room(int p_index);
 	static uint64_t get_registry_epoch() { return registry_epoch; }
+	static uint64_t get_transform_epoch() { return transform_epoch; }
 
 	AcousticRoom3D();
 	~AcousticRoom3D();

@@ -16,6 +16,8 @@
 #include "portal_graph.h"
 #include "portal_router.h"
 
+class AcousticRoom3D;
+
 // Per-emitter spatial parameters — the output of the main-thread simulation,
 // consumed by the audio thread (via SeqLock) to drive DSP.
 // POD struct, trivially copyable, fits within SeqLock's 256-byte limit.
@@ -66,6 +68,13 @@ private:
 		                                  // solve writes this each frame; the portal solve then ASSIGNS
 		                                  // target.air_cutoff = MIN(air_cutoff_base, diffraction) fresh so
 		                                  // the cutoff never ratchets monotonically downward across frames.
+		// Phase 5.2 — portal membership cache. last_src_room is the ObjectID of
+		// the room this emitter was in last frame; re-tested with one
+		// contains_point before falling back to the full room scan. last_path_key
+		// packs (src_node, lis_node); a portal path is re-solved only when the
+		// pair changes or the portal topology epoch bumps.
+		uint64_t last_src_room_id = 0;
+		int last_src_node = -1;
 
 		// Target values (set by solvers before smoothing)
 		SpatialParams target;
@@ -109,12 +118,14 @@ private:
 	// Volume sample count for volumetric occlusion this frame (budget-scaled).
 	int _volumetric_samples_this_frame = 8;
 
-	void _solve_occlusion_for_emitter(int p_emitter_idx, PhysicsDirectSpaceState3D *p_space);
+	// Returns the number of physics rays actually issued (for budget correction).
+	int _solve_occlusion_for_emitter(int p_emitter_idx, PhysicsDirectSpaceState3D *p_space);
 
 	// Room estimation
 	RoomEstimator::Config room_config;
 	bool room_estimation_enabled = true;
-	void _solve_room_for_emitter(int p_emitter_idx, PhysicsDirectSpaceState3D *p_space);
+	// Returns the number of physics rays actually issued (for budget correction).
+	int _solve_room_for_emitter(int p_emitter_idx, PhysicsDirectSpaceState3D *p_space);
 
 	// Probe scheduler and cache
 	ProbeScheduler scheduler;
@@ -135,12 +146,22 @@ private:
 	DijkstraPathSolver portal_solver;
 	PortalPathCache portal_path_cache;
 	bool portal_propagation_enabled = true;
-	uint64_t portal_graph_epoch = 0; // last (room_epoch ^ portal_epoch) the graph was built for
+	uint64_t portal_graph_epoch = 0; // last (room_reg_epoch ^ portal_state_epoch) the graph was built for
+	// Phase 5.2/5.3 — listener room resolved once per frame (hoisted out of the
+	// per-emitter loop), plus the topology epoch the membership cache is valid
+	// for. On a topology bump every emitter's cached room is invalidated.
+	AcousticRoom3D *frame_listener_room = nullptr;
+	int frame_listener_node = -1;
+	uint64_t membership_epoch = 0;
 	float portal_diffraction_min_cutoff = 700.0f;
 	// Rebuild portal_graph from registries if the epoch changed. Maps each
 	// AcousticRoom3D* to its node index (in registry order).
 	HashMap<uint64_t, int> _room_ptr_to_node; // ObjectID → node index
 	void _rebuild_portal_graph_if_needed();
+	// Phase 5.3 — refresh moving portal centres + edge weights in place (no
+	// rebuild, no path-cache flush). Cheap no-op when nothing moved this frame.
+	void _refresh_portal_edge_geometry();
+	uint64_t portal_transform_epoch = 0; // last transform epoch geometry was refreshed for
 	// Resolve portal routing for one emitter and fold results into its target.
 	void _solve_portals_for_emitter(int p_emitter_idx);
 

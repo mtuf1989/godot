@@ -25,7 +25,10 @@ void ReverbPool::reset() {
 	}
 	assignments.clear();
 	metrics = Metrics();
-	audio_server_touched = false;
+	// NOTE (Phase 5.5): audio_server_touched is deliberately NOT cleared here.
+	// reset() runs on every init()/set_reverb_pool_slots() at runtime; clearing
+	// the flag would let a mid-session reconfigure silently re-arm the R4
+	// anti-regression guard. It stays sticky for the pool's lifetime.
 }
 
 float ReverbPool::_rt60_to_room_size(float p_rt60, float p_max_rt60) {

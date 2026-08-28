@@ -33,6 +33,16 @@ bool ProbeCache::lookup(const Vector3 &p_position, RoomProbeResult &r_result) co
 	return true;
 }
 
+bool ProbeCache::would_hit(const Vector3 &p_position) const {
+	// Same logic as lookup() but no metric side effects.
+	CellKey key = _position_to_cell(p_position);
+	const RoomProbeResult *found = cache.getptr(key);
+	if (!found) {
+		return false;
+	}
+	return (current_time - found->timestamp) <= config.max_age_seconds;
+}
+
 void ProbeCache::store(const Vector3 &p_position, const RoomProbeResult &p_result) {
 	CellKey key = _position_to_cell(p_position);
 
@@ -49,9 +59,9 @@ void ProbeCache::store(const Vector3 &p_position, const RoomProbeResult &p_resul
 }
 
 void ProbeCache::invalidate_all() {
+	last_metrics.evictions += (int)cache.size(); // count what we are about to drop
 	cache.clear();
 	last_metrics.total_entries = 0;
-	last_metrics.evictions += last_metrics.total_entries;
 }
 
 void ProbeCache::invalidate_near(const Vector3 &p_position, float p_radius) {
