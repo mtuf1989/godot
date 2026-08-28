@@ -18,7 +18,7 @@ SymphonyEventDispatcher::~SymphonyEventDispatcher() {
 }
 
 void SymphonyEventDispatcher::_bind_methods() {
-	ClassDB::bind_method(D_METHOD("play_event", "event"), &SymphonyEventDispatcher::play_event);
+	ClassDB::bind_method(D_METHOD("play_event", "event", "source_position", "has_position"), &SymphonyEventDispatcher::play_event, DEFVAL(Vector3()), DEFVAL(false));
 	ClassDB::bind_method(D_METHOD("on_voice_started", "event_id"), &SymphonyEventDispatcher::on_voice_started);
 	ClassDB::bind_method(D_METHOD("on_voice_stopped", "event_id"), &SymphonyEventDispatcher::on_voice_stopped);
 
@@ -268,7 +268,7 @@ void SymphonyEventDispatcher::on_voice_stopped(uint64_t p_event_id) {
 	}
 }
 
-Dictionary SymphonyEventDispatcher::play_event(const Ref<SoundEvent> &p_event) {
+Dictionary SymphonyEventDispatcher::play_event(const Ref<SoundEvent> &p_event, const Vector3 &p_source_position, bool p_has_position) {
 	Dictionary result;
 	PlayResult pr = RESULT_REJECTED_NO_STREAMS;
 	StringName steal_reason;
@@ -276,6 +276,7 @@ Dictionary SymphonyEventDispatcher::play_event(const Ref<SoundEvent> &p_event) {
 	int stream_index = -1;
 	float volume_offset_db = 0.0f;
 	float pitch_scale = 1.0f;
+	float delay_s = 0.0f;
 
 	// Plan §10: resolve/validate the selected stream before reserving or stealing a slot.
 	if (p_event.is_valid() && p_event->get_streams().size() > 0) {
@@ -300,6 +301,22 @@ Dictionary SymphonyEventDispatcher::play_event(const Ref<SoundEvent> &p_event) {
 				} else {
 					pitch_scale = pit_range.x;
 				}
+
+				// Propagation delay (Task 11): for 3D one-shots with the setting
+				// enabled, defer the voice start by distance / speed_of_sound.
+				// The delay is realized as a countdown on the pre-allocated voice
+				// slot (no SceneTreeTimer, no per-play allocation). Guard against
+				// stacking: the delay is set exactly once here, right after the
+				// slot is (re)acquired, so a re-triggered event within cooldown
+				// never accumulates delay onto an already-playing slot.
+				if (p_has_position && p_event->get_enable_propagation_delay() && !p_event->get_loop()) {
+					SymphonyVoicePool *pool = SymphonyVoicePool::get_singleton();
+					if (pool) {
+						float distance = p_source_position.distance_to(pool->get_listener_position());
+						delay_s = p_event->compute_propagation_delay(distance);
+						pool->set_slot_start_delay(slot, delay_s);
+					}
+				}
 			} else {
 				stream_index = -1;
 			}
@@ -312,6 +329,7 @@ Dictionary SymphonyEventDispatcher::play_event(const Ref<SoundEvent> &p_event) {
 	result["volume_offset_db"] = volume_offset_db;
 	result["pitch_scale"] = pitch_scale;
 	result["steal_reason"] = steal_reason;
+	result["delay_s"] = delay_s;
 
 	SymphonyVoicePool *pool = SymphonyVoicePool::get_singleton();
 	if (pool) {

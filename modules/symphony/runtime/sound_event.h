@@ -34,6 +34,9 @@ private:
 	float max_distance = 2000.0;
 	float inner_radius = 0.0; // Distance at which sound plays at full volume
 	float falloff_distance = 0.0; // Distance beyond inner_radius over which sound fades. 0 means use max_distance as total range.
+	bool enable_propagation_delay = false; // If true, one-shots start late by distance/speed_of_sound (Task 11).
+	float speed_of_sound = 343.0; // m/s (dry air at ~20°C). Used for propagation delay.
+	float source_radius = 0.0; // Emitter radius (m) for volumetric occlusion (Task 12). 0 = point source.
 	bool loop = false;
 	bool virtualize_when_inaudible = true;
 
@@ -95,6 +98,24 @@ public:
 
 	void set_falloff_distance(float p_dist) { falloff_distance = p_dist; }
 	float get_falloff_distance() const { return falloff_distance; }
+
+	void set_enable_propagation_delay(bool p_enable) { enable_propagation_delay = p_enable; }
+	bool get_enable_propagation_delay() const { return enable_propagation_delay; }
+
+	void set_speed_of_sound(float p_speed) { speed_of_sound = p_speed; }
+	float get_speed_of_sound() const { return speed_of_sound; }
+
+	void set_source_radius(float p_radius) { source_radius = p_radius; }
+	float get_source_radius() const { return source_radius; }
+
+	// Propagation delay threshold (seconds). Delays shorter than this are
+	// imperceptible and are collapsed to 0 (immediate start).
+	static constexpr float PROPAGATION_MIN_DELAY_S = 0.01f; // ~10 ms (plan §Task 11)
+
+	// Compute the propagation delay for a one-shot at the given distance (meters).
+	// Returns 0 when: propagation is disabled, the event loops, speed_of_sound is
+	// non-positive, or the resulting delay is below PROPAGATION_MIN_DELAY_S.
+	float compute_propagation_delay(float p_distance) const;
 
 	void set_loop(bool p_loop) { loop = p_loop; }
 	bool get_loop() const { return loop; }

@@ -74,6 +74,10 @@ void SymphonyVoicePool::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_slot_attenuation_volume", "slot"), &SymphonyVoicePool::get_slot_attenuation_volume);
 	ClassDB::bind_method(D_METHOD("set_slot_attenuation_curve", "slot", "curve"), &SymphonyVoicePool::set_slot_attenuation_curve);
 	ClassDB::bind_method(D_METHOD("get_slot_attenuation_curve", "slot"), &SymphonyVoicePool::get_slot_attenuation_curve);
+	ClassDB::bind_method(D_METHOD("set_slot_start_delay", "slot", "delay_s"), &SymphonyVoicePool::set_slot_start_delay);
+	ClassDB::bind_method(D_METHOD("get_slot_start_delay", "slot"), &SymphonyVoicePool::get_slot_start_delay);
+	ClassDB::bind_method(D_METHOD("is_slot_start_pending", "slot"), &SymphonyVoicePool::is_slot_start_pending);
+	ClassDB::bind_method(D_METHOD("tick_deferred_starts", "delta"), &SymphonyVoicePool::tick_deferred_starts);
 
 	BIND_ENUM_CONSTANT(VOICE_FREE);
 	BIND_ENUM_CONSTANT(VOICE_TO_PLAY);
@@ -121,6 +125,7 @@ static void _activate_slot(SymphonyVoicePool::VoiceSlot &slot, int p_priority) {
 	slot.start_time = OS::get_singleton()->get_ticks_usec();
 	slot.local_param_count = 0;
 	slot.attenuation_volume = 1.0f;
+	slot.pending_start_delay_s = 0.0f;
 	slot.lod_threshold_1 = 0.3f;
 	slot.lod_threshold_2 = 0.7f;
 	slot.current_lod = 0;
@@ -148,6 +153,7 @@ void SymphonyVoicePool::release_slot(int p_index, bool p_immediate) {
 		slots[p_index].rms_valid = false;
 		slots[p_index].inner_radius = 0.0f;
 		slots[p_index].falloff_distance = 0.0f;
+		slots[p_index].pending_start_delay_s = 0.0f;
 	} else {
 		slots[p_index].state = VOICE_STOPPING;
 		slots[p_index].fade_progress = 1.0f;
@@ -380,6 +386,35 @@ void SymphonyVoicePool::set_slot_attenuation_curve(int p_slot, const Ref<Curve> 
 Ref<Curve> SymphonyVoicePool::get_slot_attenuation_curve(int p_slot) const {
 	ERR_FAIL_INDEX_V(p_slot, pool_size, Ref<Curve>());
 	return slot_attenuation_curves[p_slot];
+}
+
+void SymphonyVoicePool::set_slot_start_delay(int p_slot, float p_delay_s) {
+	ERR_FAIL_INDEX(p_slot, pool_size);
+	slots[p_slot].pending_start_delay_s = MAX(p_delay_s, 0.0f);
+}
+
+float SymphonyVoicePool::get_slot_start_delay(int p_slot) const {
+	ERR_FAIL_INDEX_V(p_slot, pool_size, 0.0f);
+	return slots[p_slot].pending_start_delay_s;
+}
+
+bool SymphonyVoicePool::is_slot_start_pending(int p_slot) const {
+	ERR_FAIL_INDEX_V(p_slot, pool_size, false);
+	return slots[p_slot].state == VOICE_TO_PLAY && slots[p_slot].pending_start_delay_s > 0.0f;
+}
+
+void SymphonyVoicePool::tick_deferred_starts(float p_delta) {
+	if (p_delta <= 0.0f) {
+		return;
+	}
+	for (int i = 0; i < pool_size; i++) {
+		if (slots[i].state == VOICE_TO_PLAY && slots[i].pending_start_delay_s > 0.0f) {
+			slots[i].pending_start_delay_s -= p_delta;
+			if (slots[i].pending_start_delay_s < 0.0f) {
+				slots[i].pending_start_delay_s = 0.0f;
+			}
+		}
+	}
 }
 
 void SymphonyVoicePool::update_importance() {
@@ -685,9 +720,28 @@ void SymphonyVoicePool::process_frame() {
 	int active = 0;
 	int virtual_count = 0;
 
+	// Compute wall-clock delta since the last process_frame() for time-based
+	// countdowns (propagation delay). First call yields 0 (no jump).
+	uint64_t now_usec = OS::get_singleton()->get_ticks_usec();
+	float delta_s = 0.0f;
+	if (last_process_usec != 0 && now_usec > last_process_usec) {
+		delta_s = (float)(now_usec - last_process_usec) / 1000000.0f;
+	}
+	last_process_usec = now_usec;
+
+	// Advance any pending propagation-delay countdowns before the state machine.
+	tick_deferred_starts(delta_s);
+
 	for (int i = 0; i < pool_size; i++) {
 		switch (slots[i].state) {
 			case VOICE_TO_PLAY:
+				// Propagation delay: hold the voice until its start delay elapses
+				// (deferred one-shot start, no SceneTreeTimer). While pending it
+				// counts as an active voice so it isn't reclaimed as "free".
+				if (slots[i].pending_start_delay_s > 0.0f) {
+					active++;
+					break;
+				}
 				slots[i].state = VOICE_PLAYING;
 				slots[i].fade_progress = MIN(slots[i].fade_progress + slots[i].fade_speed * ANTI_CLICK_SAMPLES, 1.0f);
 				active++;

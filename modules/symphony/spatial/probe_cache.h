@@ -25,6 +25,7 @@ public:
 		float rt60 = 0.0f;           // Sabine RT60 estimate
 		float volume = 0.0f;         // Estimated room volume (m³)
 		float mean_absorption = 0.0f; // Mean absorption coefficient
+		float high_band_absorption = 0.0f; // Mean high-band absorption (for reverb damping)
 		float openness = 0.0f;       // Ratio of escaped rays (0=sealed, 1=open sky)
 		float reverb_send = 0.0f;    // Computed reverb send level
 		float timestamp = 0.0f;      // Time when this result was computed

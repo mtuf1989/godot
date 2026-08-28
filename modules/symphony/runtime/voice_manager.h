@@ -74,6 +74,12 @@ public:
 		float attenuation_volume = 1.0f; // 0.0 (silent) to 1.0 (full volume) — computed each update
 		bool virtualize_when_inaudible = true;
 
+		// Propagation delay (Task 11): while > 0, the slot is held in VOICE_TO_PLAY
+		// and counts down each frame before transitioning to VOICE_PLAYING. This
+		// realizes a deferred one-shot start without a SceneTreeTimer or any
+		// per-play allocation (the field lives in the pre-allocated slot).
+		float pending_start_delay_s = 0.0f;
+
 		// Per-voice local RTPC parameters (override global)
 		StringName local_param_names[MAX_LOCAL_PARAMS];
 		float local_param_values[MAX_LOCAL_PARAMS];
@@ -120,6 +126,9 @@ private:
 	static constexpr float CATEGORY_WEIGHTS[5] = {1.0f, 1.0f, 1.5f, 0.5f, 2.0f}; // SFX, Music, UI, Ambient, Voice
 
 	void _update_importance_batch(int p_start, int p_count);
+
+	// Internal frame delta tracking for time-based countdowns (propagation delay).
+	uint64_t last_process_usec = 0;
 
 protected:
 	static void _bind_methods();
@@ -178,6 +187,18 @@ public:
 	float get_slot_attenuation_volume(int p_slot) const;
 	void set_slot_attenuation_curve(int p_slot, const Ref<Curve> &p_curve);
 	Ref<Curve> get_slot_attenuation_curve(int p_slot) const;
+
+	// Propagation delay (Task 11) — deferred one-shot start.
+	// Sets the remaining start delay (seconds); the slot stays in VOICE_TO_PLAY
+	// until it elapses. Clamped to >= 0. Setting 0 starts on the next frame.
+	void set_slot_start_delay(int p_slot, float p_delay_s);
+	float get_slot_start_delay(int p_slot) const;
+	// True while the slot is still counting down its propagation delay.
+	bool is_slot_start_pending(int p_slot) const;
+	// Advance all pending propagation-delay countdowns by p_delta seconds.
+	// Called from process_frame() with the wall-clock delta; exposed for
+	// deterministic delta control (and testing).
+	void tick_deferred_starts(float p_delta);
 
 	// Event Log API
 	void log_event(const StringName &p_event_name, EventResult p_result, int p_slot, float p_importance, const StringName &p_steal_reason = StringName());

@@ -12,6 +12,7 @@
 #include "probe_scheduler.h"
 #include "probe_cache.h"
 #include "room_estimator.h"
+#include "reverb_pool.h"
 
 // Per-emitter spatial parameters — the output of the main-thread simulation,
 // consumed by the audio thread (via SeqLock) to drive DSP.
@@ -23,9 +24,9 @@ struct SpatialParams {
 	float air_cutoff = 20000.0f;     // Air absorption LPF cutoff Hz
 	float reverb_send = 0.0f;        // Reverb send level [0,1]
 	float rt60 = 0.0f;              // Current RT60 estimate for reverb assignment
+	float damping = 0.5f;           // Reverb HF damping [0,1] (from room high-band absorption)
 	float delay_s = 0.0f;           // Propagation delay in seconds
 	Vector3 apparent_position;       // May differ from true position (portal redirect)
-	float _pad[1] = { 0.0f };       // Pad to keep alignment clean
 };
 
 static_assert(sizeof(SpatialParams) <= 256, "SpatialParams must fit in SeqLock");
@@ -52,6 +53,8 @@ private:
 		int voice_slot = -1;           // Associated VoicePool slot
 		Vector3 source_position;       // World position of this emitter
 		float last_update_time = 0.0f; // Time since last occlusion solve (seconds)
+		float source_radius = 0.0f;    // Emitter radius (m) for volumetric occlusion (Task 12); 0 = point
+		float max_distance = 0.0f;     // Attenuation max distance (m); used for air absorption normalization
 
 		// Target values (set by solvers before smoothing)
 		SpatialParams target;
@@ -83,6 +86,15 @@ private:
 	bool occlusion_enabled = true;
 	RID physics_space_rid; // Set by AudioManager from World3D.get_space()
 
+	// Volumetric occlusion (Task 12)
+	OcclusionSolver::VolumetricConfig volumetric_config;
+	bool volumetric_occlusion_enabled = true;
+	// Air absorption: distance beyond which HF rolloff reaches its floor.
+	float air_absorption_max_distance = 100.0f;
+	bool air_absorption_enabled = true;
+	// Volume sample count for volumetric occlusion this frame (budget-scaled).
+	int _volumetric_samples_this_frame = 8;
+
 	void _solve_occlusion_for_emitter(int p_emitter_idx, PhysicsDirectSpaceState3D *p_space);
 
 	// Room estimation
@@ -94,6 +106,12 @@ private:
 	ProbeScheduler scheduler;
 	ProbeCache probe_cache;
 	Vector<int> scheduled_emitters; // Scratch buffer for scheduler output
+
+	// Shared reverb pool (Task 10) — clusters emitters by RT60 proximity and
+	// assigns each cluster a pre-allocated pool slot. Never mutates AudioServer.
+	ReverbPool reverb_pool;
+	bool reverb_pool_enabled = true;
+	void _update_reverb_pool(float p_delta);
 
 	// Listener position (updated from AudioManager)
 	Vector3 listener_position;
@@ -161,6 +179,24 @@ public:
 	// --- Emitter position (for occlusion source) ---
 	void set_emitter_position(int p_voice_slot, const Vector3 &p_position);
 
+	// --- Emitter volumetric / air absorption inputs (Task 12) ---
+	void set_emitter_source_radius(int p_voice_slot, float p_radius);
+	float get_emitter_source_radius(int p_voice_slot) const;
+	void set_emitter_max_distance(int p_voice_slot, float p_max_distance);
+	float get_emitter_max_distance(int p_voice_slot) const;
+
+	// --- Volumetric occlusion configuration (Task 12) ---
+	void set_volumetric_occlusion_enabled(bool p_enabled) { volumetric_occlusion_enabled = p_enabled; }
+	bool get_volumetric_occlusion_enabled() const { return volumetric_occlusion_enabled; }
+	void set_volumetric_sample_count(int p_count) { volumetric_config.sample_count = CLAMP(p_count, 1, 128); }
+	int get_volumetric_sample_count() const { return volumetric_config.sample_count; }
+
+	// --- Air absorption configuration (Task 12) ---
+	void set_air_absorption_enabled(bool p_enabled) { air_absorption_enabled = p_enabled; }
+	bool get_air_absorption_enabled() const { return air_absorption_enabled; }
+	void set_air_absorption_max_distance(float p_dist) { air_absorption_max_distance = MAX(p_dist, 1.0f); }
+	float get_air_absorption_max_distance() const { return air_absorption_max_distance; }
+
 	// --- Debug ---
 	int get_active_emitter_count() const;
 	int get_max_emitters() const { return MAX_EMITTERS; }
@@ -183,6 +219,37 @@ public:
 	int get_cache_misses() const { return probe_cache.get_metrics().misses; }
 	void invalidate_cache() { probe_cache.invalidate_all(); }
 	void invalidate_cache_near(const Vector3 &p_position, float p_radius) { probe_cache.invalidate_near(p_position, p_radius); }
+
+	// --- Reverb pool (Task 10) ---
+	// Configure the number of active pool slots (8 desktop / 4 mobile / 2 web).
+	void set_reverb_pool_slots(int p_slots);
+	int get_reverb_pool_slots() const { return reverb_pool.active_slot_count(); }
+	void set_reverb_pool_enabled(bool p_enabled) { reverb_pool_enabled = p_enabled; }
+	bool get_reverb_pool_enabled() const { return reverb_pool_enabled; }
+
+	// Per-slot FDN parameters (for GDScript to drive persistent reverb buses).
+	float get_reverb_slot_decay_time(int p_slot) const;
+	float get_reverb_slot_damping(int p_slot) const;
+	float get_reverb_slot_room_size(int p_slot) const;
+	float get_reverb_slot_wet_gain(int p_slot) const;
+
+	// Per-emitter resolved routing (which slot a voice sends to, and how much).
+	int get_emitter_reverb_slot(int p_voice_slot) const;
+	float get_emitter_reverb_send(int p_voice_slot) const;
+	// During migration, the emitter also sends to a previous slot.
+	int get_emitter_reverb_prev_slot(int p_voice_slot) const;
+	float get_emitter_reverb_prev_send(int p_voice_slot) const;
+	bool is_emitter_reverb_migrating(int p_voice_slot) const;
+
+	// Reverb pool metrics (for the debug overlay / Performance tab).
+	int get_reverb_active_slot_count() const { return reverb_pool.get_metrics().active_slot_count; }
+	int get_reverb_assigned_emitters() const { return reverb_pool.get_metrics().assigned_emitters; }
+	int get_reverb_migrations() const { return reverb_pool.get_metrics().migrations; }
+	int get_reverb_degraded_assignments() const { return reverb_pool.get_metrics().degraded_assignments; }
+
+	// Anti-regression guard (R4): true only if the pool ever mutated AudioServer.
+	// Must remain false for the lifetime of the engine.
+	bool reverb_pool_touched_audio_server() const { return reverb_pool.touched_audio_server(); }
 
 	// --- Graph wrapper (GDScript-accessible) ---
 	// Wraps a plain AudioStream in a spatial-processing Symphony graph.

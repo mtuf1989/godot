@@ -11,6 +11,23 @@ SpatialAcousticsEngine::SpatialAcousticsEngine() {
 	smooth_alpha = GLOBAL_DEF("audio/symphony/spatial_smooth_alpha", DEFAULT_SMOOTH_ALPHA);
 	ProjectSettings::get_singleton()->set_custom_property_info(PropertyInfo(
 			Variant::FLOAT, "audio/symphony/spatial_smooth_alpha", PROPERTY_HINT_RANGE, "0.01,0.99,0.01"));
+
+	// Reverb pool slot count — platform defaults per plan (Task 10):
+	// 8 desktop / 4 mobile / 2 web. Configurable via project setting.
+#if defined(WEB_ENABLED)
+	const int default_reverb_slots = 2;
+#elif defined(ANDROID_ENABLED) || defined(IOS_ENABLED)
+	const int default_reverb_slots = 4;
+#else
+	const int default_reverb_slots = 8;
+#endif
+	int reverb_slots = GLOBAL_DEF("audio/symphony/reverb_pool_slots", default_reverb_slots);
+	ProjectSettings::get_singleton()->set_custom_property_info(PropertyInfo(
+			Variant::INT, "audio/symphony/reverb_pool_slots", PROPERTY_HINT_RANGE, "1,8,1"));
+
+	ReverbPool::Config rp_cfg;
+	rp_cfg.active_slots = reverb_slots;
+	reverb_pool.init(rp_cfg);
 }
 
 SpatialAcousticsEngine::~SpatialAcousticsEngine() {
@@ -42,6 +59,8 @@ int SpatialAcousticsEngine::register_emitter(int p_voice_slot) {
 	emitters[idx].active = true;
 	emitters[idx].first_update = true;
 	emitters[idx].voice_slot = p_voice_slot;
+	emitters[idx].source_radius = 0.0f;
+	emitters[idx].max_distance = 0.0f;
 	emitters[idx].target = SpatialParams();
 	emitters[idx].smoothed = SpatialParams();
 
@@ -60,6 +79,7 @@ void SpatialAcousticsEngine::unregister_emitter(int p_voice_slot) {
 	emitters[idx].first_update = true;
 	emitters[idx].voice_slot = -1;
 
+	reverb_pool.release(p_voice_slot);
 	slot_to_emitter.erase(p_voice_slot);
 }
 
@@ -108,6 +128,16 @@ void SpatialAcousticsEngine::update(float p_delta) {
 	if (occlusion_enabled && space) {
 		scheduler.schedule(emitter_infos, info_count, p_delta, scheduled_emitters);
 
+		// Budget-scale the volumetric sample count: split the remaining ray
+		// budget across the scheduled emitters (each volumetric sample costs up
+		// to 2 rays), clamped to [2, configured max]. This keeps volumetric
+		// occlusion within the same per-frame ray ceiling as the direct solves.
+		int scheduled = MAX(scheduled_emitters.size(), 1);
+		int rays_left = MAX(scheduler.get_ray_budget() - scheduler.get_metrics().rays_issued, 0);
+		int per_emitter_rays = rays_left / scheduled;
+		int budget_samples = per_emitter_rays / 2; // 2 rays per sample
+		_volumetric_samples_this_frame = CLAMP(budget_samples, 2, volumetric_config.sample_count);
+
 		for (int k = 0; k < scheduled_emitters.size(); k++) {
 			int emitter_idx = scheduled_emitters[k];
 			_solve_occlusion_for_emitter(emitter_idx, space);
@@ -126,6 +156,31 @@ void SpatialAcousticsEngine::update(float p_delta) {
 		_smooth_params(i, p_delta);
 		_publish_params(i);
 	}
+
+	// Reverb pool: cluster emitters by smoothed RT60 and advance crossfades.
+	if (reverb_pool_enabled) {
+		_update_reverb_pool(p_delta);
+	}
+}
+
+// --- Reverb pool (Task 10) ---
+
+void SpatialAcousticsEngine::_update_reverb_pool(float p_delta) {
+	reverb_pool.reset_migration_metrics();
+
+	// (Re)assign every active emitter from its smoothed room parameters.
+	// assign() is idempotent for a stable assignment; it only starts a
+	// crossfade when the target slot actually changes.
+	for (int i = 0; i < MAX_EMITTERS; i++) {
+		if (!emitters[i].active) {
+			continue;
+		}
+		const SpatialParams &sp = emitters[i].smoothed;
+		reverb_pool.assign(emitters[i].voice_slot, sp.rt60, sp.damping, sp.reverb_send);
+	}
+
+	// Advance crossfades and recompute per-slot aggregated FDN parameters.
+	reverb_pool.update(p_delta);
 }
 
 // --- Occlusion ---
@@ -140,10 +195,37 @@ void SpatialAcousticsEngine::_solve_occlusion_for_emitter(int p_emitter_idx, Phy
 			exclude_rids,
 			occlusion_config);
 
-	e.target.occlusion = result.occlusion;
+	// Spectral transmission (per band) always comes from the direct-path solve;
+	// it drives the occlusion LPF regardless of source size.
 	e.target.transmission[0] = result.transmission[0];
 	e.target.transmission[1] = result.transmission[1];
 	e.target.transmission[2] = result.transmission[2];
+
+	// Overall occlusion scalar: use graduated volumetric occlusion for finite
+	// sized sources (Task 12), otherwise the binary direct-path occlusion.
+	if (volumetric_occlusion_enabled && e.source_radius >= volumetric_config.min_radius) {
+		OcclusionSolver::VolumetricConfig vcfg = volumetric_config;
+		vcfg.collision_mask = occlusion_config.collision_mask;
+		vcfg.sample_count = _volumetric_samples_this_frame;
+		OcclusionSolver::VolumetricResult vres = OcclusionSolver::solve_volumetric(
+				p_space,
+				e.source_position,
+				e.source_radius,
+				listener_position,
+				exclude_rids,
+				vcfg);
+		e.target.occlusion = vres.occlusion;
+	} else {
+		e.target.occlusion = result.occlusion;
+	}
+
+	// Air absorption: drive the air-absorption LPF cutoff from the
+	// source→listener distance (Task 12 wiring). Farther sources lose highs.
+	if (air_absorption_enabled) {
+		float distance = e.source_position.distance_to(listener_position);
+		float ref = (e.max_distance > 0.0f) ? e.max_distance : air_absorption_max_distance;
+		e.target.air_cutoff = SpatialGraphWrapper::distance_to_air_cutoff(distance, ref);
+	}
 }
 
 void SpatialAcousticsEngine::_solve_room_for_emitter(int p_emitter_idx, PhysicsDirectSpaceState3D *p_space) {
@@ -154,6 +236,7 @@ void SpatialAcousticsEngine::_solve_room_for_emitter(int p_emitter_idx, PhysicsD
 	if (probe_cache.lookup(e.source_position, cached)) {
 		e.target.rt60 = cached.rt60;
 		e.target.reverb_send = cached.reverb_send;
+		e.target.damping = cached.high_band_absorption;
 		return;
 	}
 
@@ -166,12 +249,14 @@ void SpatialAcousticsEngine::_solve_room_for_emitter(int p_emitter_idx, PhysicsD
 
 	e.target.rt60 = room.rt60;
 	e.target.reverb_send = RoomEstimator::openness_to_reverb_send(room.openness);
+	e.target.damping = room.high_band_absorption;
 
 	// Store in cache for nearby emitters to reuse.
 	ProbeCache::RoomProbeResult to_cache;
 	to_cache.rt60 = room.rt60;
 	to_cache.volume = room.volume;
 	to_cache.mean_absorption = room.mean_absorption;
+	to_cache.high_band_absorption = room.high_band_absorption;
 	to_cache.openness = room.openness;
 	to_cache.reverb_send = e.target.reverb_send;
 	probe_cache.store(e.source_position, to_cache);
@@ -183,6 +268,30 @@ void SpatialAcousticsEngine::set_emitter_position(int p_voice_slot, const Vector
 	emitters[*idx_ptr].source_position = p_position;
 	// Also update apparent position target (until portal redirect changes it).
 	emitters[*idx_ptr].target.apparent_position = p_position;
+}
+
+void SpatialAcousticsEngine::set_emitter_source_radius(int p_voice_slot, float p_radius) {
+	int *idx_ptr = slot_to_emitter.getptr(p_voice_slot);
+	if (!idx_ptr) return;
+	emitters[*idx_ptr].source_radius = MAX(p_radius, 0.0f);
+}
+
+float SpatialAcousticsEngine::get_emitter_source_radius(int p_voice_slot) const {
+	const int *idx_ptr = slot_to_emitter.getptr(p_voice_slot);
+	if (!idx_ptr) return 0.0f;
+	return emitters[*idx_ptr].source_radius;
+}
+
+void SpatialAcousticsEngine::set_emitter_max_distance(int p_voice_slot, float p_max_distance) {
+	int *idx_ptr = slot_to_emitter.getptr(p_voice_slot);
+	if (!idx_ptr) return;
+	emitters[*idx_ptr].max_distance = MAX(p_max_distance, 0.0f);
+}
+
+float SpatialAcousticsEngine::get_emitter_max_distance(int p_voice_slot) const {
+	const int *idx_ptr = slot_to_emitter.getptr(p_voice_slot);
+	if (!idx_ptr) return 0.0f;
+	return emitters[*idx_ptr].max_distance;
 }
 
 void SpatialAcousticsEngine::set_listener_body_rid(const RID &p_rid) {
@@ -224,6 +333,7 @@ void SpatialAcousticsEngine::_smooth_params(int p_emitter_idx, float p_delta) {
 	e.smoothed.air_cutoff = a * e.target.air_cutoff + b * e.smoothed.air_cutoff;
 	e.smoothed.reverb_send = a * e.target.reverb_send + b * e.smoothed.reverb_send;
 	e.smoothed.rt60 = a * e.target.rt60 + b * e.smoothed.rt60;
+	e.smoothed.damping = a * e.target.damping + b * e.smoothed.damping;
 	e.smoothed.delay_s = a * e.target.delay_s + b * e.smoothed.delay_s;
 	e.smoothed.apparent_position = e.target.apparent_position.lerp(e.smoothed.apparent_position, b);
 
@@ -355,6 +465,70 @@ float SpatialAcousticsEngine::compute_spatial_gain(int p_voice_slot) const {
 	return (sp.transmission[0] + sp.transmission[1] + sp.transmission[2]) / 3.0f;
 }
 
+// --- Reverb pool accessors (Task 10) ---
+
+void SpatialAcousticsEngine::set_reverb_pool_slots(int p_slots) {
+	ReverbPool::Config cfg = reverb_pool.get_config();
+	cfg.active_slots = CLAMP(p_slots, 1, ReverbPool::MAX_SLOTS);
+	reverb_pool.init(cfg);
+}
+
+float SpatialAcousticsEngine::get_reverb_slot_decay_time(int p_slot) const {
+	return reverb_pool.slot_params(p_slot).decay_time;
+}
+
+float SpatialAcousticsEngine::get_reverb_slot_damping(int p_slot) const {
+	return reverb_pool.slot_params(p_slot).damping;
+}
+
+float SpatialAcousticsEngine::get_reverb_slot_room_size(int p_slot) const {
+	return reverb_pool.slot_params(p_slot).room_size;
+}
+
+float SpatialAcousticsEngine::get_reverb_slot_wet_gain(int p_slot) const {
+	return reverb_pool.slot_params(p_slot).wet_gain;
+}
+
+int SpatialAcousticsEngine::get_emitter_reverb_slot(int p_voice_slot) const {
+	int slot = -1;
+	float send = 0.0f;
+	if (reverb_pool.emitter_slot(p_voice_slot, slot, send)) {
+		return slot;
+	}
+	return -1;
+}
+
+float SpatialAcousticsEngine::get_emitter_reverb_send(int p_voice_slot) const {
+	int slot = -1;
+	float send = 0.0f;
+	if (reverb_pool.emitter_slot(p_voice_slot, slot, send)) {
+		return send;
+	}
+	return 0.0f;
+}
+
+int SpatialAcousticsEngine::get_emitter_reverb_prev_slot(int p_voice_slot) const {
+	int slot = -1;
+	float send = 0.0f;
+	if (reverb_pool.emitter_prev_slot(p_voice_slot, slot, send)) {
+		return slot;
+	}
+	return -1;
+}
+
+float SpatialAcousticsEngine::get_emitter_reverb_prev_send(int p_voice_slot) const {
+	int slot = -1;
+	float send = 0.0f;
+	if (reverb_pool.emitter_prev_slot(p_voice_slot, slot, send)) {
+		return send;
+	}
+	return 0.0f;
+}
+
+bool SpatialAcousticsEngine::is_emitter_reverb_migrating(int p_voice_slot) const {
+	return reverb_pool.is_migrating(p_voice_slot);
+}
+
 // --- Bindings ---
 
 void SpatialAcousticsEngine::_bind_methods() {
@@ -422,10 +596,44 @@ void SpatialAcousticsEngine::_bind_methods() {
 	// Emitter position
 	ClassDB::bind_method(D_METHOD("set_emitter_position", "voice_slot", "position"), &SpatialAcousticsEngine::set_emitter_position);
 
+	// Volumetric occlusion + air absorption (Task 12)
+	ClassDB::bind_method(D_METHOD("set_emitter_source_radius", "voice_slot", "radius"), &SpatialAcousticsEngine::set_emitter_source_radius);
+	ClassDB::bind_method(D_METHOD("get_emitter_source_radius", "voice_slot"), &SpatialAcousticsEngine::get_emitter_source_radius);
+	ClassDB::bind_method(D_METHOD("set_emitter_max_distance", "voice_slot", "max_distance"), &SpatialAcousticsEngine::set_emitter_max_distance);
+	ClassDB::bind_method(D_METHOD("get_emitter_max_distance", "voice_slot"), &SpatialAcousticsEngine::get_emitter_max_distance);
+	ClassDB::bind_method(D_METHOD("set_volumetric_occlusion_enabled", "enabled"), &SpatialAcousticsEngine::set_volumetric_occlusion_enabled);
+	ClassDB::bind_method(D_METHOD("get_volumetric_occlusion_enabled"), &SpatialAcousticsEngine::get_volumetric_occlusion_enabled);
+	ClassDB::bind_method(D_METHOD("set_volumetric_sample_count", "count"), &SpatialAcousticsEngine::set_volumetric_sample_count);
+	ClassDB::bind_method(D_METHOD("get_volumetric_sample_count"), &SpatialAcousticsEngine::get_volumetric_sample_count);
+	ClassDB::bind_method(D_METHOD("set_air_absorption_enabled", "enabled"), &SpatialAcousticsEngine::set_air_absorption_enabled);
+	ClassDB::bind_method(D_METHOD("get_air_absorption_enabled"), &SpatialAcousticsEngine::get_air_absorption_enabled);
+	ClassDB::bind_method(D_METHOD("set_air_absorption_max_distance", "distance"), &SpatialAcousticsEngine::set_air_absorption_max_distance);
+	ClassDB::bind_method(D_METHOD("get_air_absorption_max_distance"), &SpatialAcousticsEngine::get_air_absorption_max_distance);
+
 	// Graph wrapper
 	ClassDB::bind_method(D_METHOD("wrap_stream", "stream", "loop"), &SpatialAcousticsEngine::wrap_stream, DEFVAL(false));
 	ClassDB::bind_method(D_METHOD("stream_needs_wrapping", "stream"), &SpatialAcousticsEngine::stream_needs_wrapping);
 	ClassDB::bind_method(D_METHOD("compute_occlusion_cutoff", "voice_slot"), &SpatialAcousticsEngine::compute_occlusion_cutoff);
 	ClassDB::bind_method(D_METHOD("compute_air_cutoff", "voice_slot"), &SpatialAcousticsEngine::compute_air_cutoff);
 	ClassDB::bind_method(D_METHOD("compute_spatial_gain", "voice_slot"), &SpatialAcousticsEngine::compute_spatial_gain);
+
+	// Reverb pool (Task 10)
+	ClassDB::bind_method(D_METHOD("set_reverb_pool_slots", "slots"), &SpatialAcousticsEngine::set_reverb_pool_slots);
+	ClassDB::bind_method(D_METHOD("get_reverb_pool_slots"), &SpatialAcousticsEngine::get_reverb_pool_slots);
+	ClassDB::bind_method(D_METHOD("set_reverb_pool_enabled", "enabled"), &SpatialAcousticsEngine::set_reverb_pool_enabled);
+	ClassDB::bind_method(D_METHOD("get_reverb_pool_enabled"), &SpatialAcousticsEngine::get_reverb_pool_enabled);
+	ClassDB::bind_method(D_METHOD("get_reverb_slot_decay_time", "slot"), &SpatialAcousticsEngine::get_reverb_slot_decay_time);
+	ClassDB::bind_method(D_METHOD("get_reverb_slot_damping", "slot"), &SpatialAcousticsEngine::get_reverb_slot_damping);
+	ClassDB::bind_method(D_METHOD("get_reverb_slot_room_size", "slot"), &SpatialAcousticsEngine::get_reverb_slot_room_size);
+	ClassDB::bind_method(D_METHOD("get_reverb_slot_wet_gain", "slot"), &SpatialAcousticsEngine::get_reverb_slot_wet_gain);
+	ClassDB::bind_method(D_METHOD("get_emitter_reverb_slot", "voice_slot"), &SpatialAcousticsEngine::get_emitter_reverb_slot);
+	ClassDB::bind_method(D_METHOD("get_emitter_reverb_send", "voice_slot"), &SpatialAcousticsEngine::get_emitter_reverb_send);
+	ClassDB::bind_method(D_METHOD("get_emitter_reverb_prev_slot", "voice_slot"), &SpatialAcousticsEngine::get_emitter_reverb_prev_slot);
+	ClassDB::bind_method(D_METHOD("get_emitter_reverb_prev_send", "voice_slot"), &SpatialAcousticsEngine::get_emitter_reverb_prev_send);
+	ClassDB::bind_method(D_METHOD("is_emitter_reverb_migrating", "voice_slot"), &SpatialAcousticsEngine::is_emitter_reverb_migrating);
+	ClassDB::bind_method(D_METHOD("get_reverb_active_slot_count"), &SpatialAcousticsEngine::get_reverb_active_slot_count);
+	ClassDB::bind_method(D_METHOD("get_reverb_assigned_emitters"), &SpatialAcousticsEngine::get_reverb_assigned_emitters);
+	ClassDB::bind_method(D_METHOD("get_reverb_migrations"), &SpatialAcousticsEngine::get_reverb_migrations);
+	ClassDB::bind_method(D_METHOD("get_reverb_degraded_assignments"), &SpatialAcousticsEngine::get_reverb_degraded_assignments);
+	ClassDB::bind_method(D_METHOD("reverb_pool_touched_audio_server"), &SpatialAcousticsEngine::reverb_pool_touched_audio_server);
 }

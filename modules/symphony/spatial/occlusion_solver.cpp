@@ -152,3 +152,68 @@ OcclusionSolver::Result OcclusionSolver::solve(
 
 	return result;
 }
+
+// --- Volumetric occlusion (Task 12) -------------------------------------
+
+void OcclusionSolver::generate_volume_samples(int p_count, Vector<Vector3> &r_offsets) {
+	r_offsets.clear();
+	if (p_count <= 0) {
+		return;
+	}
+	r_offsets.resize(p_count);
+
+	// Fibonacci spiral on the sphere surface for even angular coverage, with a
+	// cube-root radial schedule so samples are uniformly distributed by VOLUME
+	// (r ∝ (i/N)^(1/3)) rather than bunched near the centre. Deterministic —
+	// no RNG — so per-frame estimates are stable.
+	const double golden_ratio = (1.0 + Math::sqrt(5.0)) / 2.0;
+
+	for (int i = 0; i < p_count; i++) {
+		double t = ((double)i + 0.5) / (double)p_count;
+		double theta = Math::acos(1.0 - 2.0 * t);        // polar, uniform in cos
+		double phi = Math::TAU * (double)i / golden_ratio; // azimuth, golden angle
+		// Radial position filling the volume evenly. Offset by a fractional
+		// base so the very first sample isn't exactly at the centre.
+		double radius = Math::pow(((double)i + 0.5) / (double)p_count, 1.0 / 3.0);
+
+		Vector3 dir(
+				(float)(Math::sin(theta) * Math::cos(phi)),
+				(float)Math::cos(theta),
+				(float)(Math::sin(theta) * Math::sin(phi)));
+		r_offsets.write[i] = dir * (float)radius;
+	}
+}
+
+OcclusionSolver::VolumetricResult OcclusionSolver::solve_volumetric(
+		PhysicsDirectSpaceState3D *p_space,
+		const Vector3 &p_source,
+		float p_source_radius,
+		const Vector3 &p_listener,
+		const Vector<RID> &p_exclude,
+		const VolumetricConfig &p_config) {
+	if (p_space == nullptr) {
+		return VolumetricResult(); // No physics space — fully audible.
+	}
+
+	// Physics-backed line-of-sight predicate.
+	auto clear_los = [&](const Vector3 &a, const Vector3 &b) -> bool {
+		if (a.distance_to(b) < 0.001f) {
+			return true;
+		}
+		PS3DT::RayParameters ray_params;
+		ray_params.from = a;
+		ray_params.to = b;
+		ray_params.collision_mask = p_config.collision_mask;
+		ray_params.collide_with_areas = false;
+		ray_params.collide_with_bodies = true;
+		for (int i = 0; i < p_exclude.size(); i++) {
+			ray_params.exclude.insert(p_exclude[i]);
+		}
+		PS3DT::RayResult ray_result;
+		return !p_space->intersect_ray(ray_params, ray_result);
+	};
+
+	return compute_volumetric(
+			p_source, p_source_radius, p_listener,
+			p_config.sample_count, p_config.min_radius, clear_los);
+}

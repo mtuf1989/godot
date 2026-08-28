@@ -1,6 +1,20 @@
 #include "sound_event.h"
 #include "core/object/class_db.h"
 
+float SoundEvent::compute_propagation_delay(float p_distance) const {
+	// Propagation delay only applies to enabled, non-looping one-shots with a
+	// physically valid speed of sound.
+	if (!enable_propagation_delay || loop || speed_of_sound <= 0.0f || p_distance <= 0.0f) {
+		return 0.0f;
+	}
+	float delay = p_distance / speed_of_sound;
+	// Sub-threshold delays are imperceptible — start immediately.
+	if (delay < PROPAGATION_MIN_DELAY_S) {
+		return 0.0f;
+	}
+	return delay;
+}
+
 float SoundEvent::compute_final_volume_db(float p_random_offset_db, float p_rtpc_volume_db) {
 	// Offset/additive volume model (Wwise/FMOD style):
 	// All volume contributions stack additively in the dB domain.
@@ -44,6 +58,13 @@ void SoundEvent::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_inner_radius"), &SoundEvent::get_inner_radius);
 	ClassDB::bind_method(D_METHOD("set_falloff_distance", "distance"), &SoundEvent::set_falloff_distance);
 	ClassDB::bind_method(D_METHOD("get_falloff_distance"), &SoundEvent::get_falloff_distance);
+	ClassDB::bind_method(D_METHOD("set_enable_propagation_delay", "enable"), &SoundEvent::set_enable_propagation_delay);
+	ClassDB::bind_method(D_METHOD("get_enable_propagation_delay"), &SoundEvent::get_enable_propagation_delay);
+	ClassDB::bind_method(D_METHOD("set_speed_of_sound", "speed"), &SoundEvent::set_speed_of_sound);
+	ClassDB::bind_method(D_METHOD("get_speed_of_sound"), &SoundEvent::get_speed_of_sound);
+	ClassDB::bind_method(D_METHOD("set_source_radius", "radius"), &SoundEvent::set_source_radius);
+	ClassDB::bind_method(D_METHOD("get_source_radius"), &SoundEvent::get_source_radius);
+	ClassDB::bind_method(D_METHOD("compute_propagation_delay", "distance"), &SoundEvent::compute_propagation_delay);
 	ClassDB::bind_method(D_METHOD("set_loop", "loop"), &SoundEvent::set_loop);
 	ClassDB::bind_method(D_METHOD("get_loop"), &SoundEvent::get_loop);
 	ClassDB::bind_method(D_METHOD("set_virtualize_when_inaudible", "virtualize"), &SoundEvent::set_virtualize_when_inaudible);
@@ -83,6 +104,9 @@ void SoundEvent::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "max_distance", PROPERTY_HINT_RANGE, "0,10000,1"), "set_max_distance", "get_max_distance");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "inner_radius", PROPERTY_HINT_RANGE, "0,10000,1"), "set_inner_radius", "get_inner_radius");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "falloff_distance", PROPERTY_HINT_RANGE, "0,10000,1"), "set_falloff_distance", "get_falloff_distance");
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "enable_propagation_delay"), "set_enable_propagation_delay", "get_enable_propagation_delay");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "speed_of_sound", PROPERTY_HINT_RANGE, "1,2000,1,suffix:m/s"), "set_speed_of_sound", "get_speed_of_sound");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "source_radius", PROPERTY_HINT_RANGE, "0,100,0.1,suffix:m"), "set_source_radius", "get_source_radius");
 
 	ADD_GROUP("RTPC", "");
 	ADD_PROPERTY(PropertyInfo(Variant::ARRAY, "rtpc_bindings", PROPERTY_HINT_TYPE_STRING, String::num(Variant::DICTIONARY) + ":"), "set_rtpc_bindings", "get_rtpc_bindings");
