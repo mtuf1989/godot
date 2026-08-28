@@ -11,12 +11,17 @@ TEST_FORCE_LINK(test_symphony_spatial_reverb)
 
 namespace TestSymphonySpatialReverb {
 
-static ReverbPool make_pool(int p_slots, float p_cluster = 0.4f, float p_crossfade = 0.25f) {
+static ReverbPool make_pool(int p_slots, float p_cluster = 0.4f, float p_crossfade = 0.25f,
+		float p_hysteresis = 0.0f, float p_min_dwell = 0.0f) {
 	ReverbPool pool;
 	ReverbPool::Config cfg;
 	cfg.active_slots = p_slots;
 	cfg.rt60_cluster_threshold = p_cluster;
 	cfg.crossfade_seconds = p_crossfade;
+	// Phase 4.3 hysteresis/dwell default OFF in tests so migration-mechanics
+	// cases are not gated; a dedicated case exercises the anti-oscillation guard.
+	cfg.rt60_cluster_hysteresis = p_hysteresis;
+	cfg.min_dwell_seconds = p_min_dwell;
 	pool.init(cfg);
 	return pool;
 }

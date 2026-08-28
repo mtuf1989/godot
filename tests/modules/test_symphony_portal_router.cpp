@@ -66,8 +66,11 @@ TEST_CASE("[Symphony][Spatial][PortalRouter] 90-degree bend attenuates highs") {
 	float straight_cut = 20000.0f;
 	float bent_cut = PortalRouter::diffraction_cutoff(src, lis, hops, 20000.0f, 700.0f);
 	CHECK(bent_cut < straight_cut); // highs rolled off
-	// At ~90° (half of π) the cutoff should be roughly the midpoint.
-	CHECK(bent_cut == doctest::Approx(Math::lerp(20000.0f, 700.0f, 0.5f)).epsilon(0.05));
+	// Phase 4.2: cutoff is interpolated in the LOG (frequency-ratio) domain,
+	// max·(min/max)^t. At t=0.5 that is the geometric mean sqrt(20000·700) ≈
+	// 3742 Hz (a clearly audible bend), NOT the 10350 Hz linear midpoint.
+	const float geo_mid = Math::sqrt(20000.0f * 700.0f);
+	CHECK(bent_cut == doctest::Approx(geo_mid).epsilon(0.05));
 }
 
 TEST_CASE("[Symphony][Spatial][PortalRouter] More deviation → lower cutoff (monotonic)") {

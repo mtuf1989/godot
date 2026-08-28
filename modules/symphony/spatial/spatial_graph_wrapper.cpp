@@ -155,16 +155,23 @@ float SpatialGraphWrapper::transmission_to_cutoff(float p_transmission_mid, floa
 	return MIN(cutoff_mid, cutoff_high);
 }
 
-float SpatialGraphWrapper::distance_to_air_cutoff(float p_distance, float p_max_distance) {
-	// Air absorption: HF energy drops with distance.
-	// Model: cutoff = 20000 * (1 - normalized_distance)^2, clamped to [200, 20000].
-	// This gives a gentle rolloff that becomes noticeable at longer distances.
-	if (p_max_distance <= 0.0f || p_distance <= 0.0f) {
+float SpatialGraphWrapper::distance_to_air_cutoff(float p_distance, float p_scale) {
+	// Distance-absolute air absorption (Phase 4.1), fit to ISO 9613-1 at 20 °C,
+	// 50 % RH. f_c is the frequency at which cumulative HF absorption reaches
+	// ~3 dB over the travelled distance:
+	//
+	//   f_c = 4000 · (3 / (0.033 · d · scale))^(1/1.7)   clamped to [200, 20000]
+	//
+	// Sanity points (scale=1): 10 m → ~14.6 kHz, 30 m → ~7.6 kHz,
+	// 100 m → ~3.8 kHz, 300 m → ~2.0 kHz. Decoupled from max_distance so it no
+	// longer goes inert for the default 2000 m falloff.
+	if (p_scale <= 0.0f || p_distance <= 0.0f) {
+		return 20000.0f; // Disabled or zero distance — wide open.
+	}
+	const float denom = 0.033f * p_distance * p_scale;
+	if (denom <= 0.0001f) {
 		return 20000.0f;
 	}
-
-	float normalized = CLAMP(p_distance / p_max_distance, 0.0f, 1.0f);
-	float factor = (1.0f - normalized) * (1.0f - normalized); // Quadratic rolloff
-	float cutoff = 20000.0f * factor;
-	return CLAMP(cutoff, 200.0f, 20000.0f);
+	float f_c = 4000.0f * Math::pow(3.0f / denom, 1.0f / 1.7f);
+	return CLAMP(f_c, 200.0f, 20000.0f);
 }

@@ -27,6 +27,7 @@ struct SpatialParams {
 	float air_cutoff = 20000.0f;     // Air absorption LPF cutoff Hz
 	float reverb_send = 0.0f;        // Reverb send level [0,1]
 	float rt60 = 0.0f;              // Current RT60 estimate for reverb assignment
+	float room_volume = 0.0f;       // Estimated room volume m³ (Phase 4.4 → reverb room_size)
 	float damping = 0.5f;           // Reverb HF damping [0,1] (from room high-band absorption)
 	float delay_s = 0.0f;           // Propagation delay in seconds
 	float portal_gain = 1.0f;        // Portal per-hop aperture/incidence gain [0,1] (Task 15).
@@ -102,6 +103,9 @@ private:
 	// Air absorption: distance beyond which HF rolloff reaches its floor.
 	float air_absorption_max_distance = 100.0f;
 	bool air_absorption_enabled = true;
+	// Artistic scale knob for the ISO 9613-1 air-absorption fit (Phase 4.1).
+	// 1.0 = physical; >1 harsher; project setting audio/symphony/air_absorption_scale.
+	float air_absorption_scale = 1.0f;
 	// Volume sample count for volumetric occlusion this frame (budget-scaled).
 	int _volumetric_samples_this_frame = 8;
 
@@ -223,6 +227,8 @@ public:
 	bool get_air_absorption_enabled() const { return air_absorption_enabled; }
 	void set_air_absorption_max_distance(float p_dist) { air_absorption_max_distance = MAX(p_dist, 1.0f); }
 	float get_air_absorption_max_distance() const { return air_absorption_max_distance; }
+	void set_air_absorption_scale(float p_scale) { air_absorption_scale = CLAMP(p_scale, 0.0f, 10.0f); }
+	float get_air_absorption_scale() const { return air_absorption_scale; }
 
 	// --- Debug ---
 	int get_active_emitter_count() const;

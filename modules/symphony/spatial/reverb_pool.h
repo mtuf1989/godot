@@ -56,6 +56,8 @@ public:
 		float rt60 = 0.0f;
 		float damping = 0.5f;
 		bool active = false;
+		float time_on_slot = 0.0f; // seconds since the last migration (Phase 4.3 dwell)
+		float volume = 0.0f;       // estimated room volume m³ (Phase 4.4 room_size source)
 	};
 
 	struct Config {
@@ -63,6 +65,9 @@ public:
 		float rt60_cluster_threshold = 0.4f; // seconds; emitters within this RT60 share a slot
 		float crossfade_seconds = 0.25f;   // migration crossfade duration
 		float max_rt60 = 10.0f;            // decay_time clamp ceiling
+		// Phase 4.3 — anti-oscillation for a boundary emitter:
+		float rt60_cluster_hysteresis = 0.15f; // a rival slot must beat the current by this (s) to win
+		float min_dwell_seconds = 0.3f;    // minimum time on a slot before another migration is allowed
 	};
 
 	struct Metrics {
@@ -83,6 +88,7 @@ private:
 	// Aggregation accumulators, recomputed each update from assigned emitters.
 	float slot_sum_rt60[MAX_SLOTS] = {};
 	float slot_sum_damping[MAX_SLOTS] = {};
+	float slot_sum_volume[MAX_SLOTS] = {}; // Phase 4.4 — weighted volume per slot.
 	int slot_member_count[MAX_SLOTS] = {};
 
 	// Emitter assignments keyed by emitter id (voice slot).
@@ -97,6 +103,8 @@ private:
 
 	// Map RT60 (seconds) → FDN room_size (0..1). Larger rooms ring longer.
 	static float _rt60_to_room_size(float p_rt60, float p_max_rt60);
+	// Map estimated volume (m³) → FDN room_size (0..1). Returns 0 if no volume.
+	static float _volume_to_room_size(float p_volume);
 
 	// Find the best slot for a given RT60. Returns slot index and sets
 	// r_degraded if the pool was full and we fell back to nearest match.
@@ -109,7 +117,9 @@ public:
 	// Assign (or re-assign) an emitter. Called on the main thread when the
 	// emitter's room acoustics are (re)solved. Returns the assigned slot.
 	// Starts a crossfade if the assignment changed from a previous slot.
-	int assign(int p_emitter_id, float p_rt60, float p_damping, float p_reverb_send);
+	// p_volume (m³, Phase 4.4) drives per-slot room_size; pass 0 to fall back to
+	// the RT60-derived estimate.
+	int assign(int p_emitter_id, float p_rt60, float p_damping, float p_reverb_send, float p_volume = 0.0f);
 
 	// Remove an emitter from the pool (voice released).
 	void release(int p_emitter_id);

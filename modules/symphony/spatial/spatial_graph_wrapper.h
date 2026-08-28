@@ -44,7 +44,12 @@ public:
 	// Compute air absorption cutoff from distance.
 	// Models HF rolloff due to air absorption using log-frequency scaling.
 	// At 0m → 20000 Hz, increases distance → lower cutoff.
-	static float distance_to_air_cutoff(float p_distance, float p_max_distance);
+	// Air absorption cutoff (Hz) as a function of absolute source→listener
+	// distance (metres). Distance-absolute ISO 9613-1 fit (Phase 4.1) — no
+	// longer normalized against an event's max_distance. `p_scale` is the
+	// artistic knob (project setting audio/symphony/air_absorption_scale):
+	// 1.0 = physical, >1 = harsher HF rolloff, 0 = disabled (returns 20 kHz).
+	static float distance_to_air_cutoff(float p_distance, float p_scale = 1.0f);
 };
 
 #endif // SPATIAL_GRAPH_WRAPPER_H

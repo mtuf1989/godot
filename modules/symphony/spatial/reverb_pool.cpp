@@ -9,6 +9,8 @@ void ReverbPool::init(const Config &p_config) {
 	config.active_slots = CLAMP(config.active_slots, 1, MAX_SLOTS);
 	config.rt60_cluster_threshold = MAX(config.rt60_cluster_threshold, 0.001f);
 	config.max_rt60 = MAX(config.max_rt60, 0.1f);
+	config.rt60_cluster_hysteresis = MAX(config.rt60_cluster_hysteresis, 0.0f);
+	config.min_dwell_seconds = MAX(config.min_dwell_seconds, 0.0f);
 	reset();
 }
 
@@ -18,6 +20,7 @@ void ReverbPool::reset() {
 		slot_centroid_rt60[i] = 0.0f;
 		slot_sum_rt60[i] = 0.0f;
 		slot_sum_damping[i] = 0.0f;
+		slot_sum_volume[i] = 0.0f;
 		slot_member_count[i] = 0;
 	}
 	assignments.clear();
@@ -26,11 +29,24 @@ void ReverbPool::reset() {
 }
 
 float ReverbPool::_rt60_to_room_size(float p_rt60, float p_max_rt60) {
-	// Map RT60 (seconds) → room_size (0..1). The FDN derives its delay-line
-	// lengths from room_size; longer RT60 implies a larger space, so scale
-	// linearly against the configured ceiling and clamp.
+	// Fallback room_size when no volume estimate is available: map RT60 →
+	// room_size linearly against the ceiling. Volume-based mapping (Phase 4.4)
+	// is preferred and used whenever an emitter carries a volume estimate.
 	float t = (p_max_rt60 > 0.001f) ? (p_rt60 / p_max_rt60) : 0.0f;
 	return CLAMP(t, 0.01f, 1.0f);
+}
+
+float ReverbPool::_volume_to_room_size(float p_volume) {
+	// Phase 4.4: room_size ~ characteristic room dimension / reference dimension.
+	// cbrt(volume) is the side length of the equivalent cube; normalize against
+	// a reference of ~30 m (a large hall) so typical rooms land mid-range and a
+	// small closet is near the floor.
+	static const float REFERENCE_DIMENSION = 30.0f;
+	if (p_volume <= 0.0f) {
+		return 0.0f; // caller falls back to the RT60 estimate
+	}
+	float dim = Math::pow(p_volume, 1.0f / 3.0f);
+	return CLAMP(dim / REFERENCE_DIMENSION, 0.01f, 1.0f);
 }
 
 int ReverbPool::_find_slot_for(float p_rt60, bool &r_degraded) {
@@ -76,10 +92,11 @@ int ReverbPool::_find_slot_for(float p_rt60, bool &r_degraded) {
 	return nearest;
 }
 
-int ReverbPool::assign(int p_emitter_id, float p_rt60, float p_damping, float p_reverb_send) {
+int ReverbPool::assign(int p_emitter_id, float p_rt60, float p_damping, float p_reverb_send, float p_volume) {
 	p_rt60 = CLAMP(p_rt60, 0.0f, config.max_rt60);
 	p_damping = CLAMP(p_damping, 0.0f, 1.0f);
 	p_reverb_send = CLAMP(p_reverb_send, 0.0f, 1.0f);
+	p_volume = MAX(p_volume, 0.0f);
 
 	EmitterAssignment *existing = assignments.getptr(p_emitter_id);
 
@@ -109,6 +126,7 @@ int ReverbPool::assign(int p_emitter_id, float p_rt60, float p_damping, float p_
 		a.send = p_reverb_send;
 		a.rt60 = p_rt60;
 		a.damping = p_damping;
+		a.volume = p_volume;
 		a.active = true;
 		assignments.insert(p_emitter_id, a);
 		return target_slot;
@@ -118,6 +136,22 @@ int ReverbPool::assign(int p_emitter_id, float p_rt60, float p_damping, float p_
 	existing->send = p_reverb_send;
 	existing->rt60 = p_rt60;
 	existing->damping = p_damping;
+	existing->volume = p_volume;
+
+	// Phase 4.3 — hysteresis + dwell to stop a boundary emitter oscillating
+	// between two slots (centroids drift and assign() runs every frame). Only
+	// migrate if the emitter has dwelt on its current slot at least
+	// min_dwell_seconds AND the candidate is a clearly better RT60 match (beats
+	// the current slot's distance by more than rt60_cluster_hysteresis).
+	if (target_slot != existing->slot && existing->slot >= 0 && existing->slot < config.active_slots) {
+		const float cur_dist = Math::abs(slot_centroid_rt60[existing->slot] - p_rt60);
+		const float cand_dist = Math::abs(slot_centroid_rt60[target_slot] - p_rt60);
+		const bool dwell_ok = existing->time_on_slot >= config.min_dwell_seconds;
+		const bool clearly_better = cand_dist < cur_dist - config.rt60_cluster_hysteresis;
+		if (!dwell_ok || !clearly_better) {
+			target_slot = existing->slot; // keep current slot
+		}
+	}
 
 	if (target_slot != existing->slot) {
 		// Migration — start (or restart) a crossfade from the current slot.
@@ -130,6 +164,7 @@ int ReverbPool::assign(int p_emitter_id, float p_rt60, float p_damping, float p_
 			existing->slot = target_slot;
 			existing->prev_slot = old_target;
 			existing->crossfade = 1.0f - existing->crossfade;
+			existing->time_on_slot = 0.0f;
 			metrics.migrations++;
 		} else {
 			if (existing->prev_slot < 0) {
@@ -142,6 +177,7 @@ int ReverbPool::assign(int p_emitter_id, float p_rt60, float p_damping, float p_
 				existing->crossfade = 1.0f;
 			} else {
 				existing->crossfade = 0.0f;
+				existing->time_on_slot = 0.0f;
 				metrics.migrations++;
 			}
 		}
@@ -159,6 +195,7 @@ void ReverbPool::update(float p_delta) {
 	const float rate = _crossfade_rate();
 	for (KeyValue<int, EmitterAssignment> &kv : assignments) {
 		EmitterAssignment &a = kv.value;
+		a.time_on_slot += p_delta; // Phase 4.3 dwell timer.
 		if (a.prev_slot >= 0 && a.crossfade < 1.0f) {
 			a.crossfade += rate * p_delta;
 			if (a.crossfade >= 1.0f) {
@@ -175,6 +212,7 @@ void ReverbPool::update(float p_delta) {
 	for (int i = 0; i < MAX_SLOTS; i++) {
 		slot_sum_rt60[i] = 0.0f;
 		slot_sum_damping[i] = 0.0f;
+		slot_sum_volume[i] = 0.0f;
 		slot_member_count[i] = 0;
 	}
 
@@ -191,6 +229,7 @@ void ReverbPool::update(float p_delta) {
 		if (a.slot >= 0 && a.slot < MAX_SLOTS) {
 			slot_sum_rt60[a.slot] += a.rt60 * w;
 			slot_sum_damping[a.slot] += a.damping * w;
+			slot_sum_volume[a.slot] += a.volume * w;
 			slot_weight[a.slot] += w;
 			slot_member_count[a.slot]++;
 		}
@@ -198,6 +237,7 @@ void ReverbPool::update(float p_delta) {
 			float pw = 1.0f - a.crossfade;
 			slot_sum_rt60[a.prev_slot] += a.rt60 * pw;
 			slot_sum_damping[a.prev_slot] += a.damping * pw;
+			slot_sum_volume[a.prev_slot] += a.volume * pw;
 			slot_weight[a.prev_slot] += pw;
 			slot_member_count[a.prev_slot]++;
 		}
@@ -224,7 +264,11 @@ void ReverbPool::update(float p_delta) {
 			slot_centroid_rt60[i] = mean_rt60;
 			slots[i].decay_time = CLAMP(mean_rt60, 0.1f, config.max_rt60);
 			slots[i].damping = CLAMP(mean_damping, 0.0f, 1.0f);
-			slots[i].room_size = _rt60_to_room_size(mean_rt60, config.max_rt60);
+			// Phase 4.4: prefer volume-derived room_size; fall back to the RT60
+			// map when no volume estimate is present for this slot.
+			float mean_volume = slot_sum_volume[i] / slot_weight[i];
+			float vol_size = _volume_to_room_size(mean_volume);
+			slots[i].room_size = (vol_size > 0.0f) ? vol_size : _rt60_to_room_size(mean_rt60, config.max_rt60);
 			wet_target = 1.0f;
 			active_slots_used++;
 		} else {

@@ -154,13 +154,21 @@ TEST_CASE("[Symphony][Spatial][Volumetric] Null physics space is fully audible")
 // --- Air absorption cutoff wiring --------------------------------------
 
 TEST_CASE("[Symphony][Spatial][Volumetric] Air cutoff falls with distance") {
-	float near_hz = SpatialGraphWrapper::distance_to_air_cutoff(1.0f, 100.0f);
-	float mid_hz = SpatialGraphWrapper::distance_to_air_cutoff(50.0f, 100.0f);
-	float far_hz = SpatialGraphWrapper::distance_to_air_cutoff(100.0f, 100.0f);
+	// Phase 4.1: distance-absolute ISO 9613-1 fit; 2nd arg is now the artistic
+	// scale (1.0 = physical), not max_distance. Cutoff still drops with distance.
+	float near_hz = SpatialGraphWrapper::distance_to_air_cutoff(1.0f, 1.0f);
+	float mid_hz = SpatialGraphWrapper::distance_to_air_cutoff(50.0f, 1.0f);
+	float far_hz = SpatialGraphWrapper::distance_to_air_cutoff(300.0f, 1.0f);
 	CHECK(near_hz > mid_hz);
 	CHECK(mid_hz > far_hz);
 	CHECK(far_hz >= 200.0f); // clamped floor
 	CHECK(near_hz <= 20000.0f);
+	// scale=0 disables the effect (wide open).
+	CHECK(SpatialGraphWrapper::distance_to_air_cutoff(100.0f, 0.0f) == doctest::Approx(20000.0f));
+	// Sanity: ~30 m at physical scale lands in the several-kHz range.
+	float at30 = SpatialGraphWrapper::distance_to_air_cutoff(30.0f, 1.0f);
+	CHECK(at30 > 4000.0f);
+	CHECK(at30 < 12000.0f);
 }
 
 } // namespace TestSymphonyVolumetric

@@ -32,6 +32,13 @@ SpatialAcousticsEngine::SpatialAcousticsEngine() {
 	ReverbPool::Config rp_cfg;
 	rp_cfg.active_slots = reverb_slots;
 	reverb_pool.init(rp_cfg);
+
+	// Air absorption artistic scale knob (Phase 4.1). Physical default 1.0; the
+	// ISO 9613-1 fit is distance-absolute, so document this prominently or a
+	// tightened value will read as "too dark".
+	air_absorption_scale = GLOBAL_DEF("audio/symphony/air_absorption_scale", 1.0f);
+	ProjectSettings::get_singleton()->set_custom_property_info(PropertyInfo(
+			Variant::FLOAT, "audio/symphony/air_absorption_scale", PROPERTY_HINT_RANGE, "0.0,10.0,0.1"));
 }
 
 SpatialAcousticsEngine::~SpatialAcousticsEngine() {
@@ -226,7 +233,7 @@ void SpatialAcousticsEngine::_update_reverb_pool(float p_delta) {
 			continue;
 		}
 		const SpatialParams &sp = emitters[i].smoothed;
-		reverb_pool.assign(emitters[i].voice_slot, sp.rt60, sp.damping, sp.reverb_send);
+		reverb_pool.assign(emitters[i].voice_slot, sp.rt60, sp.damping, sp.reverb_send, sp.room_volume);
 	}
 
 	// Advance crossfades and recompute per-slot aggregated FDN parameters.
@@ -416,8 +423,7 @@ void SpatialAcousticsEngine::_solve_occlusion_for_emitter(int p_emitter_idx, Phy
 	// we also seed target.air_cutoff so the no-portal path has a value.
 	if (air_absorption_enabled) {
 		float distance = e.source_position.distance_to(listener_position);
-		float ref = (e.max_distance > 0.0f) ? e.max_distance : air_absorption_max_distance;
-		e.air_cutoff_base = SpatialGraphWrapper::distance_to_air_cutoff(distance, ref);
+		e.air_cutoff_base = SpatialGraphWrapper::distance_to_air_cutoff(distance, air_absorption_scale);
 	} else {
 		e.air_cutoff_base = 20000.0f;
 	}
@@ -433,6 +439,7 @@ void SpatialAcousticsEngine::_solve_room_for_emitter(int p_emitter_idx, PhysicsD
 		e.target.rt60 = cached.rt60;
 		e.target.reverb_send = cached.reverb_send;
 		e.target.damping = cached.high_band_absorption;
+		e.target.room_volume = cached.volume;
 		return;
 	}
 
@@ -446,6 +453,7 @@ void SpatialAcousticsEngine::_solve_room_for_emitter(int p_emitter_idx, PhysicsD
 	e.target.rt60 = room.rt60;
 	e.target.reverb_send = RoomEstimator::openness_to_reverb_send(room.openness);
 	e.target.damping = room.high_band_absorption;
+	e.target.room_volume = room.volume;
 
 	// Store in cache for nearby emitters to reuse.
 	ProbeCache::RoomProbeResult to_cache;
@@ -529,9 +537,16 @@ void SpatialAcousticsEngine::_smooth_params(int p_emitter_idx, float p_delta) {
 	e.smoothed.material_transmission[0] = a * e.target.material_transmission[0] + b * e.smoothed.material_transmission[0];
 	e.smoothed.material_transmission[1] = a * e.target.material_transmission[1] + b * e.smoothed.material_transmission[1];
 	e.smoothed.material_transmission[2] = a * e.target.material_transmission[2] + b * e.smoothed.material_transmission[2];
-	e.smoothed.air_cutoff = a * e.target.air_cutoff + b * e.smoothed.air_cutoff;
+	// Phase 4.2: smooth air_cutoff in the LOG domain so a filter sweep is
+	// perceptually even (equal ratios per step) rather than bunched at the top.
+	{
+		const float tgt = MAX(e.target.air_cutoff, 1.0f);
+		const float cur = MAX(e.smoothed.air_cutoff, 1.0f);
+		e.smoothed.air_cutoff = Math::exp(a * Math::log(tgt) + b * Math::log(cur));
+	}
 	e.smoothed.reverb_send = a * e.target.reverb_send + b * e.smoothed.reverb_send;
 	e.smoothed.rt60 = a * e.target.rt60 + b * e.smoothed.rt60;
+	e.smoothed.room_volume = a * e.target.room_volume + b * e.smoothed.room_volume;
 	e.smoothed.damping = a * e.target.damping + b * e.smoothed.damping;
 	e.smoothed.delay_s = a * e.target.delay_s + b * e.smoothed.delay_s;
 	e.smoothed.portal_gain = a * e.target.portal_gain + b * e.smoothed.portal_gain;
@@ -832,6 +847,8 @@ void SpatialAcousticsEngine::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_air_absorption_enabled"), &SpatialAcousticsEngine::get_air_absorption_enabled);
 	ClassDB::bind_method(D_METHOD("set_air_absorption_max_distance", "distance"), &SpatialAcousticsEngine::set_air_absorption_max_distance);
 	ClassDB::bind_method(D_METHOD("get_air_absorption_max_distance"), &SpatialAcousticsEngine::get_air_absorption_max_distance);
+	ClassDB::bind_method(D_METHOD("set_air_absorption_scale", "scale"), &SpatialAcousticsEngine::set_air_absorption_scale);
+	ClassDB::bind_method(D_METHOD("get_air_absorption_scale"), &SpatialAcousticsEngine::get_air_absorption_scale);
 
 	// Graph wrapper
 	ClassDB::bind_method(D_METHOD("wrap_stream", "stream", "loop"), &SpatialAcousticsEngine::wrap_stream, DEFVAL(false));

@@ -75,8 +75,12 @@ float PortalRouter::diffraction_cutoff(const Vector3 &p_true_source, const Vecto
 	}
 	const float deviation = total_deviation(p_true_source, p_listener, p_hops);
 	// Map cumulative deviation [0, π] → [max, min] cutoff. Beyond π (a full
-	// reversal) we clamp at the minimum. Linear in angle is a good first model
-	// (Steam Audio's DeviationModel; the perceptual curve can be tuned later).
+	// reversal) we clamp at the minimum. Phase 4.2: interpolate in the LOG
+	// (frequency-ratio) domain — max·(min/max)^t — so a bend produces a
+	// perceptually meaningful cutoff (a 90° bend lands near 3.7 kHz instead of
+	// an inaudible 10.35 kHz that linear-in-Hz would give).
 	const float t = CLAMP(deviation / Math::PI, 0.0f, 1.0f);
-	return Math::lerp(p_max_cutoff, p_min_cutoff, t);
+	const float hi = MAX(p_max_cutoff, 1.0f);
+	const float lo = MAX(p_min_cutoff, 1.0f);
+	return hi * Math::pow(lo / hi, t);
 }
