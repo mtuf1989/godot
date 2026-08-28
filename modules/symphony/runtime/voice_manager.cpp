@@ -750,17 +750,12 @@ void SymphonyVoicePool::process_frame() {
 	int active = 0;
 	int virtual_count = 0;
 
-	// Compute wall-clock delta since the last process_frame() for time-based
-	// countdowns (propagation delay). First call yields 0 (no jump).
-	uint64_t now_usec = OS::get_singleton()->get_ticks_usec();
-	float delta_s = 0.0f;
-	if (last_process_usec != 0 && now_usec > last_process_usec) {
-		delta_s = (float)(now_usec - last_process_usec) / 1000000.0f;
-	}
-	last_process_usec = now_usec;
-
-	// Advance any pending propagation-delay countdowns before the state machine.
-	tick_deferred_starts(delta_s);
+	// Propagation-delay countdowns are advanced by tick_deferred_starts(delta),
+	// which the game layer drives from AudioManager._process(delta). Driving it
+	// from _process (which respects SceneTree pause) avoids the resume-from-pause
+	// mass-fire bug: a wall-clock delta measured here would accumulate the entire
+	// pause duration into one frame and fire every pending voice simultaneously.
+	// process_frame() therefore does NOT tick the countdown itself.
 
 	for (int i = 0; i < pool_size; i++) {
 		switch (slots[i].state) {

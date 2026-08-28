@@ -127,9 +127,6 @@ private:
 
 	void _update_importance_batch(int p_start, int p_count);
 
-	// Internal frame delta tracking for time-based countdowns (propagation delay).
-	uint64_t last_process_usec = 0;
-
 protected:
 	static void _bind_methods();
 
