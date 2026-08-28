@@ -40,6 +40,7 @@
 #include "nodes/delay/symphony_delay_line.h"
 #include "nodes/delay/symphony_feedback_path.h"
 #include "nodes/delay/symphony_pitch_shifter.h"
+#include "nodes/delay/symphony_early_reflections.h"
 #include "nodes/utility/symphony_parameter_smoother.h"
 #include "nodes/utility/symphony_envelope_follower.h"
 #include "nodes/utility/symphony_frequency_envelope_follower.h"
@@ -62,6 +63,8 @@
 
 #include "spatial/acoustic_material.h"
 #include "spatial/acoustic_body_3d.h"
+#include "spatial/acoustic_room_3d.h"
+#include "spatial/acoustic_portal_3d.h"
 #include "spatial/spatial_acoustics_engine.h"
 
 #include "core/object/class_db.h"
@@ -69,6 +72,7 @@
 
 #ifdef TOOLS_ENABLED
 #include "editor/symphony_editor_plugin.h"
+#include "editor/acoustic_gizmos.h"
 #endif
 
 void initialize_symphony_module(ModuleInitializationLevel p_level) {
@@ -142,6 +146,9 @@ void initialize_symphony_module(ModuleInitializationLevel p_level) {
 		// S3 Delay
 		SymphonyFDNReverb::register_operator();
 
+		// S6 Delay — shoebox early reflections
+		SymphonyEarlyReflections::register_operator();
+
 		// S4 Spectral
 		SymphonyPhaseVocoder::register_operator();
 		SymphonySpectralGate::register_operator();
@@ -168,6 +175,8 @@ void initialize_symphony_module(ModuleInitializationLevel p_level) {
 		GDREGISTER_CLASS(TransitionAnalyzer);
 		GDREGISTER_CLASS(AcousticMaterial);
 		GDREGISTER_CLASS(AcousticBody3D);
+		GDREGISTER_CLASS(AcousticRoom3D);
+		GDREGISTER_CLASS(AcousticPortal3D);
 		GDREGISTER_CLASS(SpatialAcousticsEngine);
 
 		// Create voice manager singleton (DSP graph tracking)
@@ -206,6 +215,7 @@ void initialize_symphony_module(ModuleInitializationLevel p_level) {
 		GDREGISTER_CLASS(SymphonyNodeInspectorProxy);
 		GDREGISTER_CLASS(SymphonyGraphEditor);
 		EditorPlugins::add_by_type<SymphonyEditorPlugin>();
+		EditorPlugins::add_by_type<AcousticGizmosEditorPlugin>();
 #endif
 	}
 }

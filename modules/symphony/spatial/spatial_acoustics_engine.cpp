@@ -4,6 +4,9 @@
 #include "core/config/project_settings.h"
 #include "servers/physics_3d/physics_server_3d.h"
 
+#include "acoustic_portal_3d.h"
+#include "acoustic_room_3d.h"
+
 SpatialAcousticsEngine *SpatialAcousticsEngine::singleton = nullptr;
 
 SpatialAcousticsEngine::SpatialAcousticsEngine() {
@@ -148,6 +151,21 @@ void SpatialAcousticsEngine::update(float p_delta) {
 		}
 	}
 
+	// Portal propagation (Task 15): resolve room-to-room paths and fold apparent
+	// position, per-hop attenuation, and diffraction LPF into each emitter's
+	// target. Runs before smoothing so the results are smoothed like everything
+	// else. Cheap when there are no rooms/portals authored.
+	if (portal_propagation_enabled) {
+		_rebuild_portal_graph_if_needed();
+		if (portal_graph.node_count > 0) {
+			for (int i = 0; i < MAX_EMITTERS; i++) {
+				if (emitters[i].active) {
+					_solve_portals_for_emitter(i);
+				}
+			}
+		}
+	}
+
 	// Smoothing and publish run for ALL active emitters every frame (cheap).
 	for (int i = 0; i < MAX_EMITTERS; i++) {
 		if (!emitters[i].active) {
@@ -181,6 +199,127 @@ void SpatialAcousticsEngine::_update_reverb_pool(float p_delta) {
 
 	// Advance crossfades and recompute per-slot aggregated FDN parameters.
 	reverb_pool.update(p_delta);
+}
+
+// --- Portal propagation (Task 15) ---
+
+void SpatialAcousticsEngine::_rebuild_portal_graph_if_needed() {
+	// Combine the room + portal epochs into one signature. Any add/remove/move/
+	// open/close bumps one of them, triggering a rebuild + path-cache flush.
+	const uint64_t epoch = AcousticRoom3D::get_registry_epoch() ^ (AcousticPortal3D::get_state_epoch() * 1099511628211ULL);
+	if (epoch == portal_graph_epoch && portal_graph.node_count == AcousticRoom3D::get_room_count()) {
+		return;
+	}
+	portal_graph_epoch = epoch;
+
+	const int room_count = AcousticRoom3D::get_room_count();
+	portal_graph.set_node_count(room_count);
+	_room_ptr_to_node.clear();
+	for (int i = 0; i < room_count; i++) {
+		AcousticRoom3D *room = AcousticRoom3D::get_room(i);
+		if (room) {
+			_room_ptr_to_node[room->get_instance_id()] = i;
+		}
+	}
+
+	// Add an edge per portal that connects two registered rooms. Weight is the
+	// straight-line distance between the two room centres through the portal
+	// (source→portal + portal→dest is unknown here, so use portal-centred
+	// half-distances as a stable proxy). Distance is refined per-emitter later.
+	const int portal_count = AcousticPortal3D::get_portal_count();
+	for (int i = 0; i < portal_count; i++) {
+		AcousticPortal3D *portal = AcousticPortal3D::get_portal(i);
+		if (portal == nullptr) {
+			continue;
+		}
+		AcousticRoom3D *ra = portal->get_room_a();
+		AcousticRoom3D *rb = portal->get_room_b();
+		if (ra == nullptr || rb == nullptr) {
+			continue;
+		}
+		int *na = _room_ptr_to_node.getptr(ra->get_instance_id());
+		int *nb = _room_ptr_to_node.getptr(rb->get_instance_id());
+		if (na == nullptr || nb == nullptr) {
+			continue;
+		}
+		const Vector3 center = portal->get_world_center();
+		const float weight = ra->get_global_transform().origin.distance_to(center) +
+				center.distance_to(rb->get_global_transform().origin);
+		portal_graph.add_edge(*na, *nb, MAX(weight, 0.01f), portal->is_open(), center, i);
+	}
+
+	// Portal state change invalidates cached paths.
+	portal_path_cache.check_epoch(epoch);
+}
+
+void SpatialAcousticsEngine::_solve_portals_for_emitter(int p_emitter_idx) {
+	EmitterState &e = emitters[p_emitter_idx];
+
+	// Reset portal outputs to "no effect" each frame BEFORE solving, so a lost
+	// path (moved into the same room, door closed, etc.) cleanly reverts and the
+	// gain never compounds across frames.
+	e.target.portal_gain = 1.0f;
+	e.target.apparent_position = e.source_position;
+
+	// Resolve which rooms the source and listener occupy.
+	AcousticRoom3D *src_room = AcousticRoom3D::find_room_for_point(e.source_position);
+	AcousticRoom3D *lis_room = AcousticRoom3D::find_room_for_point(listener_position);
+
+	// No room info, or same room → no portal effect.
+	if (src_room == nullptr || lis_room == nullptr || src_room == lis_room) {
+		return;
+	}
+
+	int *src_node = _room_ptr_to_node.getptr(src_room->get_instance_id());
+	int *lis_node = _room_ptr_to_node.getptr(lis_room->get_instance_id());
+	if (src_node == nullptr || lis_node == nullptr) {
+		return;
+	}
+
+	// Solve (or fetch cached) the room-to-room path.
+	PortalPath path;
+	if (!portal_path_cache.get(*src_node, *lis_node, path)) {
+		path = portal_solver.solve(portal_graph, *src_node, *lis_node);
+		portal_path_cache.put(*src_node, *lis_node, path);
+	}
+
+	// Unreachable (all doors closed) or same-room short-circuit → keep true
+	// position + unity gain; the occlusion/transmission path handles any leak.
+	if (!path.reachable || path.edge_ids.is_empty()) {
+		return;
+	}
+
+	// Build the ordered hop geometry from the path's portal edges.
+	LocalVector<PortalHop> hops;
+	for (uint32_t h = 0; h < path.edge_ids.size(); h++) {
+		const PortalEdge &edge = portal_graph.edges[path.edge_ids[h]];
+		AcousticPortal3D *portal = AcousticPortal3D::get_portal(edge.portal_id);
+		if (portal == nullptr) {
+			continue;
+		}
+		PortalHop hop;
+		hop.center = portal->get_world_center();
+		hop.normal = portal->get_world_normal();
+		hop.aperture_area = portal->get_aperture_area();
+		hops.push_back(hop);
+	}
+	if (hops.is_empty()) {
+		return;
+	}
+
+	// Apparent position → the portal nearest the listener (Godot's panner then
+	// points at the doorway, not through the wall).
+	e.target.apparent_position = PortalRouter::apparent_position(e.source_position, listener_position, hops);
+
+	// Per-hop aperture + incidence attenuation. Published as its OWN gain layer
+	// (portal_gain) — NOT folded into `attenuation`, which VoicePool owns/mirrors.
+	// The GDScript layer applies this multiplicatively so there is no double count.
+	e.target.portal_gain = PortalRouter::path_gain(e.source_position, listener_position, hops);
+
+	// Diffraction LPF: stack by MINIMUM frequency with the existing air/occlusion
+	// cutoff (never multiply — plan invariant).
+	const float diff_cut = PortalRouter::diffraction_cutoff(e.source_position, listener_position, hops, 20000.0f, portal_diffraction_min_cutoff);
+	e.target.air_cutoff = MIN(e.target.air_cutoff, diff_cut);
 }
 
 // --- Occlusion ---
@@ -335,6 +474,7 @@ void SpatialAcousticsEngine::_smooth_params(int p_emitter_idx, float p_delta) {
 	e.smoothed.rt60 = a * e.target.rt60 + b * e.smoothed.rt60;
 	e.smoothed.damping = a * e.target.damping + b * e.smoothed.damping;
 	e.smoothed.delay_s = a * e.target.delay_s + b * e.smoothed.delay_s;
+	e.smoothed.portal_gain = a * e.target.portal_gain + b * e.smoothed.portal_gain;
 	e.smoothed.apparent_position = e.target.apparent_position.lerp(e.smoothed.apparent_position, b);
 
 	// Attenuation is not smoothed here — it's driven by VoicePool's own system.
@@ -463,6 +603,29 @@ float SpatialAcousticsEngine::compute_spatial_gain(int p_voice_slot) const {
 	// Gain derived from mean transmission (keeps in sync with occlusion).
 	// Fully occluded (transmission=0) → gain 0; fully open → gain 1.
 	return (sp.transmission[0] + sp.transmission[1] + sp.transmission[2]) / 3.0f;
+}
+
+// --- Portal routing accessors (Task 15) ---
+
+Vector3 SpatialAcousticsEngine::get_emitter_apparent_position(int p_voice_slot) const {
+	const int *idx_ptr = slot_to_emitter.getptr(p_voice_slot);
+	if (!idx_ptr) {
+		return Vector3();
+	}
+	// Portal-redirected position (equals the true source when no portal path
+	// applies). GDScript sets the AudioStreamPlayer3D global_position to this so
+	// the panner points at the doorway rather than through the wall.
+	return emitters[*idx_ptr].smoothed.apparent_position;
+}
+
+float SpatialAcousticsEngine::get_emitter_portal_gain(int p_voice_slot) const {
+	const int *idx_ptr = slot_to_emitter.getptr(p_voice_slot);
+	if (!idx_ptr) {
+		return 1.0f;
+	}
+	// Per-hop aperture/incidence gain [0,1]. Its own layer — the GDScript layer
+	// applies it multiplicatively on top of VoicePool attenuation (no double count).
+	return emitters[*idx_ptr].smoothed.portal_gain;
 }
 
 // --- Reverb pool accessors (Task 10) ---
@@ -636,4 +799,14 @@ void SpatialAcousticsEngine::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_reverb_migrations"), &SpatialAcousticsEngine::get_reverb_migrations);
 	ClassDB::bind_method(D_METHOD("get_reverb_degraded_assignments"), &SpatialAcousticsEngine::get_reverb_degraded_assignments);
 	ClassDB::bind_method(D_METHOD("reverb_pool_touched_audio_server"), &SpatialAcousticsEngine::reverb_pool_touched_audio_server);
+
+	// Portal propagation (Task 15)
+	ClassDB::bind_method(D_METHOD("set_portal_propagation_enabled", "enabled"), &SpatialAcousticsEngine::set_portal_propagation_enabled);
+	ClassDB::bind_method(D_METHOD("get_portal_propagation_enabled"), &SpatialAcousticsEngine::get_portal_propagation_enabled);
+	ClassDB::bind_method(D_METHOD("set_portal_diffraction_min_cutoff", "hz"), &SpatialAcousticsEngine::set_portal_diffraction_min_cutoff);
+	ClassDB::bind_method(D_METHOD("get_portal_diffraction_min_cutoff"), &SpatialAcousticsEngine::get_portal_diffraction_min_cutoff);
+	ClassDB::bind_method(D_METHOD("get_portal_graph_room_count"), &SpatialAcousticsEngine::get_portal_graph_room_count);
+	ClassDB::bind_method(D_METHOD("get_portal_graph_edge_count"), &SpatialAcousticsEngine::get_portal_graph_edge_count);
+	ClassDB::bind_method(D_METHOD("get_emitter_apparent_position", "voice_slot"), &SpatialAcousticsEngine::get_emitter_apparent_position);
+	ClassDB::bind_method(D_METHOD("get_emitter_portal_gain", "voice_slot"), &SpatialAcousticsEngine::get_emitter_portal_gain);
 }

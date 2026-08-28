@@ -1,7 +1,7 @@
 # Spatial Acoustics Handoff Notes — Next Session
 
-**Date:** 2026-08-28 (updated after Task 12 — S5 complete)  
-**Branch:** `features/symphony_fixed`  
+**Date:** 2026-08-28 (updated after S6 complete + portal routing getters exposed to GDScript)  
+**Branch:** `features/up_symphony`  
 **Plan source of truth:** `modules/symphony/Spatial_Acoustics_for_Symphony_Plan.md`  
 **Reference addon:** `/Users/luong.pham/Work/spatial_audio_player_3d`  
 **SeqLock notes:** `/Users/luong.pham/Work/game-template/docs/audio/plan/notes_future_milestone.md`
@@ -24,12 +24,124 @@
 | **Task 10** | Shared reverb pool — RT60-proximity clustering, N slots, migration crossfade, anti-regression | ✅ Done |
 | **Task 11** | Propagation delay — SoundEvent speed_of_sound/enable, deferred voice start (no SceneTreeTimer) | ✅ Done |
 | **Task 12** | Volumetric occlusion — sphere-volume sampling, centre-validation, graduated occlusion; distance→air_cutoff wiring | ✅ Done |
+| **Task 13** | Room/portal authoring nodes (AcousticRoom3D, AcousticPortal3D) + editor gizmos + membership | ✅ Done |
+| **Task 14** | Portal graph + Dijkstra path solve behind virtual PortalPathSolver + path cache | ✅ Done |
+| **Task 15** | Portal routing — apparent_position, aperture/incidence path_gain, DeviationModel diffraction LPF; engine integration + GDScript getters | ✅ Done |
+| **Task 16** | Shoebox early reflections — SymphonyEarlyReflections operator (6 image sources) | ✅ Done |
 
-**Phase S5 (Spatial Acoustics Core) — COMPLETE & TSan-validated.** Next: S6 (Portal Propagation & Reflections, Task 13+).
+**Phase S5 (Spatial Acoustics Core) — COMPLETE & TSan-validated.**
+**Phase S6 (Portal Propagation & Reflections) — COMPLETE & TSan-validated (C++ side).**
+Next: G7-style cross-repo integration pass in `game-template/` (consume S6 getters; wire early-reflections per reverb slot; live-SceneTree GdUnit4 tests) + two deferred modelling refinements (see below).
 
-**Tests:** 90/90 pass (195,221 assertions), incl. 12 [Symphony][Spatial][Reverb] + 12 [Symphony][Spatial][Propagation] + 11 [Symphony][Spatial][Volumetric] cases.
-**TSan:** 90/90 pass under ThreadSanitizer, 0 data races (S5 gate cleared).
-**Last build:** ~11.5s editor arm64, clean (2 pre-existing unrelated warnings).
+**Tests:** 126/126 pass (195,343 assertions). S5: 12 [Reverb] + 12 [Propagation] + 11 [Volumetric].
+S6: 10 [Portal] + 10 [PortalGraph] + 9 [PortalRouter] + 7 [EarlyReflections].
+**TSan:** 126/126 pass under ThreadSanitizer, 0 data races (S5 + S6 gates cleared).
+**Last build:** ~12s editor arm64, clean (2 pre-existing unrelated warnings).
+
+### ⏭️ Deferred modelling refinements (for the integration pass — NOT bugs)
+1. **Portal edge weight is a room-centre proxy** — `_rebuild_portal_graph_if_needed()` weights each
+   edge as `roomA_center→portal + portal→roomB_center`, not the true per-emitter source→listener
+   routed distance. Fine for *which* rooms to route through; refine if routed propagation delay /
+   distance-attenuation needs to track the real path length.
+2. **Authored room material / reverb_preset_override unused for RT60** — `AcousticRoom3D.material`
+   and `reverb_preset_override` are authored but the engine still derives RT60/reverb solely from
+   the Task 9 ray-fan estimate. "Authored overrides estimate" is the intended enhancement.
+
+---
+
+## ✅ Track A — Cross-repo GDScript Integration (DONE 2026-08-28)
+
+S5 is now **audible end-to-end**. All three remaining GDScript wiring items were
+implemented in `game-template/addons/symphony_audio/audio_manager.gd` and validated
+by a real-SceneTree GdUnit4 suite. Nothing here touched the C++ module.
+
+| Item | What was wired | Status |
+|------|----------------|--------|
+| **T12** | `play_event_3d`: after `register_emitter`, call `set_emitter_source_radius(slot, event.source_radius)` + `set_emitter_max_distance(slot, event.max_distance)`. | ✅ |
+| **T11** | `play_event_3d` dispatches `play_event(event, position, true)`, reads `delay_s`; if delayed, holds `player.play()` (tracked in `_pending_start_slots`) until `is_slot_start_pending(slot)` clears — polled in new `_start_deferred_voices()` in `_process`. No SceneTreeTimer. Cleanup in `_release_slot` + both `_detach_stolen_slot` branches. | ✅ |
+| **T10** | `_setup_reverb_buses()` (in `_ready()`) creates N = `get_reverb_pool_slots()` persistent `SpatialReverbK` send buses ONCE (one `AudioEffectReverb` each → Master), records bus-count baseline. `_update_reverb_routing()` (per frame, after `SpatialAcousticsEngine.update`) pushes slot `room_size`/`damping`/`wet_gain` into each bus effect and routes 3D voices to their assigned slot bus. Never adds/removes buses at runtime (R4). | ✅ |
+
+**New public accessors on AudioManager (for tests/diagnostics):** `get_reverb_bus_count_baseline()`, `get_reverb_bus_names()`.
+
+**Tests:** `game-template/test/addons/symphony_audio/spatial_acoustics_integration_test.gd`
+(`class SpatialAcousticsIntegrationTest`) — **6/6 pass, 0 errors/failures/orphans, exit 0**:
+reverb buses created once; **bus count constant across 6 room transitions + `reverb_pool_touched_audio_server()` false** (T10 R4); distant one-shot schedules delay >0.5s + slot pending, near/disabled → no delay (T11); **real StaticBody3D+BoxShape3D collider between a sized emitter and listener drives `compute_occlusion_cutoff` below 19 kHz** (T12 — this also closes Deferred Follow-Up #2 below).
+
+**Run the suite:**
+```bash
+cd /Users/luong.pham/Work/game-template
+export GODOT_BIN=/Users/luong.pham/Work/godot/bin/godot.macos.editor.arm64
+./addons/gdUnit4/runtest.sh --godot_binary "$GODOT_BIN" \
+  -a res://test/addons/symphony_audio/spatial_acoustics_integration_test.gd -c --ignoreHeadlessMode
+```
+(Pre-existing CLI noise — `"!configured"` StringName errors, remote-debugger + `godot_mcp/.../game_helper.gd:23` errors — is unrelated to this work and appears regardless. Suite still reports PASSED / exit 0.)
+
+**⚠️ Design tradeoff to know before shipping reverb (T10):** Godot's `AudioStreamPlayer3D`
+plays to exactly ONE bus — there is **no native per-voice aux-send** into a shared bus.
+So per-voice reverb *send levels* into a shared slot are not natively expressible, and a
+voice routed to a reverb slot bus stops receiving its dry **category-bus volume/mute**
+(reverb slot buses send to Master, not to the SFX/Ambient/etc. bus). The current impl is
+the faithful, shippable version within this constraint. If true per-voice wet sends or
+category-volume-on-reverb matter later, options are: (a) a custom send `AudioEffect`, or
+(b) route reverb slot buses into a category bus, or (c) one bus per voice (rejected — the
+addon's flaw). The `get_emitter_reverb_send` / `prev_slot` / `prev_send` +
+`is_emitter_reverb_migrating` accessors are bound and available if a richer routing lands.
+
+---
+
+## ✅ Phase S6 — Portal Propagation & Reflections (DONE 2026-08-28)
+
+All four S6 tasks landed in `modules/symphony/`. Full symphony suite **126/126 cases,
+195,343 assertions, 0 failed**; **TSan gate PASSED** (126/126 under ThreadSanitizer,
+0 data races — S6 is all main-thread, SeqLock path unchanged from S5). Editor build clean.
+
+| Task | Scope | Files | Status |
+|------|-------|-------|--------|
+| **13a** | AcousticRoom3D (Area3D) + AcousticPortal3D (Node3D) authoring nodes, membership + static registries + epochs | `spatial/acoustic_room_3d.{h,cpp}`, `spatial/acoustic_portal_3d.{h,cpp}` | ✅ |
+| **13b** | Editor gizmos (room bounds box, portal aperture rect + normal) | `editor/acoustic_gizmos.{h,cpp}` | ✅ |
+| **13c** | Membership + portal-state tests (10 cases) | `tests/modules/test_symphony_portal.cpp` | ✅ |
+| **14** | Portal graph + Dijkstra behind virtual `PortalPathSolver` + `PortalPathCache` (10 cases) | `spatial/portal_graph.{h,cpp}`, `tests/modules/test_symphony_portal_graph.cpp` | ✅ |
+| **15** | Routing: apparent_position→last portal, aperture/incidence `path_gain`, DeviationModel diffraction LPF; engine integration (9 cases) | `spatial/portal_router.{h,cpp}`, `spatial/spatial_acoustics_engine.{h,cpp}`, `tests/modules/test_symphony_portal_router.cpp` | ✅ |
+| **16** | SymphonyEarlyReflections operator — shoebox 6 image sources (7 cases) | `nodes/delay/symphony_early_reflections.h`, `tests/modules/test_symphony_early_reflections.cpp` | ✅ |
+
+**Engine integration (Task 15):** `SpatialAcousticsEngine::update()` runs a portal pass
+before smoothing (guarded by `portal_propagation_enabled` && graph has rooms).
+`_rebuild_portal_graph_if_needed()` rebuilds the abstract graph from the live
+AcousticRoom3D/AcousticPortal3D registries when `room_epoch ^ portal_epoch` changes and
+flushes the path cache. `_solve_portals_for_emitter()` resolves src/listener rooms, solves
+(cached) the path, and folds results into the target: `apparent_position` = last portal,
+`portal_gain` = per-hop aperture/incidence gain (its OWN SpatialParams field — NOT folded into
+`attenuation`, which VoicePool owns/mirrors), `air_cutoff = MIN(air_cutoff, diffraction_cutoff)`
+(min-freq stack, never multiply). `portal_gain` + `apparent_position` are reset to unity/true-pos
+at the top of the solve each frame (fixes a compounding bug where the old `attenuation *= pgain`
+multiplied every frame with no reset). Bound config: `set/get_portal_propagation_enabled`,
+`set/get_portal_diffraction_min_cutoff`, `get_portal_graph_room_count/edge_count`.
+
+**Consumable by GDScript (added 2026-08-28):** `get_emitter_apparent_position(voice_slot)` →
+Vector3 (smoothed; equals true source when no portal path) and `get_emitter_portal_gain(voice_slot)`
+→ float [0,1] (smoothed). The game-template layer sets the `AudioStreamPlayer3D.global_position`
+to the apparent position (panner points at the doorway) and applies `portal_gain` as its own
+multiplicative gain layer on top of VoicePool attenuation (no double-count). The diffraction LPF
+already flows through the existing `compute_air_cutoff` path.
+
+**Testability note:** the headless doctest harness SIGSEGVs on Area3D physics (add_child /
+memdelete of a never-in-tree Area3D — same limitation as S5 T12). So all S6 tests exercise
+the **pure math** via static helpers (`AcousticRoom3D::point_in_box`,
+`AcousticPortal3D::closest_point_on_rect`, the abstract `PortalGraph`, `PortalRouter::*`,
+`SymphonyEarlyReflections::compute_shoebox_reflections`). The engine's live-registry portal
+pass is regression-verified via build + full suite; end-to-end room resolution should get a
+game-template GdUnit4 test (full SceneTree) like the S5 T12 collider test.
+
+**Gotchas:** Area3D header is `scene/3d/physics/area_3d.h`. `set_priority`/`get_priority`
+collide with Area3D — room uses `set_room_priority`/`get_room_priority`. `update_gizmos()`
+guarded behind `is_inside_tree()`.
+
+**Deferred to game-template (GDScript, like S5 Track A):** (1) EarlyReflections "one shared
+instance per reverb pool slot" bus wiring; (2) portal `AcousticRoom3D` / `AcousticPortal3D`
+scene authoring + a live-SceneTree GdUnit4 test for room membership + portal routing;
+(3) neighbour-room reverb coupling through open portals (plan Task 15 mentions blending
+Task 10 send levels across portals — the C++ apparent-position/gain/diffraction landed;
+reverb-send blending across portals is the remaining routing-layer piece).
 
 ---
 
@@ -45,21 +157,25 @@ Flagged with the user 2026-08-28; explicitly deferred, not yet actioned.
    arrivals; revisit if long delays or pause-correctness matter. Fix option: add an
    explicit `delta` param (or drive `tick_deferred_starts(delta)` from `_physics_process`).
 
-2. **Volumetric occlusion has no real-physics automated test (Task 12).**
-   Driving `PhysicsServer3D` directly in the headless doctest harness SIGSEGVs, so the
-   graduated-occlusion math is tested via the injectable LOS predicate
-   (`OcclusionSolver::compute_volumetric<ClearLosFn>`). The physics wrapper
-   `solve_volumetric()` is a thin pass-through but is **not** exercised by an actual
-   raycast test. TODO: add a GdUnit4 integration test in `game-template` (runs inside a
-   full SceneTree) that places a real collider between a sized source and the listener
-   and asserts graduated occlusion.
+2. **✅ RESOLVED (Track A, 2026-08-28) — Volumetric occlusion now has a real-physics test.**
+   Was: driving `PhysicsServer3D` directly in the headless doctest harness SIGSEGVs, so the
+   graduated-occlusion math was only tested via the injectable LOS predicate
+   (`OcclusionSolver::compute_volumetric<ClearLosFn>`); the physics wrapper
+   `solve_volumetric()` was a thin pass-through never exercised by an actual raycast.
+   Now: `test_real_collider_produces_occlusion` in
+   `game-template/test/addons/symphony_audio/spatial_acoustics_integration_test.gd` runs
+   inside a full SceneTree, places a real `StaticBody3D`+`BoxShape3D` wall between a sized
+   emitter and the listener, drives 60 engine updates, and asserts `compute_occlusion_cutoff`
+   drops below 19 kHz — exercising the live `PhysicsServer3D` ray path end-to-end.
 
-4. **Reverb-pool R4 ("no AudioServer bus churn") is only guaranteed C++-side.**
-   `ReverbPool::touched_audio_server()` proves the C++ manager never mutates AudioServer.
-   The actual bus creation is GDScript (plan option b: create N reverb send buses once at
-   init). The real R4 guarantee therefore depends on that GDScript honoring "create buses
-   once, never at runtime." TODO: when the GDScript lands, add a GdUnit4 assertion that
-   the AudioServer bus count is constant across room transitions.
+4. **✅ RESOLVED (Track A, 2026-08-28) — Reverb-pool R4 now guaranteed GDScript-side too.**
+   `ReverbPool::touched_audio_server()` proves the C++ manager never mutates AudioServer,
+   but the actual bus creation is GDScript (plan option b). Now
+   `test_bus_count_constant_across_room_transitions` asserts `AudioServer.bus_count` equals
+   the post-setup baseline across 6 simulated room transitions AND that
+   `reverb_pool_touched_audio_server()` stays false — locking the "create buses once, never
+   at runtime" invariant at the routing layer. Buses are created once in
+   `AudioManager._setup_reverb_buses()` (`_ready()`) and never added/removed after.
 
 ---
 
@@ -216,35 +332,54 @@ TSAN_OPTIONS="halt_on_error=1 print_stacktrace=1" bin/godot.macos.editor.arm64.s
 - Physics space accessed via `PhysicsServer3D::space_get_direct_state(RID)`; the RID comes from GDScript `World3D.get_space()` passed to `SpatialAcousticsEngine.set_physics_space()`.
 - `ObjectID`/raw pointer returns don't bind cleanly to GDScript but work fine for C++-internal use (occlusion/room solvers call AcousticBody3D::lookup_material directly).
 - (T11) `SymphonyVoicePool::process_frame()` takes no delta; it derives one from `OS::get_ticks_usec()` between calls (`last_process_usec`, first call → 0). The pending-start countdown is factored into `tick_deferred_starts(delta)` so tests can drive it deterministically without sleeping.
+- (S6) `Area3D` header is `scene/3d/physics/area_3d.h` (NOT `scene/3d/area_3d.h`).
+- (S6) `set_priority`/`get_priority` COLLIDE with Area3D/CollisionObject3D — AcousticRoom3D uses `set_room_priority`/`get_room_priority`.
+- (S6) The headless doctest harness SIGSEGVs on Area3D physics: both `add_child` of an Area3D into the SceneTree root AND `memdelete` of a never-in-tree Area3D crash (physics world/RID). Node3D-derived AcousticPortal3D is fine. → S6 tests exercise **pure static math helpers** (`point_in_box`, `closest_point_on_rect`, abstract `PortalGraph`, `PortalRouter::*`, `compute_shoebox_reflections`); guard `update_gizmos()` behind `is_inside_tree()`.
+- (S6) When folding a per-frame-recomputed value into a SpatialParams target, RESET it at the top of the solve — the portal solve originally did `target.attenuation *= pgain` with no reset and compounded every frame. `portal_gain` is now its own field, reset to 1.0 each frame.
 
 ---
 
 ## What's Next
 
-**Phase S5 is code-complete and TSan-validated.** Two tracks of remaining work:
+**Phases S5 and S6 are code-complete and TSan-validated. S5 is wired into GDScript (Track A ✅);
+S6 is C++-complete with routing outputs exposed to GDScript but NOT yet consumed in-game.**
+Remaining work is a single cross-repo **integration pass** in `game-template/`.
 
-### A. Cross-repo GDScript integration (`game-template/addons/symphony_audio/`) — NOT started
-This is what makes S5 audible end-to-end. Nothing below is wired yet; each C++ API exists and is bound.
-1. **Reverb routing (T10, option b):** in `audio_manager.gd::_ready()` create N persistent reverb send
-   buses ONCE (N = `SpatialAcousticsEngine.get_reverb_pool_slots()`); per frame push
-   `get_reverb_slot_{decay_time,damping,room_size,wet_gain}` into each bus effect and set per-voice
-   sends from `get_emitter_reverb_slot/send` (+ prev_slot/prev_send while migrating).
-2. **Propagation delay (T11):** call `SymphonyEventDispatcher.play_event(event, position, true)` in
-   `play_event_3d`; if `delay_s > 0`, hold `player.play()` until `is_slot_start_pending(slot)` clears
-   (poll in the existing per-frame loop — no SceneTreeTimer).
-3. **Volumetric/air (T12):** after `register_emitter(slot)`, call
-   `set_emitter_source_radius(slot, event.source_radius)` and
-   `set_emitter_max_distance(slot, event.max_distance)`. The occlusion/air LPF param path already exists.
-4. Add GdUnit4 integration tests (real SceneTree): reverb bus-count-constant assertion (T10 R4),
-   distant one-shot arrival (T11), real-collider graduated occlusion (T12 — see Deferred item 2).
+### A. S5 GDScript integration (`game-template/addons/symphony_audio/`) — ✅ DONE
+See the **Track A** section near the top. T10 reverb routing, T11 propagation delay, T12
+volumetric/air wired in `audio_manager.gd`, covered by
+`test/addons/symphony_audio/spatial_acoustics_integration_test.gd` (6/6 pass).
+Open reverb-polish sub-items (single-bus routing tradeoff; `prev_slot`/`prev_send` unused) — see Track A.
 
-### B. Phase S6 — Portal Propagation & Reflections (Task 13+), `modules/symphony/`
-Next C++ milestone. Start with Task 13 (AcousticRoom3D/AcousticPortal3D authoring nodes + gizmos),
-then Task 14 (portal graph bake + Dijkstra path solve), Task 15 (portal routing + diffraction EQ),
-Task 16 (shoebox early reflections). See `Spatial_Acoustics_for_Symphony_Plan.md` §Phase S6.
+### B. Phase S6 — Portal Propagation & Reflections — ✅ DONE (C++ side)
+See the **✅ Phase S6** section near the top for the full file/task breakdown. All routing math,
+the portal graph + Dijkstra + cache, engine integration, and the EarlyReflections operator
+landed and are tested (36 new cases). Portal outputs are exposed via
+`get_emitter_apparent_position` + `get_emitter_portal_gain`.
+
+### C. Next session — S6 game-template integration pass (NOT started)
+This makes S6 audible end-to-end (mirrors what Track A did for S5). In `game-template/`:
+1. **Consume portal routing** in `audio_manager.gd`: per 3D voice, set the
+   `AudioStreamPlayer3D.global_position` to `SpatialAcousticsEngine.get_emitter_apparent_position(slot)`
+   (doorway direction), and apply `get_emitter_portal_gain(slot)` as an extra multiplicative gain
+   layer (e.g. a new volume-stack layer or fold into the existing spatial gain — do NOT double-count
+   with VoicePool attenuation). Diffraction LPF already flows via `compute_air_cutoff`.
+2. **Author a portal test scene** (rooms + portal doorway) and add a live-SceneTree GdUnit4 test:
+   room membership, apparent-position redirect through the doorway, closed-portal reroute. This also
+   covers the S6 engine integration that the headless doctest harness can't (Area3D physics).
+3. **Early reflections per reverb slot**: instantiate one `SymphonyEarlyReflections` per reverb pool
+   slot and feed it room dimensions (authored `AcousticRoom3D.shoebox_dimensions` else Task 9 estimate).
+4. **Neighbour-room reverb coupling** through open portals (blend Task 10 send levels across portals).
+
+### D. Deferred modelling refinements (see "⏭️ Deferred modelling refinements" near the top)
+- Portal edge weight is a room-centre proxy (refine to real routed distance if needed).
+- Authored room material / `reverb_preset_override` not yet used for RT60 (authored-overrides-estimate).
 
 ### Resume checklist
-1. Read this file + `Spatial_Acoustics_for_Symphony_Plan.md` (Phase S6 section).
-2. `git checkout features/symphony_fixed` && `git status`.
-3. Rebuild editor; confirm 90 test cases green (`--source-file='*symphony*'`).
-4. Also review the ⚠️ Deferred Follow-Ups near the top before shipping S5 to production.
+1. Read this file + `Spatial_Acoustics_for_Symphony_Plan.md` (§Phase S6 for context; §Phase G7 for the integration pass).
+2. `git checkout features/up_symphony` && `git status` (S5+S6 changes are working-tree edits unless committed).
+3. Rebuild editor; confirm **126** test cases green (`--source-file='*symphony*'`).
+4. Re-run the Track A GdUnit4 suite (command in the Track A section) — expect 6/6 pass.
+5. Start the S6 integration pass (section C above) in `game-template/`.
+6. Review the ⚠️ Deferred Follow-Ups + ⏭️ Deferred modelling refinements near the top before shipping to production.
+   (only #1 — the wall-clock propagation countdown — remains open; #2 and #4 are now resolved).

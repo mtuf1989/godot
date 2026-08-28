@@ -13,6 +13,8 @@
 #include "probe_cache.h"
 #include "room_estimator.h"
 #include "reverb_pool.h"
+#include "portal_graph.h"
+#include "portal_router.h"
 
 // Per-emitter spatial parameters — the output of the main-thread simulation,
 // consumed by the audio thread (via SeqLock) to drive DSP.
@@ -26,6 +28,9 @@ struct SpatialParams {
 	float rt60 = 0.0f;              // Current RT60 estimate for reverb assignment
 	float damping = 0.5f;           // Reverb HF damping [0,1] (from room high-band absorption)
 	float delay_s = 0.0f;           // Propagation delay in seconds
+	float portal_gain = 1.0f;        // Portal per-hop aperture/incidence gain [0,1] (Task 15).
+	                                 // Separate from `attenuation` (which VoicePool owns) so the
+	                                 // GDScript layer applies it as its own gain layer — no double count.
 	Vector3 apparent_position;       // May differ from true position (portal redirect)
 };
 
@@ -112,6 +117,23 @@ private:
 	ReverbPool reverb_pool;
 	bool reverb_pool_enabled = true;
 	void _update_reverb_pool(float p_delta);
+
+	// Portal propagation (Task 15) — rooms=nodes, portals=weighted edges.
+	// Rebuilt from the live AcousticRoom3D/AcousticPortal3D registries when the
+	// room or portal epoch changes. Paths cached per room-pair, invalidated on
+	// portal state change.
+	PortalGraph portal_graph;
+	DijkstraPathSolver portal_solver;
+	PortalPathCache portal_path_cache;
+	bool portal_propagation_enabled = true;
+	uint64_t portal_graph_epoch = 0; // last (room_epoch ^ portal_epoch) the graph was built for
+	float portal_diffraction_min_cutoff = 700.0f;
+	// Rebuild portal_graph from registries if the epoch changed. Maps each
+	// AcousticRoom3D* to its node index (in registry order).
+	HashMap<uint64_t, int> _room_ptr_to_node; // ObjectID → node index
+	void _rebuild_portal_graph_if_needed();
+	// Resolve portal routing for one emitter and fold results into its target.
+	void _solve_portals_for_emitter(int p_emitter_idx);
 
 	// Listener position (updated from AudioManager)
 	Vector3 listener_position;
@@ -250,6 +272,17 @@ public:
 	// Anti-regression guard (R4): true only if the pool ever mutated AudioServer.
 	// Must remain false for the lifetime of the engine.
 	bool reverb_pool_touched_audio_server() const { return reverb_pool.touched_audio_server(); }
+
+	// --- Portal propagation (Task 15) ---
+	void set_portal_propagation_enabled(bool p_enabled) { portal_propagation_enabled = p_enabled; }
+	bool get_portal_propagation_enabled() const { return portal_propagation_enabled; }
+	void set_portal_diffraction_min_cutoff(float p_hz) { portal_diffraction_min_cutoff = CLAMP(p_hz, 20.0f, 20000.0f); }
+	float get_portal_diffraction_min_cutoff() const { return portal_diffraction_min_cutoff; }
+	int get_portal_graph_room_count() const { return portal_graph.node_count; }
+	int get_portal_graph_edge_count() const { return (int)portal_graph.edges.size(); }
+	// Per-emitter portal routing outputs (smoothed), for the GDScript layer.
+	Vector3 get_emitter_apparent_position(int p_voice_slot) const;
+	float get_emitter_portal_gain(int p_voice_slot) const;
 
 	// --- Graph wrapper (GDScript-accessible) ---
 	// Wraps a plain AudioStream in a spatial-processing Symphony graph.
