@@ -1,6 +1,6 @@
-# Spatial Acoustics Handoff Notes — Resume at Phase 8
+# Spatial Acoustics Handoff Notes — Phase 8 complete; resume at Phase 9
 
-**Date:** 2026-08-28 (Correctness Pass — Phases 1–7 complete; C++ side done)
+**Date:** 2026-08-28 (Correctness Pass — Phases 1–8 complete; G7 integration done)
 **Branch:** `features/up_symphony`
 **Plan source of truth:** `modules/symphony/Spatial_Correctness_Plan.md` (8 phases + Verification + Documentation)
 **Prior plan (S5/S6 build):** `modules/symphony/Spatial_Acoustics_for_Symphony_Plan.md`
@@ -10,23 +10,30 @@
 
 ## TL;DR for the next session
 
-Phases **1–7 of the Correctness Plan are done, committed, and green**. Three mandatory
+Phases **1–8 of the Correctness Plan are done, committed, and green**. Three mandatory
 TSan gates (after 2.3, after 5.2, and after Phase 7's concurrent SeqLock reader test)
-passed with **0 data races**. Phase 6 added no concurrent code (no gate needed). Resume at
-**Phase 8 — game-template G7 integration**. Then Phase 9 (final verify + docs).
+passed with **0 data races**. Phases 6 and 8 added no concurrent code (no gate needed —
+8.3 changes cross-subsystem *timing* but introduces no new threaded/shared state). Resume at
+**Phase 9 — final verify + docs** (full C++ suite, TSan gate, cross-repo GdUnit4, scaling
+benchmark note, and the HRTF-prerequisite decision recorded below).
 
-Working tree is CLEAN in both repos (all phase work committed). `reports/` and
-`test/addons/symphony_audio/` show as untracked in game-template — pre-existing artifacts,
-not this work.
+**Phase 8 result:** game-template G7 integration complete. C++ suite **182/182** (unchanged —
+the one C++ edit removed dead code). Cross-repo GdUnit4 **14/14** (was 6/6; +8 new cases).
+`git branch` note: game-template's spatial work lives on **`main`** (there is no
+`features/up_symphony` branch in that repo — Phase 2.4 `d90fb0c` and all Phase 8 commits are
+on `main`). godot-side work is on `features/up_symphony`.
 
-### Verify you're in a good state before starting Phase 8
+The integration test file `test/addons/symphony_audio/spatial_acoustics_integration_test.gd`
+is **committed now** (was untracked). `reports/` remains untracked (gdUnit4 run artifacts).
+
+### Verify you're in a good state before Phase 9
 ```bash
 cd /Users/luong.pham/Work/godot
-git checkout features/up_symphony && git log --oneline -9   # expect Phase 1..7 commits on top
+git checkout features/up_symphony && git log --oneline -12   # expect Phase 1..8 commits on top
 scons platform=macos target=editor arch=arm64 tests=yes module_raycast_enabled=no -j$(sysctl -n hw.ncpu)
 bin/godot.macos.editor.arm64 --headless --test --source-file='*symphony*'   # expect 182/182, 195815 assertions
 ```
-Cross-repo GdUnit4 (expect 6/6, exit 0):
+Cross-repo GdUnit4 (expect 14/14, exit 0):
 ```bash
 cd /Users/luong.pham/Work/game-template
 export GODOT_BIN=/Users/luong.pham/Work/godot/bin/godot.macos.editor.arm64
@@ -44,16 +51,37 @@ Commit at each phase boundary. Build + run the C++ suite after every phase; TSan
 only after phases that add concurrent/cross-subsystem code. User does NOT want commits
 squashed. Cross-repo work IS in scope (game-template too).
 
-### Two items flagged for the USER (notes only — do NOT enact)
+### Deferred-items ledger (updated end of Phase 8)
+1. **Deferred item #1 — propagation-delay countdown: FIXED (Phase 8.3).** The countdown is
+   now advanced solely by `SymphonyVoicePool::tick_deferred_starts(delta)`, driven from
+   `AudioManager._process(delta)` (pause-aware). `process_frame()` no longer derives a
+   wall-clock delta or ticks internally (the `last_process_usec` member was removed). The
+   corrected symptom: during a SceneTree pause `process_frame` is not called, so the old
+   wall-clock derivation would, on resume, produce one huge delta and fire **every** pending
+   voice simultaneously. Driving from `_process` fixes this. Double-tick hazard removed (the
+   method was bound to GDScript *and* called internally). Proven by GdUnit4
+   `test_paused_frames_do_not_advance_deferred_start`.
+2. **Deferred item #2 — volumetric vs spectral test: REOPENED then ADDRESSED (Phase 8.7).**
+   The old T12 (`test_real_collider_produces_occlusion`) asserted `occ_cutoff < 19000`, which
+   passed by ~2 orders of magnitude and only exercised the SPECTRAL solve. Renamed to
+   `test_real_collider_produces_spectral_and_volumetric_occlusion`, tightened to
+   `occ_cutoff < 5000`, and a real VOLUMETRIC assertion added (`spatial_gain < 0.9`) now that
+   Phase 2.1 blends volumetric occlusion into the transmission bands. Both solves are now
+   proven via live `PhysicsServer3D`.
+
+### Two items still flagged for the USER (notes only — do NOT enact)
 1. **Preset listening pass.** All 12 material presets were retuned in Phase 2.2 for the
-   corrected forward-only ray march (see below). Values are physically-defensible
-   (STL-derived) but need the user's ears. Flagged; user will confirm.
-2. **HRTF prerequisite decision.** Phase 9 must document (not enact) whether to drop the
-   plan's "Task 7 keeps a stereo-capable output path" HRTF prerequisite. **Recommend
-   Option A (drop it)**: the architecture deliberately delegates spatialization to
-   `AudioStreamPlayer3D`; the wrapper graph is mono-by-design. True HRTF (HRIR dataset +
-   partitioned-convolution `SymphonyConvolver`) is a separate future project that would
-   make stereo output a deliberate part of *its* design. Leave the final call to the user.
+   corrected forward-only ray march. Values are physically-defensible (STL-derived) but need
+   the user's ears. Still open; user will confirm.
+2. **HRTF prerequisite decision (Phase 9 doc item — recorded, not enacted).** The plan's
+   "Task 7 keeps a stereo-capable output path" HRTF prerequisite is **NOT met**: the
+   `SpatialGraphWrapper` is a single mono chain that delegates panning to `AudioStreamPlayer3D`
+   (mono-by-design). **Recommend Option A (drop the prerequisite from the plan)**: true HRTF
+   (HRIR dataset + partitioned-convolution `SymphonyConvolver`) is a separate future project
+   that would make stereo output a deliberate part of *its* design. Leave the final call to
+   the user. (Phase 8.4 note reinforces this: the reverb slots are plain `AudioEffectReverb`
+   buses with no aux send, and the Symphony module has **no `AudioEffect` subclass**, so there
+   is no bus-level DSP insert path today.)
 
 ---
 
@@ -69,9 +97,40 @@ squashed. Cross-repo work IS in scope (game-template too).
 | `e8b1e68f53` | 5 — Budget/perf/hygiene | godot |
 | `c9a0087c0b` | 6 — Complete the authored surface (map hash updated in a follow-up commit) | godot |
 | `e98376349d` | 7 — New C++ solver tests (+ extended portal) | godot |
+| `9577375502` | 8.3 (C++) — remove wall-clock propagation-delay tick from `process_frame` | godot |
+| _(pending)_ | 8 — G7 integration (audio_manager.gd + integration test) | game-template |
 
-**Test baseline:** 182 C++ cases / 195,815 assertions, 0 failed (was 126/195,348 before Phase 7's
-56 new cases). game-template GdUnit4 6/6. TSan: 182/182, 0 races.
+**Test baseline:** 182 C++ cases / 195,815 assertions, 0 failed (unchanged across Phase 8 — the
+one C++ edit removed dead code). game-template GdUnit4 **14/14** (was 6/6; Phase 8 added 8 cases:
+1 pause-safety + 3 portal-scene + 3 early-reflection + 1 reverb-coupling). TSan: 182/182, 0 races
+(no re-gate needed for Phase 8 — no new concurrency).
+
+### Phase 8 — G7 integration summary (game-template `main`)
+- **8.1** Positions + listener body: verified already in place (`d90fb0c`).
+- **8.2** `portal_gain` applied as its OWN multiplicative layer — multiplied into the
+  `spatial_gain` DSP parameter (both are linear [0,1] wrapper-graph gains), deliberately NOT
+  folded into VoicePool `attenuation` (stack[2]) to avoid double-counting.
+- **8.3** Propagation-delay countdown driven from `_process(delta)` via `tick_deferred_starts`;
+  C++ `process_frame` wall-clock derivation removed (commit `9577375502`).
+- **8.4** Early reflections per reverb slot — **documented architectural deviation**:
+  `SymphonyEarlyReflections` is a DSP-graph operator, not an `AudioEffect`, and the module has
+  no `AudioEffect` subclass, so a per-slot in-signal-path DSP insert is impossible (reverb
+  slots are plain `AudioEffectReverb` buses; `AudioStreamPlayer3D` has no aux send). Instead,
+  per slot the shoebox dims (authored `get_emitter_shoebox_dimensions`, else an isotropic cube
+  from `room_size × 30`) drive the mean first-order image-source delay `((W+H+D)/3)/343`, mapped
+  onto `AudioEffectReverb.predelay_msec` (clamped [0,250]). Bigger room → later first reflection
+  → longer predelay, conveying room size before the tail (the operator's purpose) with **zero
+  Symphony arena allocation** — so the Phase 9 arena-budget re-check is **N/A** for 8.4.
+- **8.5** Portal scene + live-SceneTree GdUnit4 (first real in-tree `find_room_for_point` /
+  portal room resolution): open portal redirects apparent position to the doorway; closed
+  portal falls back to transmission-only (true position, gain < 1); open transmits more than
+  closed.
+- **8.6** Neighbour-room reverb coupling: emitter reverb send scaled by `clamp(portal_gain)` in
+  `_update_reverb_routing`. Open door couples the neighbour room's reverb; a near-closed door
+  drops the send below the routing threshold, reverting the voice to its dry bus (coupling
+  sealed off). `portal_gain == 1` (no portal path) is a no-op. (Single-bus constraint means we
+  scale the send rather than dual-route.)
+- **8.7** T12 tightened + renamed; volumetric assertion added; deferred item #2 addressed.
 
 ---
 
@@ -297,9 +356,14 @@ registry LOOKUP contract only (registration needs an in-tree `CollisionObject3D`
 
 </details>
 
-## ▶ NEXT: Phase 8 — G7 integration (game-template)
+## ✅ DONE: Phase 8 — G7 integration (game-template)
 
-**Repo:** `/Users/luong.pham/Work/game-template` (branch also `features/up_symphony`).
+> **Status:** complete — see the "Phase 8 — G7 integration summary" above for what landed and
+> the two documented deviations (8.4 architecture, 8.6 single-bus). The section below is the
+> original resume plan, kept for reference.
+
+**Repo:** `/Users/luong.pham/Work/game-template` (spatial work is on **`main`**, not
+`features/up_symphony` — that branch does not exist in this repo).
 **Primary file:** `addons/symphony_audio/audio_manager.gd`.
 **Test file:** `test/addons/symphony_audio/spatial_acoustics_integration_test.gd`
 (`class SpatialAcousticsIntegrationTest extends GdUnitTestSuite`).
