@@ -1,11 +1,21 @@
 #ifndef OCCLUSION_SOLVER_H
 #define OCCLUSION_SOLVER_H
 
+#include "core/math/math_funcs.h"
 #include "core/math/vector3.h"
 #include "core/templates/vector.h"
 #include "servers/physics_3d/direct_states/physics_direct_space_state_3d.h"
 
 class AcousticMaterial;
+
+// Material accessors used by the header-only compute<>() template. Defined in
+// occlusion_solver.cpp where AcousticMaterial's full definition is visible, so
+// the template does not need to include acoustic_material.h.
+//   is_total_absorption: returns true if the material is a total absorber and
+//     writes its transition speed to r_speed.
+//   transmission: writes the material's low/mid/high transmission.
+bool occlusion_material_is_total_absorption(const AcousticMaterial *p_mat, float &r_speed);
+void occlusion_material_transmission(const AcousticMaterial *p_mat, float &r_low, float &r_mid, float &r_high);
 
 // Computes direct-path occlusion and 3-band material transmission between
 // a source and listener using alternating-direction ray marching.
@@ -35,7 +45,9 @@ public:
 		float total_absorption_speed = 2.5f; // Transition speed from the blocking material
 	};
 
-	// Solve occlusion for a single source→listener path.
+	// Solve occlusion for a single source→listener path against the physics world.
+	// Thin wrapper around compute<RaycastFn>() that supplies a PhysicsServer3D
+	// raycast functor (+ AcousticBody3D material lookup).
 	// p_space: the physics direct space state (from World3D)
 	// p_source: emitter world position
 	// p_listener: listener world position
@@ -47,6 +59,129 @@ public:
 			const Vector3 &p_listener,
 			const Vector<RID> &p_exclude,
 			const Config &p_config);
+
+	// Core direct-path occlusion computation, decoupled from the physics server
+	// via an injectable raycast functor:
+	//   bool p_raycast(const Vector3 &from, const Vector3 &to,
+	//                  Vector3 &r_pos, AcousticMaterial **r_mat)
+	//     → returns true on a hit; on a hit writes the hit position to r_pos and
+	//       the hit collider's AcousticMaterial* (or nullptr for untagged) to
+	//       r_mat. The physics-backed solve() wraps this with an intersect_ray +
+	//       AcousticBody3D::lookup_material; tests hand back synthetic materials.
+	template <typename RaycastFn>
+	static Result compute(
+			const Vector3 &p_source,
+			const Vector3 &p_listener,
+			const Config &p_config,
+			RaycastFn &&p_raycast) {
+		Result result;
+
+		float total_distance = p_source.distance_to(p_listener);
+		if (total_distance < 0.001f) {
+			return result; // Source and listener at same point.
+		}
+
+		// Accumulated transmission per band (multiplicative).
+		float accum_low = 1.0f;
+		float accum_mid = 1.0f;
+		float accum_high = 1.0f;
+
+		// Ray march state — alternating direction (Steam Audio pattern).
+		// Even hits: source → listener direction; odd hits: listener → source.
+		Vector3 forward_pos = p_source;
+		Vector3 backward_pos = p_listener;
+
+		int hit_count = 0;
+
+		for (int step = 0; step < p_config.max_hits; step++) {
+			bool forward = (step % 2 == 0);
+
+			Vector3 from, to;
+			if (forward) {
+				from = forward_pos;
+				to = p_listener;
+			} else {
+				from = backward_pos;
+				to = p_source;
+			}
+
+			// Skip if from and to are too close (converged).
+			if (from.distance_to(to) < p_config.ray_offset * 2.0f) {
+				break;
+			}
+
+			Vector3 hit_pos;
+			AcousticMaterial *mat = nullptr;
+			bool hit = p_raycast(from, to, hit_pos, &mat);
+			if (!hit) {
+				break; // Clear path in this direction — done.
+			}
+
+			// Verify the hit is between the endpoints (not behind us).
+			float hit_dist_from_source = p_source.distance_to(hit_pos);
+			if (hit_dist_from_source >= total_distance) {
+				break; // Hit is beyond the listener.
+			}
+
+			hit_count++;
+
+			float t_low, t_mid, t_high;
+			bool is_total_absorption = false;
+			float ta_speed = 2.5f;
+
+			if (mat != nullptr) {
+				if (occlusion_material_is_total_absorption(mat, ta_speed)) {
+					is_total_absorption = true;
+					t_low = 0.0f;
+					t_mid = 0.0f;
+					t_high = 0.0f;
+				} else {
+					occlusion_material_transmission(mat, t_low, t_mid, t_high);
+				}
+			} else {
+				t_low = p_config.fallback_transmission_low;
+				t_mid = p_config.fallback_transmission_mid;
+				t_high = p_config.fallback_transmission_high;
+			}
+
+			accum_low *= t_low;
+			accum_mid *= t_mid;
+			accum_high *= t_high;
+
+			if (is_total_absorption) {
+				result.total_absorption_hit = true;
+				result.total_absorption_speed = ta_speed;
+				break;
+			}
+
+			// Advance the march position past the hit.
+			Vector3 advance_dir = (to - from).normalized();
+			Vector3 new_pos = hit_pos + advance_dir * p_config.ray_offset;
+			if (forward) {
+				forward_pos = new_pos;
+			} else {
+				backward_pos = new_pos;
+			}
+		}
+
+		result.hit_count = hit_count;
+
+		// sqrt correction for double-counting wall entry/exit faces.
+		if (hit_count > 1 && !result.total_absorption_hit) {
+			accum_low = Math::sqrt(accum_low);
+			accum_mid = Math::sqrt(accum_mid);
+			accum_high = Math::sqrt(accum_high);
+		}
+
+		result.transmission[0] = CLAMP(accum_low, 0.0f, 1.0f);
+		result.transmission[1] = CLAMP(accum_mid, 0.0f, 1.0f);
+		result.transmission[2] = CLAMP(accum_high, 0.0f, 1.0f);
+
+		float mean_transmission = (result.transmission[0] + result.transmission[1] + result.transmission[2]) / 3.0f;
+		result.occlusion = 1.0f - mean_transmission;
+
+		return result;
+	}
 
 	// --- Volumetric occlusion (Task 12) ---
 	// Graduated occlusion for a finite-size source, following Steam Audio's
