@@ -94,9 +94,11 @@ bool SpatialAcousticsEngine::has_emitter(int p_voice_slot) const {
 // --- Per-frame update ---
 
 void SpatialAcousticsEngine::update(float p_delta) {
-	// Get physics space for occlusion raycasts.
+	// Get physics space for occlusion / room-estimation raycasts. Phase 3.2:
+	// room estimation must run even when occlusion is disabled, so fetch the
+	// space whenever either subsystem needs it.
 	PhysicsDirectSpaceState3D *space = nullptr;
-	if (occlusion_enabled && physics_space_rid.is_valid()) {
+	if ((occlusion_enabled || room_estimation_enabled) && physics_space_rid.is_valid()) {
 		PhysicsServer3D *ps = PhysicsServer3D::get_singleton();
 		if (ps) {
 			space = ps->space_get_direct_state(physics_space_rid);
@@ -154,8 +156,9 @@ void SpatialAcousticsEngine::update(float p_delta) {
 		info_count++;
 	}
 
-	// Run scheduler to determine which emitters get occlusion this frame.
-	if (occlusion_enabled && space) {
+	// Run the scheduler whenever a physics space is available; gate each solver
+	// independently so room estimation runs even when occlusion is off (3.2).
+	if (space) {
 		scheduler.schedule(emitter_infos, info_count, p_delta, scheduled_emitters);
 
 		// Budget-scale the volumetric sample count: split the remaining ray
@@ -170,7 +173,9 @@ void SpatialAcousticsEngine::update(float p_delta) {
 
 		for (int k = 0; k < scheduled_emitters.size(); k++) {
 			int emitter_idx = scheduled_emitters[k];
-			_solve_occlusion_for_emitter(emitter_idx, space);
+			if (occlusion_enabled) {
+				_solve_occlusion_for_emitter(emitter_idx, space);
+			}
 			if (room_estimation_enabled) {
 				_solve_room_for_emitter(emitter_idx, space);
 			}
@@ -343,10 +348,13 @@ void SpatialAcousticsEngine::_solve_portals_for_emitter(int p_emitter_idx) {
 	// The GDScript layer applies this multiplicatively so there is no double count.
 	e.target.portal_gain = PortalRouter::path_gain(e.source_position, listener_position, hops);
 
-	// Diffraction LPF: stack by MINIMUM frequency with the existing air/occlusion
-	// cutoff (never multiply — plan invariant).
+	// Diffraction LPF: stack by MINIMUM frequency with the base air-absorption
+	// cutoff (never multiply — plan invariant). Phase 3.1: ASSIGN from the
+	// intermediate air_cutoff_base rather than folding MIN into the previous
+	// frame's target.air_cutoff, so the cutoff can recover when the path opens
+	// up (no monotonic ratchet).
 	const float diff_cut = PortalRouter::diffraction_cutoff(e.source_position, listener_position, hops, 20000.0f, portal_diffraction_min_cutoff);
-	e.target.air_cutoff = MIN(e.target.air_cutoff, diff_cut);
+	e.target.air_cutoff = MIN(e.air_cutoff_base, diff_cut);
 }
 
 // --- Occlusion ---
@@ -402,11 +410,18 @@ void SpatialAcousticsEngine::_solve_occlusion_for_emitter(int p_emitter_idx, Phy
 
 	// Air absorption: drive the air-absorption LPF cutoff from the
 	// source→listener distance (Task 12 wiring). Farther sources lose highs.
+	// Phase 3.1: write the intermediate air_cutoff_base (never mutate the
+	// previous frame's target.air_cutoff — that ratchets). The portal solve
+	// assigns target.air_cutoff = MIN(base, diffraction) fresh each frame; here
+	// we also seed target.air_cutoff so the no-portal path has a value.
 	if (air_absorption_enabled) {
 		float distance = e.source_position.distance_to(listener_position);
 		float ref = (e.max_distance > 0.0f) ? e.max_distance : air_absorption_max_distance;
-		e.target.air_cutoff = SpatialGraphWrapper::distance_to_air_cutoff(distance, ref);
+		e.air_cutoff_base = SpatialGraphWrapper::distance_to_air_cutoff(distance, ref);
+	} else {
+		e.air_cutoff_base = 20000.0f;
 	}
+	e.target.air_cutoff = e.air_cutoff_base;
 }
 
 void SpatialAcousticsEngine::_solve_room_for_emitter(int p_emitter_idx, PhysicsDirectSpaceState3D *p_space) {
@@ -500,11 +515,11 @@ void SpatialAcousticsEngine::_smooth_params(int p_emitter_idx, float p_delta) {
 		return;
 	}
 
-	// IIR smooth: smoothed += alpha * (target - smoothed)
-	// Alpha is frame-rate independent via: effective_alpha = 1 - (1 - alpha)^(dt * rate)
-	// At 60 fps with rate=10 Hz base, this simplifies. We use the raw alpha as a per-update
-	// coefficient since update() is called once per frame, matching Resonance Audio's pattern.
-	const float a = smooth_alpha;
+	// IIR smooth: smoothed += a * (target - smoothed), with a frame-rate
+	// independent coefficient (Phase 3.5): effective_a = 1 - (1-alpha)^(dt*60),
+	// so the settle time is the same at 30/60/144 fps. smooth_alpha is defined
+	// as the per-frame coefficient at 60 fps.
+	const float a = 1.0f - Math::pow(1.0f - smooth_alpha, p_delta * 60.0f);
 	const float b = 1.0f - a;
 
 	e.smoothed.occlusion = a * e.target.occlusion + b * e.smoothed.occlusion;

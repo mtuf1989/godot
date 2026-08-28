@@ -204,14 +204,20 @@ void ReverbPool::update(float p_delta) {
 	}
 
 	// 3. Derive FDN parameters per slot from the weighted means.
+	//    wet_gain RAMPS toward its target (1 = has members, 0 = idle) at
+	//    1/crossfade_seconds per second, so a slot losing its last member fades
+	//    its reverberant tail out instead of truncating it (and a newly occupied
+	//    slot fades in). Everything else is set instantly.
+	const float wet_rate = _crossfade_rate();
 	int active_slots_used = 0;
 	for (int i = 0; i < MAX_SLOTS; i++) {
 		if (i >= config.active_slots) {
-			// Inactive slot — force idle.
+			// Inactive slot — force idle (hard, it is not a real slot).
 			slots[i].wet_gain = 0.0f;
 			slot_member_count[i] = 0;
 			continue;
 		}
+		float wet_target;
 		if (slot_weight[i] > 0.0001f) {
 			float mean_rt60 = slot_sum_rt60[i] / slot_weight[i];
 			float mean_damping = slot_sum_damping[i] / slot_weight[i];
@@ -219,13 +225,19 @@ void ReverbPool::update(float p_delta) {
 			slots[i].decay_time = CLAMP(mean_rt60, 0.1f, config.max_rt60);
 			slots[i].damping = CLAMP(mean_damping, 0.0f, 1.0f);
 			slots[i].room_size = _rt60_to_room_size(mean_rt60, config.max_rt60);
-			// Wet gain ramps toward 1 with membership presence (simple: on).
-			slots[i].wet_gain = 1.0f;
+			wet_target = 1.0f;
 			active_slots_used++;
 		} else {
-			// Idle slot — fade wet to 0 so the tail decays out, keep centroid.
-			slots[i].wet_gain = 0.0f;
+			// Idle slot — target 0 so the tail fades out; keep centroid + params
+			// so the fade-out uses the last real reverb settings.
+			wet_target = 0.0f;
 			slot_member_count[i] = 0;
+		}
+		// Ramp wet_gain toward the target.
+		if (slots[i].wet_gain < wet_target) {
+			slots[i].wet_gain = MIN(slots[i].wet_gain + wet_rate * p_delta, wet_target);
+		} else if (slots[i].wet_gain > wet_target) {
+			slots[i].wet_gain = MAX(slots[i].wet_gain - wet_rate * p_delta, wet_target);
 		}
 	}
 
@@ -247,7 +259,10 @@ bool ReverbPool::emitter_slot(int p_emitter_id, int &r_slot, float &r_send) cons
 		return false;
 	}
 	r_slot = a->slot;
-	r_send = a->send * a->crossfade;
+	// Equal-power (constant-energy) crossfade: two decorrelated reverb tails sum
+	// in power, not amplitude, so linear weighting dips ~3 dB at the midpoint.
+	// sqrt keeps perceived loudness constant across a migration.
+	r_send = a->send * Math::sqrt(a->crossfade);
 	return true;
 }
 
@@ -257,7 +272,7 @@ bool ReverbPool::emitter_prev_slot(int p_emitter_id, int &r_prev_slot, float &r_
 		return false;
 	}
 	r_prev_slot = a->prev_slot;
-	r_send = a->send * (1.0f - a->crossfade);
+	r_send = a->send * Math::sqrt(1.0f - a->crossfade);
 	return true;
 }
 

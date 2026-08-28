@@ -32,7 +32,10 @@ public:
 		int ray_count = 32;             // Number of Fibonacci rays
 		float max_distance = 100.0f;    // Ray length; beyond = escaped
 		uint32_t collision_mask = 1;    // Physics mask
-		bool ignore_floor = true;       // Skip downward rays (floor skews volume)
+		bool ignore_floor = false;      // Skip downward rays. Default off (3.4): the
+		                                // solid-angle renormalization makes the integral
+		                                // self-consistent, so a complete sphere is preferred;
+		                                // the knob stays available for floor-dominated probes.
 		float floor_angle_threshold = 45.0f; // Degrees below horizon to ignore
 		float eyring_threshold = 0.3f;  // Mean absorption above which Eyring is used
 		float fallback_absorption = 0.15f; // Absorption for hits with no AcousticMaterial
@@ -83,24 +86,29 @@ public:
 
 		float floor_cos_threshold = Math::cos(Math::deg_to_rad(p_config.floor_angle_threshold));
 
-		// Solid angle per ray (sr). Total sphere = 4π.
-		// NOTE: renormalized to active-ray count in Phase 3.4; here it preserves
-		// the pre-refactor behaviour (divides by the full ray_count).
-		const float solid_angle_per_ray = (4.0f * (float)Math::PI) / (float)p_config.ray_count;
+		// Fixed-size stack scratch (ray_count is clamped to <= 128 by the engine
+		// config setter) — no heap allocation in the solve path (Task 5 promise).
+		static constexpr int MAX_RAYS = 128;
+		int ray_n = MIN(directions.size(), MAX_RAYS);
+		float hit_distance[MAX_RAYS];
+		float hit_abs_mid[MAX_RAYS];
+		float hit_abs_high[MAX_RAYS];
+		bool ray_escaped[MAX_RAYS];
+		bool ray_active[MAX_RAYS];
 
-		float total_volume = 0.0f;
-		float total_surface = 0.0f;
-		float total_absorbed = 0.0f;
-		float total_high_absorbed = 0.0f;
-		int escaped_rays = 0;
+		// --- Pass 1: cast all rays, record hits, accumulate mean hit distance. ---
 		int active_rays = 0;
 		int hit_rays = 0;
+		int escaped_rays = 0;
+		float sum_hit_distance = 0.0f;
 
-		for (int i = 0; i < directions.size(); i++) {
+		for (int i = 0; i < ray_n; i++) {
 			const Vector3 &dir = directions[i];
 			if (p_config.ignore_floor && dir.y <= -floor_cos_threshold) {
+				ray_active[i] = false;
 				continue;
 			}
+			ray_active[i] = true;
 			active_rays++;
 
 			Vector3 to = p_probe_position + dir * p_config.max_distance;
@@ -108,19 +116,65 @@ public:
 			AcousticMaterial *mat = nullptr;
 			bool hit = p_raycast(p_probe_position, to, hit_pos, &mat);
 
+			if (!hit) {
+				ray_escaped[i] = true;
+				escaped_rays++;
+			} else {
+				ray_escaped[i] = false;
+				hit_rays++;
+				float d = p_probe_position.distance_to(hit_pos);
+				hit_distance[i] = d;
+				sum_hit_distance += d;
+				room_estimator_material_absorption(mat, p_config.fallback_absorption, hit_abs_mid[i], hit_abs_high[i]);
+			}
+		}
+
+		result.rays_cast = active_rays;
+		result.rays_hit = hit_rays;
+
+		if (active_rays == 0) {
+			return result;
+		}
+
+		// All rays escaped → the probe is in open space. Openness 1, no reverb.
+		if (hit_rays == 0) {
+			result.openness = 1.0f;
+			result.rt60 = 0.0f;
+			return result;
+		}
+
+		// Phase 3.3: escaped rays represent an opening at the room boundary — a
+		// perfect absorber *at the wall*, not 100 m away. Assign them the mean
+		// hit distance with absorption 1.0 so an opening SHORTENS RT60 (energy
+		// leaves through the aperture) instead of inflating the volume integral.
+		const float mean_hit_distance = sum_hit_distance / (float)hit_rays;
+
+		// Phase 3.4: renormalize the solid angle to the actual covered fraction
+		// of the sphere (active, non-floor-filtered rays), so the integral is
+		// self-consistent whether or not ignore_floor is set.
+		const float solid_angle_per_ray = (4.0f * (float)Math::PI) / (float)active_rays;
+
+		// --- Pass 2: integrate volume / surface / absorption. ---
+		float total_volume = 0.0f;
+		float total_surface = 0.0f;
+		float total_absorbed = 0.0f;
+		float total_high_absorbed = 0.0f;
+
+		for (int i = 0; i < ray_n; i++) {
+			if (!ray_active[i]) {
+				continue;
+			}
 			float distance;
 			float absorption_mid;
 			float absorption_high;
-
-			if (!hit) {
-				escaped_rays++;
-				distance = p_config.max_distance;
+			if (ray_escaped[i]) {
+				distance = mean_hit_distance;
 				absorption_mid = 1.0f;
 				absorption_high = 1.0f;
 			} else {
-				hit_rays++;
-				distance = p_probe_position.distance_to(hit_pos);
-				room_estimator_material_absorption(mat, p_config.fallback_absorption, absorption_mid, absorption_high);
+				distance = hit_distance[i];
+				absorption_mid = hit_abs_mid[i];
+				absorption_high = hit_abs_high[i];
 			}
 
 			float cone_volume = (1.0f / 3.0f) * distance * distance * distance * solid_angle_per_ray;
@@ -132,10 +186,7 @@ public:
 			total_high_absorbed += absorption_high * patch_surface;
 		}
 
-		result.rays_cast = active_rays;
-		result.rays_hit = hit_rays;
-
-		if (active_rays == 0 || total_surface < 0.001f) {
+		if (total_surface < 0.001f) {
 			return result;
 		}
 

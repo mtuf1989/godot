@@ -92,6 +92,15 @@ TEST_CASE("[Symphony][Spatial][Reverb] Slot params derive from RT60 and damping"
 	CHECK(sp.damping == doctest::Approx(0.7f).epsilon(0.01f));
 	// room_size is a monotonic map of RT60/max_rt60 (default max 10s).
 	CHECK(sp.room_size == doctest::Approx(0.3f).epsilon(0.05f));
+	// wet_gain RAMPS in over crossfade_seconds (Phase 3.6), so after one small
+	// step it is partway up, not snapped to 1. Drive enough frames to complete
+	// the ramp (default crossfade 0.25s), then it settles at 1.0.
+	CHECK(sp.wet_gain > 0.0f);
+	CHECK(sp.wet_gain < 1.0f);
+	for (int i = 0; i < 20; i++) {
+		pool.assign(0, 3.0f, 0.7f, 0.8f);
+		pool.update(0.016f);
+	}
 	CHECK(sp.wet_gain == doctest::Approx(1.0f));
 }
 
@@ -207,6 +216,11 @@ TEST_CASE("[Symphony][Spatial][Reverb] Release frees a slot for reuse") {
 	pool.release(1);
 	pool.update(0.016f);
 	CHECK(pool.get_metrics().active_slot_count == 1);
+	// wet_gain now RAMPS down (Phase 3.6); drive a few frames for the tail to
+	// fade fully out before asserting it reached idle.
+	for (int i = 0; i < 20; i++) {
+		pool.update(0.016f);
+	}
 	CHECK(pool.slot_params(b).wet_gain == doctest::Approx(0.0f));
 
 	// A new distinct cluster can now claim the freed slot.

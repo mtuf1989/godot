@@ -61,6 +61,10 @@ private:
 		float last_update_time = 0.0f; // Time since last occlusion solve (seconds)
 		float source_radius = 0.0f;    // Emitter radius (m) for volumetric occlusion (Task 12); 0 = point
 		float max_distance = 0.0f;     // Attenuation max distance (m); used for air absorption normalization
+		float air_cutoff_base = 20000.0f; // Pre-portal air-absorption cutoff (Phase 3.1). The occlusion
+		                                  // solve writes this each frame; the portal solve then ASSIGNS
+		                                  // target.air_cutoff = MIN(air_cutoff_base, diffraction) fresh so
+		                                  // the cutoff never ratchets monotonically downward across frames.
 
 		// Target values (set by solvers before smoothing)
 		SpatialParams target;
