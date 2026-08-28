@@ -1,6 +1,6 @@
-# Spatial Acoustics Handoff Notes — Resume at Phase 6
+# Spatial Acoustics Handoff Notes — Resume at Phase 8
 
-**Date:** 2026-08-28 (Correctness Pass — Phases 1–5 complete)
+**Date:** 2026-08-28 (Correctness Pass — Phases 1–7 complete; C++ side done)
 **Branch:** `features/up_symphony`
 **Plan source of truth:** `modules/symphony/Spatial_Correctness_Plan.md` (8 phases + Verification + Documentation)
 **Prior plan (S5/S6 build):** `modules/symphony/Spatial_Acoustics_for_Symphony_Plan.md`
@@ -33,7 +33,7 @@ export GODOT_BIN=/Users/luong.pham/Work/godot/bin/godot.macos.editor.arm64
 ./addons/gdUnit4/runtest.sh --godot_binary "$GODOT_BIN" \
   -a res://test/addons/symphony_audio/spatial_acoustics_integration_test.gd -c --ignoreHeadlessMode
 ```
-TSan (only needed again if you add concurrent code; last run 126/126, 0 races):
+TSan (needed again only if you add concurrent code; last run 182/182, 0 races):
 ```bash
 scons platform=macos target=editor arch=arm64 tests=yes use_tsan=yes module_raycast_enabled=no -j$(sysctl -n hw.ncpu)
 TSAN_OPTIONS="halt_on_error=1 print_stacktrace=1" bin/godot.macos.editor.arm64.san --headless --test --source-file='*symphony*'
@@ -178,7 +178,6 @@ or the audio-thread no-alloc guarantee. Pick up in a perf pass if desired.
 
 ---
 
-## ▶ NEXT: Phase 6 — Complete the authored surface
 ## ✅ DONE: Phase 6 — Complete the authored surface
 
 All six bound-but-unread fields are now wired, plus the two structural items. Build green
@@ -298,6 +297,106 @@ registry LOOKUP contract only (registration needs an in-tree `CollisionObject3D`
 
 </details>
 
+## ▶ NEXT: Phase 8 — G7 integration (game-template)
+
+**Repo:** `/Users/luong.pham/Work/game-template` (branch also `features/up_symphony`).
+**Primary file:** `addons/symphony_audio/audio_manager.gd`.
+**Test file:** `test/addons/symphony_audio/spatial_acoustics_integration_test.gd`
+(`class SpatialAcousticsIntegrationTest extends GdUnitTestSuite`).
+This is where in-tree room/portal behaviour IS testable (live SceneTree) — the doctest C++
+layer could NOT test it (headless has no 3D World; see the Phase 7 ⚠ note above).
+
+**C++ side is complete and bound.** Everything Phase 8 needs is already exposed on the
+`SpatialAcousticsEngine` singleton (all bound in `_bind_methods`, verified present):
+- `get_emitter_apparent_position(slot) -> Vector3` — already consumed at `audio_manager.gd:735`.
+- `get_emitter_portal_gain(slot) -> float` — **NOT yet consumed** (Phase 8.2).
+- `get_emitter_shoebox_dimensions(slot) -> Vector3` — **NOT yet consumed** (Phase 8.4); zero = unauthored.
+- `compute_occlusion_cutoff` / `compute_air_cutoff` / `compute_spatial_gain` — already consumed (line ~739-745).
+- Reverb slot params: `get_reverb_slot_decay_time/damping/room_size/wet_gain(slot)`,
+  `get_emitter_reverb_slot/send(slot)`, `get_emitter_reverb_prev_slot/prev_send`, `is_emitter_reverb_migrating`.
+
+### The current 3D spatial block (the edit site for 8.2 + 8.4)
+`audio_manager.gd` ~lines **728–746**, inside the per-voice update loop, gated on
+`event.spatial_mode == 2 and SpatialAcousticsEngine.has_emitter(slot)`:
+```gdscript
+if player is AudioStreamPlayer3D:
+    player.global_position = SpatialAcousticsEngine.get_emitter_apparent_position(slot)   # 2.4 done
+if player.has_method("get_stream_playback"):
+    var playback = player.get_stream_playback()
+    if playback and playback.has_method("set_parameter"):
+        var occ_cutoff := SpatialAcousticsEngine.compute_occlusion_cutoff(slot)
+        var air_cutoff := SpatialAcousticsEngine.compute_air_cutoff(slot)
+        var spatial_gain := SpatialAcousticsEngine.compute_spatial_gain(slot)
+        playback.set_parameter(&"spatial_occlusion_cutoff", occ_cutoff)
+        playback.set_parameter(&"spatial_air_cutoff", air_cutoff)
+        playback.set_parameter(&"spatial_gain", spatial_gain)
+```
+Listener body + panner (2.4) already live at ~lines **955–975** (`_update_listener_body_rid`,
+walks Camera3D ancestors for a `CollisionObject3D`, cached `_listener_body_rid`).
+
+### Sub-tasks (in suggested order)
+1. **8.1 — Positions & listener body.** Mostly DONE in 2.4 (commit `d90fb0c`). Verify the
+   apparent-position write + `_update_listener_body_rid` still hold; nothing new expected.
+2. **8.2 — Portal gain as its OWN layer.** Apply `get_emitter_portal_gain(slot)` as a *separate*
+   multiplicative gain on the 3D voice — do **NOT** fold it into `attenuation` (VoicePool owns
+   that; folding double-counts). Simplest: multiply it into the `spatial_gain` passed to
+   `set_parameter(&"spatial_gain", ...)`, OR apply as a `player.volume_db += linear_to_db(gain)`
+   layer. Pick the one that composes cleanly with the existing `spatial_gain` (which is derived
+   from transmission). Document which, so it's unambiguous it's not double-counted.
+3. **8.3 — Propagation-delay countdown from REAL delta (highest-value bug fix).**
+   - Drive `SymphonyVoicePool.tick_deferred_starts(delta)` from `AudioManager._process(delta)`.
+   - REMOVE the wall-clock derivation inside `SymphonyVoicePool::process_frame()`
+     (`godot/modules/symphony/runtime/voice_manager.cpp` ~lines **727–733**) — this is a C++ edit
+     back in the godot repo.
+   - **Guard against double-ticking:** `tick_deferred_starts` is bound to GDScript AND called
+     internally — make the internal call go away (or gate it) so a deferred voice's countdown
+     advances exactly once per frame.
+   - **Why it matters (worse than the old note):** during a pause `process_frame` is not called
+     at all, so on resume one huge delta fires **every** pending voice simultaneously. Driving the
+     countdown from `_process` (which respects pause) fixes this.
+   - Existing coverage: `test_distant_oneshot_schedules_delay` / `test_near_oneshot_starts_immediately`
+     in the integration test — extend to prove no mass-fire on resume.
+4. **8.4 — Early reflections per reverb slot.** Instantiate ONE `SymphonyEarlyReflections` per
+   active reverb pool slot (the operator is built + registered in `register_types.cpp` but never
+   instantiated). Feed it `get_emitter_shoebox_dimensions(slot)` when authored (non-zero), else
+   the Task 9 estimate (`get_reverb_slot_room_size` / RT60-derived dims). The C++ `compute_shoebox_reflections`
+   is a pure static helper on `SymphonyEarlyReflections` (see `nodes/delay/symphony_early_reflections.h`)
+   — but per-slot instantiation is a game-template concern (how the reverb buses are built).
+   Re-check arena budget assertions after adding instances (Phase 9 verification item).
+5. **8.5 — Portal scene + live-SceneTree GdUnit4.** New test scene: two `AcousticRoom3D` boxes +
+   an `AcousticPortal3D` doorway between them, a sized emitter in one room, listener in the other.
+   Assert: (a) closed portal → transmission-only fallback (the Phase 6 `_apply_closed_portal_transmission`
+   path); (b) apparent-position redirects to the doorway; (c) open vs closed changes occlusion/gain.
+   This is the FIRST place real in-tree `find_room_for_point` / portal room resolution is exercised.
+6. **8.6 — Neighbour-room reverb coupling** through open portals (design per plan §Phase 8).
+7. **8.7 — Tighten the T12 test.** It currently asserts `compute_occlusion_cutoff < 19000`, but an
+   un-tagged collider yields ≈230 Hz — it passes by two orders of magnitude. Keep it as the
+   (valuable) live-`PhysicsServer3D` proof of the T6 SPECTRAL path, **rename it** to say so, and add
+   a REAL volumetric assertion now that Phase 2.1 makes volumetric audible. **Reopen deferred item #2**
+   (the existing test exercises the spectral solve, not the volumetric one).
+
+### Phase 8 gotchas
+- **portal_gain is deliberately its own layer** — the whole point of Phase 6 keeping it separate
+  from `attenuation`. Do not merge them.
+- **Cross-repo commits:** 8.3 touches BOTH repos (game-template `_process` + godot
+  `voice_manager.cpp`). Commit the godot-side C++ change on its own, run the C++ suite (expect
+  182/182), then the game-template side. Per protocol, no squash.
+- **TSan:** 8.3 changes cross-subsystem timing but adds no NEW concurrency; a TSan gate is only
+  mandatory if you introduce new threaded/shared-state code. The C++ suite + GdUnit4 are the
+  required gates for Phase 8.
+- **GdUnit4 run** (expect the existing 6/6 to still pass, plus your new portal-scene cases):
+  ```bash
+  cd /Users/luong.pham/Work/game-template
+  export GODOT_BIN=/Users/luong.pham/Work/godot/bin/godot.macos.editor.arm64
+  ./addons/gdUnit4/runtest.sh --godot_binary "$GODOT_BIN" \
+    -a res://test/addons/symphony_audio/spatial_acoustics_integration_test.gd -c --ignoreHeadlessMode
+  ```
+- The `spatial_mode == 2` constant is `SPATIAL_3D` (see `_make_event` in the integration test).
+- `AudioStreamPlayer3D` plays to exactly ONE bus (no native per-voice aux send) — see the last
+  standing gotcha for the reverb-slot routing tradeoff already documented.
+
+<details><summary>Original terse Phase 8 bullet (for reference)</summary>
+
 - **Phase 8 — G7 integration (game-template `audio_manager.gd` + a new portal test scene).**
   Positions/listener body (2.4 already partly done); portal_gain as its OWN gain layer (do NOT
   double-count with attenuation); **propagation-delay countdown from real delta** — drive
@@ -308,7 +407,11 @@ registry LOOKUP contract only (registration needs an in-tree `CollisionObject3D`
   at once. Early reflections per reverb slot; portal scene + live-SceneTree GdUnit4; neighbour-room
   reverb coupling; **tighten the T12 test** (rename to reflect it tests the spectral path; add a
   real volumetric assertion now that 2.1 makes volumetric audible) and **reopen deferred item #2**.
-- **Phase 9 — Final verify + docs.** Full C++ suite (126 + ~55 new); TSan gate; cross-repo GdUnit4;
+
+</details>
+
+- **Phase 9 — Final verify + docs.** Full C++ suite (**182 cases / 195,815 assertions** now — the
+  126 + 56 from Phase 7); TSan gate; cross-repo GdUnit4;
   scaling benchmark note (frame time + MEASURED ray count at 10/50/100/200 emitters — re-baseline
   after 5.1 since the old numbers measured an unenforced budget); update THIS file; record the
   HRTF decision (Option A recommended) without enacting; keep the preset listening pass flagged.
@@ -325,7 +428,7 @@ registry LOOKUP contract only (registration needs an in-tree `CollisionObject3D`
 - `update_gizmos()` guarded behind `is_inside_tree()`.
 - When folding a per-frame-recomputed value into a `SpatialParams` target, RESET it at the top of
   the solve (the portal solve resets `portal_gain`/`apparent_position` each frame — follow the
-  same discipline for any new per-frame folded value in Phase 6).
+  same discipline for any new per-frame folded value).
 - `AudioStreamPlayer3D` plays to exactly ONE bus — no native per-voice aux send. The reverb-slot
   routing tradeoff (a voice on a reverb slot bus loses its dry category-bus volume) is documented;
   the richer-routing accessors (`get_emitter_reverb_prev_slot`/`prev_send`, `is_emitter_reverb_migrating`)
