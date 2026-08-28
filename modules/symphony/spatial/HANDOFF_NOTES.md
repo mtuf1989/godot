@@ -68,7 +68,7 @@ squashed. Cross-repo work IS in scope (game-template too).
 | `dd52c6232d` | 3 — Correctness bugs | godot |
 | `13e82360a1` | 4 — Physical modelling | godot |
 | `e8b1e68f53` | 5 — Budget/perf/hygiene | godot |
-| `761fff69d3` | 6 — Complete the authored surface | godot |
+| `c9a0087c0b` | 6 — Complete the authored surface (map hash updated in a follow-up commit) | godot |
 
 **Test baseline:** 126 C++ cases / 195,348 assertions, 0 failed. game-template GdUnit4 6/6.
 
