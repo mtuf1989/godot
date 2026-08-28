@@ -10,22 +10,21 @@
 
 ## TL;DR for the next session
 
-Phases **1–6 of the Correctness Plan are done, committed, and green**. Both mandatory
-TSan gates (after 2.3 and after 5.2) passed with **0 data races**. Phase 6 (Complete the
-authored surface) added no concurrent code, so no new TSan gate was required. Resume at
-**Phase 7 — new C++ tests** for the solver-level surface. Then Phase 8 (game-template G7
-integration), Phase 9 (final verify + docs).
+Phases **1–7 of the Correctness Plan are done, committed, and green**. Three mandatory
+TSan gates (after 2.3, after 5.2, and after Phase 7's concurrent SeqLock reader test)
+passed with **0 data races**. Phase 6 added no concurrent code (no gate needed). Resume at
+**Phase 8 — game-template G7 integration**. Then Phase 9 (final verify + docs).
 
 Working tree is CLEAN in both repos (all phase work committed). `reports/` and
 `test/addons/symphony_audio/` show as untracked in game-template — pre-existing artifacts,
 not this work.
 
-### Verify you're in a good state before starting Phase 7
+### Verify you're in a good state before starting Phase 8
 ```bash
 cd /Users/luong.pham/Work/godot
-git checkout features/up_symphony && git log --oneline -7   # expect Phase 1..6 commits on top
+git checkout features/up_symphony && git log --oneline -9   # expect Phase 1..7 commits on top
 scons platform=macos target=editor arch=arm64 tests=yes module_raycast_enabled=no -j$(sysctl -n hw.ncpu)
-bin/godot.macos.editor.arm64 --headless --test --source-file='*symphony*'   # expect 126/126, 195348 assertions
+bin/godot.macos.editor.arm64 --headless --test --source-file='*symphony*'   # expect 182/182, 195815 assertions
 ```
 Cross-repo GdUnit4 (expect 6/6, exit 0):
 ```bash
@@ -69,8 +68,10 @@ squashed. Cross-repo work IS in scope (game-template too).
 | `13e82360a1` | 4 — Physical modelling | godot |
 | `e8b1e68f53` | 5 — Budget/perf/hygiene | godot |
 | `c9a0087c0b` | 6 — Complete the authored surface (map hash updated in a follow-up commit) | godot |
+| `(this commit)` | 7 — New C++ solver tests (+ extended portal) | godot |
 
-**Test baseline:** 126 C++ cases / 195,348 assertions, 0 failed. game-template GdUnit4 6/6.
+**Test baseline:** 182 C++ cases / 195,815 assertions, 0 failed (was 126/195,348 before Phase 7's
+56 new cases). game-template GdUnit4 6/6. TSan: 182/182, 0 races.
 
 ---
 
@@ -257,7 +258,32 @@ Everything below is bound, inspector-visible, and currently read by NOTHING. Wir
 
 ---
 
-## Remaining phases after 6
+## Remaining phases after 7
+
+### ✅ DONE: Phase 7 — New C++ tests
+Added **7 new test files** + extended `test_symphony_portal.cpp`. Suite **126 → 182 cases**
+(56 new), **195,815 assertions, 0 failed**. TSan gate PASSED (182/182, 0 races) — required
+because `test_symphony_spatial_engine.cpp` spins a concurrent SeqLock reader thread. Per-suite
+counts: occlusion 9, room_estimator 8, probe_scheduler 7, probe_cache 9, acoustic_material 7,
+acoustic_body 5, spatial_engine 7, portal 33 (+4). All solver tests drive the Phase 1.2
+`compute<>` injectable functors — no live `PhysicsServer3D`.
+
+**Key regressions locked in:** solid slab yields `t` not `t²` (occlusion); a window yields RT60
+SHORTER than sealed (room estimator); billed rays stay within budget at 200 emitters (scheduler);
+`air_cutoff` recovers upward — no monotonic ratchet (engine); fps-independent settle at 30/60/144.
+
+**⚠ Headless-3D limitation discovered (important for Phase 8):** even though `AcousticRoom3D` is
+now `Node3D`, the headless doctest harness stands up **no 3D World/RenderingServer**, so ANY
+in-tree call that touches `is_inside_tree()+global_transform` (`contains_point`),
+`set_global_transform`, or `update_gizmos()` (`set_bounds` while in-tree) **SIGSEGVs** — first
+attempt crashed on exactly this. The portal-suite extension therefore verifies the registry/epoch/
+priority MODEL through the **tree-free** surface (static setters that bump `registry_epoch`, plus
+`point_in_box` priority selection). **Real in-tree room membership / `find_room_for_point` /
+`AcousticPortal3D` room resolution must be tested in the live-SceneTree GdUnit4 layer (Phase 8),
+NOT in doctest.** `test_symphony_acoustic_body.cpp` follows the same rule: it verifies the static
+registry LOOKUP contract only (registration needs an in-tree `CollisionObject3D` parent).
+
+<details><summary>Original Phase 7 plan (for reference)</summary>
 
 - **Phase 7 — Tests (~7 new C++ files, ~55 cases).** All use the Phase 1.2 injectable functor —
   no live `PhysicsServer3D`, no SceneTree. Files: `test_symphony_occlusion.cpp` (regression: solid
@@ -269,6 +295,9 @@ Everything below is bound, inspector-visible, and currently read by NOTHING. Wir
   air_cutoff no-ratchet; volumetric blend occ=0.5,T_mat=0.1→T_eff=0.55). Extend
   `test_symphony_portal.cpp` with real membership/priority/epoch. **Register new test files in
   the tests SCsub/build if needed (check how existing `tests/modules/test_symphony_*.cpp` are picked up).**
+
+</details>
+
 - **Phase 8 — G7 integration (game-template `audio_manager.gd` + a new portal test scene).**
   Positions/listener body (2.4 already partly done); portal_gain as its OWN gain layer (do NOT
   double-count with attenuation); **propagation-delay countdown from real delta** — drive
