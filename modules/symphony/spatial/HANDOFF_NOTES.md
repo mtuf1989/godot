@@ -68,7 +68,7 @@ squashed. Cross-repo work IS in scope (game-template too).
 | `13e82360a1` | 4 — Physical modelling | godot |
 | `e8b1e68f53` | 5 — Budget/perf/hygiene | godot |
 | `c9a0087c0b` | 6 — Complete the authored surface (map hash updated in a follow-up commit) | godot |
-| `(this commit)` | 7 — New C++ solver tests (+ extended portal) | godot |
+| `e98376349d` | 7 — New C++ solver tests (+ extended portal) | godot |
 
 **Test baseline:** 182 C++ cases / 195,815 assertions, 0 failed (was 126/195,348 before Phase 7's
 56 new cases). game-template GdUnit4 6/6. TSan: 182/182, 0 races.
