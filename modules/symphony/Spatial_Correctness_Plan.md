@@ -338,5 +338,10 @@ Beyond the suites:
 Update `spatial/HANDOFF_NOTES.md`: mark deferred item #2 reopened, item #1 fixed with the corrected
 pause symptom, and record the plan's own deferred-prerequisite audit — the virtual path solver and the
 contiguous GPU param block are met, but **Task 7's stereo-capable output path is not** (the wrapper is
-a single mono chain delegating panning to `AudioStreamPlayer3D`). Decide explicitly whether to keep
-that HRTF prerequisite or drop it from the plan document.
+a single mono chain delegating panning to `AudioStreamPlayer3D`).
+
+**DECISION (user, 2026-08-28): DROP the HRTF prerequisite. Keep mono for now.** Task 7's
+"stereo-capable output path" requirement is removed from this plan. The mono `SpatialGraphWrapper`
+delegating panning to `AudioStreamPlayer3D` is the intended, accepted design. True HRTF (HRIR dataset
++ partitioned-convolution `SymphonyConvolver`) is out of scope here and, if ever pursued, is a
+separate project that would design its own stereo output path.

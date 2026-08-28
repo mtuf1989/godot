@@ -69,19 +69,23 @@ squashed. Cross-repo work IS in scope (game-template too).
    Phase 2.1 blends volumetric occlusion into the transmission bands. Both solves are now
    proven via live `PhysicsServer3D`.
 
-### Two items still flagged for the USER (notes only — do NOT enact)
-1. **Preset listening pass.** All 12 material presets were retuned in Phase 2.2 for the
-   corrected forward-only ray march. Values are physically-defensible (STL-derived) but need
-   the user's ears. Still open; user will confirm.
-2. **HRTF prerequisite decision (Phase 9 doc item — recorded, not enacted).** The plan's
-   "Task 7 keeps a stereo-capable output path" HRTF prerequisite is **NOT met**: the
-   `SpatialGraphWrapper` is a single mono chain that delegates panning to `AudioStreamPlayer3D`
-   (mono-by-design). **Recommend Option A (drop the prerequisite from the plan)**: true HRTF
-   (HRIR dataset + partitioned-convolution `SymphonyConvolver`) is a separate future project
-   that would make stereo output a deliberate part of *its* design. Leave the final call to
-   the user. (Phase 8.4 note reinforces this: the reverb slots are plain `AudioEffectReverb`
-   buses with no aux send, and the Symphony module has **no `AudioEffect` subclass**, so there
-   is no bus-level DSP insert path today.)
+### USER decisions (confirmed 2026-08-28)
+1. **Preset listening pass — STILL OPEN (no blocker on the code).** All 12 material presets
+   (`spatial/presets/{metal,carpet,brick,generic,glass,concrete,marble,wood,plaster,tile,
+   acoustic_foam,curtain}.tres`) were retuned in Phase 2.2 for the corrected forward-only ray
+   march. Values are physically-defensible (STL-derived). **There is no playable demo scene yet**
+   — the only spatial content is the headless GdUnit4 suite (silent 1-sample WAVs, asserts
+   numbers). A listening pass needs a small interactive scene (a real looping sound, a couple of
+   walls with `AcousticBody3D` materials, a walkable listener). Deferred to a follow-up "audio
+   QA scene" task; not required for Phase 9 code completion.
+2. **HRTF prerequisite — DROPPED (final).** The user confirmed: keep **mono for now**. The plan's
+   "Task 7 keeps a stereo-capable output path" HRTF prerequisite is formally **dropped**. The
+   `SpatialGraphWrapper` stays a single mono chain delegating panning to `AudioStreamPlayer3D`
+   (mono-by-design). True HRTF (HRIR dataset + partitioned-convolution `SymphonyConvolver`) is a
+   separate future project that would make stereo output a deliberate part of *its* design; it is
+   explicitly out of scope for this correctness pass. (Reinforced by the Phase 8.4 finding: reverb
+   slots are plain `AudioEffectReverb` buses with no aux send and the module has **no `AudioEffect`
+   subclass**, so there is no bus-level DSP insert path today.)
 
 ---
 
