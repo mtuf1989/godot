@@ -1,6 +1,6 @@
-# Spatial Acoustics Handoff Notes — Phase 8 complete; resume at Phase 9
+# Spatial Acoustics Handoff Notes — Correctness Pass COMPLETE (Phases 1–9)
 
-**Date:** 2026-08-28 (Correctness Pass — Phases 1–8 complete; G7 integration done)
+**Date:** 2026-08-28 (Correctness Pass — ALL phases 1–9 complete; C++ + G7 integration + final verify)
 **Branch:** `features/up_symphony`
 **Plan source of truth:** `modules/symphony/Spatial_Correctness_Plan.md` (8 phases + Verification + Documentation)
 **Prior plan (S5/S6 build):** `modules/symphony/Spatial_Acoustics_for_Symphony_Plan.md`
@@ -10,26 +10,35 @@
 
 ## TL;DR for the next session
 
-Phases **1–8 of the Correctness Plan are done, committed, and green**. Three mandatory
-TSan gates (after 2.3, after 5.2, and after Phase 7's concurrent SeqLock reader test)
-passed with **0 data races**. Phases 6 and 8 added no concurrent code (no gate needed —
-8.3 changes cross-subsystem *timing* but introduces no new threaded/shared state). Resume at
-**Phase 9 — final verify + docs** (full C++ suite, TSan gate, cross-repo GdUnit4, scaling
-benchmark note, and the HRTF-prerequisite decision recorded below).
+**The Spatial Acoustics Correctness Pass is COMPLETE.** All 9 phases done, committed, and green.
+Three mandatory TSan gates (after 2.3, after 5.2, and after Phase 7's concurrent SeqLock reader
+test) plus the Phase 9 final gate passed with **0 data races**. Phases 6 and 8 added no concurrent
+code (8.3 changes cross-subsystem *timing* but introduces no new threaded/shared state).
 
-**Phase 8 result:** game-template G7 integration complete. C++ suite **182/182** (unchanged —
-the one C++ edit removed dead code). Cross-repo GdUnit4 **14/14** (was 6/6; +8 new cases).
-`git branch` note: game-template's spatial work lives on **`main`** (there is no
-`features/up_symphony` branch in that repo — Phase 2.4 `d90fb0c` and all Phase 8 commits are
-on `main`). godot-side work is on `features/up_symphony`.
+### Phase 9 — final verification results (all PASS)
+- **C++ suite:** `bin/godot.macos.editor.arm64 --headless --test --source-file='*symphony*'`
+  → **182/182 cases, 195,815 assertions, 0 failed.**
+- **TSan gate:** `bin/godot.macos.editor.arm64.san` (rebuilt after 8.3) with
+  `TSAN_OPTIONS="halt_on_error=1 print_stacktrace=1"` → **182/182, 0 data races, exit 0**
+  (stress-test timings inflate under instrumentation — expected, not a failure).
+- **Cross-repo GdUnit4:** `spatial_acoustics_integration_test.gd` → **14/14, exit 0.**
+- **Scaling benchmark (re-baselined after Phase 5.1 — see the dedicated section below).**
 
-The integration test file `test/addons/symphony_audio/spatial_acoustics_integration_test.gd`
-is **committed now** (was untracked). `reports/` remains untracked (gdUnit4 run artifacts).
+### Final decisions locked in (see "USER decisions" section)
+- **HRTF: DROPPED.** Mono stays. `SpatialGraphWrapper` mono-by-design; HRTF is a future project.
+- **Preset listening pass: DEFERRED** by the user. Not a code blocker; needs a small interactive
+  audio QA scene (none exists yet). Tracked as a follow-up "audio QA scene" task.
 
-### Verify you're in a good state before Phase 9
+### Repo / branch state
+- **godot** work is on `features/up_symphony`. **game-template** spatial work lives on **`main`**
+  (there is no `features/up_symphony` branch in that repo). Both trees CLEAN.
+- The integration test `test/addons/symphony_audio/spatial_acoustics_integration_test.gd` is
+  **committed** (was untracked). `reports/` is now git-ignored (gdUnit4 run artifacts).
+
+### Re-verify the completed state at any time
 ```bash
 cd /Users/luong.pham/Work/godot
-git checkout features/up_symphony && git log --oneline -12   # expect Phase 1..8 commits on top
+git checkout features/up_symphony && git log --oneline -14   # Phase 1..9 commits on top
 scons platform=macos target=editor arch=arm64 tests=yes module_raycast_enabled=no -j$(sysctl -n hw.ncpu)
 bin/godot.macos.editor.arm64 --headless --test --source-file='*symphony*'   # expect 182/182, 195815 assertions
 ```
@@ -478,11 +487,40 @@ walks Camera3D ancestors for a `CollisionObject3D`, cached `_listener_body_rid`)
 
 </details>
 
-- **Phase 9 — Final verify + docs.** Full C++ suite (**182 cases / 195,815 assertions** now — the
-  126 + 56 from Phase 7); TSan gate; cross-repo GdUnit4;
-  scaling benchmark note (frame time + MEASURED ray count at 10/50/100/200 emitters — re-baseline
-  after 5.1 since the old numbers measured an unenforced budget); update THIS file; record the
-  HRTF decision (Option A recommended) without enacting; keep the preset listening pass flagged.
+- **✅ Phase 9 — Final verify + docs: DONE.** C++ suite 182/182 (195,815 assertions, 0 failed);
+  TSan gate 182/182 (0 races); cross-repo GdUnit4 14/14. HRTF decision recorded (DROPPED — mono
+  stays); preset listening pass deferred by the user. Scaling benchmark re-baselined below.
+
+### Scaling benchmark (Phase 9, re-baselined after Phase 5.1's ENFORCED unified budget)
+**Method:** a temporary `tests/modules/test_symphony_scaling_bench.cpp` drove `ProbeScheduler`
+(defaults: `ray_budget_per_frame=64`, `base_rate_hz=10`, `min_room_probe_budget=16`) with
+10/50/100/200 synthetic, always-due emitters over 300 frames; measured the **billed
+`rays_issued`** (the enforced pool) and per-frame scheduler time. The file was removed after
+capture (suite stays at 182). Re-create it from git history if you want to re-run.
+
+| workload | emitters | sched µs/frame | rays/frame (avg = max) | budget | serviced/frame |
+|---|---|---|---|---|---|
+| occlusion-only (cost 8) | 10 | 0.477 | 64 | 64 | 8 |
+| occlusion-only (cost 8) | 50 | 1.043 | 64 | 64 | 8 |
+| occlusion-only (cost 8) | 100 | 1.467 | 64 | 64 | 8 |
+| occlusion-only (cost 8) | 200 | 2.017 | 64 | 64 | 8 |
+| mixed (cost 20 = 8 occ + 4 vol + 8 room-miss) | 10 | 0.453 | 60 | 64 | 3 |
+| mixed (cost 20) | 50 | 0.953 | 60 | 64 | 3 |
+| mixed (cost 20) | 100 | 1.430 | 60 | 64 | 3 |
+| mixed (cost 20) | 200 | 2.293 | 60 | 64 | 3 |
+
+**Conclusion — Phase 5.1 works as intended:** billed rays are **FLAT vs emitter count** and never
+exceed the 64-ray pool from 10→200 emitters (the pre-5.1 numbers measured an *unenforced* budget
+that grew with emitters). Scheduler cost scales linearly and is **sub-microsecond per emitter**
+(≈2.0–2.3 µs at 200 emitters), negligible against a 16.6 ms frame. The occlusion-only case fills
+the pool exactly (8 emitters × 8 rays = 64); the mixed case services fewer emitters (3 × 20 = 60 ≤
+64) because each costs more — the pool is the invariant, not the emitter count.
+
+**Not measured here:** true end-to-end raycast wall-clock time (needs a live 3D `PhysicsServer3D`
+world, which the headless doctest harness has none of — see the Phase 7 ⚠ note). The scheduler
+*governs* how many rays are ever issued, so the enforced-budget ceiling above is the binding
+performance guarantee; actual raycast cost is bounded by `budget × raycast_cost` and is a
+PhysicsServer property, not a Symphony one.
 
 ---
 
