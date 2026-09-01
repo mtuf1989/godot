@@ -1,4 +1,4 @@
-# Symphony Audio System — User Guide v1.7.1
+# Symphony Audio System — User Guide v2.0
 
 > A complete guide to creating procedural sounds, adaptive music, and spatial audio for games using the Symphony module and its GDScript Game Audio Layer.
 
@@ -15,16 +15,17 @@
 7. [RTPC — Real-Time Parameter Control](#rtpc--real-time-parameter-control)
 8. [Music System — Adaptive Music](#music-system--adaptive-music)
 9. [BeatClock — Timing & Synchronization](#beatclock--timing--synchronization)
-10. [Ambient System & AudioZone2D](#ambient-system--audiozone2d)
-11. [Dialogue Audio Pipeline](#dialogue-audio-pipeline)
-12. [BusController — Snapshots & Ducking](#buscontroller--snapshots--ducking)
-13. [Voice Management & Virtualization](#voice-management--virtualization)
-14. [LOD System — Distance-Based Quality](#lod-system--distance-based-quality)
-15. [Performance & Profiling](#performance--profiling)
-16. [Preset Library](#preset-library)
-17. [Best Practices & Tips](#best-practices--tips)
-18. [Troubleshooting](#troubleshooting)
-19. [Changelog](#changelog)
+10. [Spatial Acoustics](#spatial-acoustics)
+11. [Ambient System & AudioZone2D](#ambient-system--audiozone2d)
+12. [Dialogue Audio Pipeline](#dialogue-audio-pipeline)
+13. [BusController — Snapshots & Ducking](#buscontroller--snapshots--ducking)
+14. [Voice Management & Virtualization](#voice-management--virtualization)
+15. [LOD System — Distance-Based Quality](#lod-system--distance-based-quality)
+16. [Performance & Profiling](#performance--profiling)
+17. [Preset Library](#preset-library)
+18. [Best Practices & Tips](#best-practices--tips)
+19. [Troubleshooting](#troubleshooting)
+20. [Changelog](#changelog)
 
 ---
 
@@ -48,8 +49,9 @@ Symphony is a two-layer audio system:
 
 **C++ Module** (`modules/symphony/`) — The low-level engine:
 - Arena-allocated DSP graph compiler (zero allocation during playback)
-- 38 audio operators (oscillators, filters, envelopes, delays, synthesis, spectral)
+- 44 audio operators (oscillators, filters, envelopes, delays, synthesis, spectral, and early reflections)
 - Runtime singletons: `SymphonyVoicePool`, `SymphonyEventDispatcher`, `BeatClock`, `BusController`, `RTPCEngine`
+- Spatial acoustics: material-aware occlusion, volumetric sources, room estimation, shared reverb, and portal propagation
 - Micro-block processing (32/64 samples per step)
 
 **Game Audio Layer** (`addons/symphony_audio/`) — The high-level GDScript API:
@@ -140,9 +142,14 @@ MusicSystem.set_state(&"exploration") # Transition follows graph rules
 | `bus_override` | String | "" | Override the default bus for this category |
 | `importance_weight` | float | 1.0 | Multiplier for importance scoring |
 | `spatial_mode` | Enum | NON_POSITIONAL | `NON_POSITIONAL`, `2D`, `3D` |
-| `attenuation_model` | Enum | LINEAR | `LINEAR`, `LOGARITHMIC`, `CUSTOM` |
+| `attenuation_model` | Enum | LINEAR | `LINEAR`, `LOGARITHMIC`, `CUSTOM`, `NATURAL`, `LOG_REVERSE`, `INVERSE_SQUARE` |
 | `attenuation_curve` | Curve | null | Custom attenuation curve (when model = CUSTOM) |
 | `max_distance` | float | 2000.0 | Maximum audible distance (pixels/units) |
+| `inner_radius` | float | 0.0 | Radius that remains at full volume |
+| `falloff_distance` | float | 0.0 | Fade distance beyond `inner_radius`; 0 uses `max_distance` as the total range |
+| `enable_propagation_delay` | bool | false | Delay eligible one-shots by distance / `speed_of_sound` |
+| `speed_of_sound` | float | 343.0 | Propagation speed in metres per second |
+| `source_radius` | float | 0.0 | Physical radius in metres for volumetric occlusion; 0 is a point source |
 | `loop` | bool | false | Whether the stream loops |
 | `virtualize_when_inaudible` | bool | true | Virtualize instead of kill when inaudible |
 | `rtpc_bindings` | Array[Dictionary] | [] | Parameter-to-target mappings |
@@ -909,6 +916,110 @@ player.pitch_scale = BeatClock.calculate_time_stretch_for_alignment(target_time)
 # Duration-based (for PhaseVocoder graph input):
 playback.set_parameter("time_stretch", BeatClock.calculate_duration_stretch_for_alignment(target_time))
 ```
+
+---
+
+## Spatial Acoustics
+
+Symphony 2.0 adds a material-aware 3D acoustics layer on top of Godot's `AudioStreamPlayer3D` spatialization. `SpatialAcousticsEngine` runs physics and room simulation on the main thread, smooths the result, and publishes bounded parameters to the audio path without allocating during playback.
+
+For a `SoundEvent` with `spatial_mode = SPATIAL_3D`, the Game Audio Layer handles emitter registration, listener and physics-space updates, stream wrapping, occlusion filters, portal gain and apparent position, propagation delay, and reverb-bus routing. Normal game code continues to call `AudioManager.play_event()`.
+
+### What the system models
+
+- Multi-hit, three-band material transmission for direct-path occlusion
+- Volumetric occlusion for sources with a non-zero `source_radius`
+- Distance-dependent high-frequency air absorption
+- Ray-estimated or authored room acoustics, including RT60 and damping
+- A bounded shared reverb pool with smoothed, equal-power slot migration
+- Portal routing between rooms, including diffraction, aperture loss, apparent source position, and closed-door transmission
+- Budgeted probe scheduling and a spatial cache so ray work remains bounded as emitter count grows
+
+Godot still performs final speaker panning. Symphony graphs remain mono internally; HRTF/binaural rendering is not part of 2.0.
+
+### Basic 3D event
+
+Set the event to 3D and optionally give large sources a physical radius:
+
+```gdscript
+var event := SoundEvent.new()
+event.spatial_mode = SoundEvent.SPATIAL_3D
+event.source_radius = 1.5 # metres; 0.0 keeps point-source occlusion
+
+AudioManager.play_event(event, emitter.global_position)
+```
+
+The event still needs one or more streams and the usual voice/attenuation settings described in [SoundEvent — The Core Resource](#soundevent--the-core-resource). For moving voices, keep their slot position current through the Game Audio Layer or `SymphonyVoicePool.set_slot_position()`.
+
+### Acoustic materials and collision geometry
+
+`AcousticMaterial` stores low/mid/high absorption and transmission values. Add an `AcousticBody3D` as a child of a `CollisionObject3D` (or supported CSG collider) and assign its `material`. Occlusion ray hits then resolve that material in constant time.
+
+```gdscript
+var concrete: AcousticMaterial = AcousticMaterial.create_preset(
+    AcousticMaterial.PRESET_CONCRETE
+)
+$Wall/AcousticBody3D.material = concrete
+```
+
+Built-in presets are `GENERIC`, `CONCRETE`, `WOOD`, `GLASS`, `CARPET`, `METAL`, `BRICK`, `PLASTER`, `ACOUSTIC_FOAM`, `CURTAIN`, `MARBLE`, and `TILE`. You can also create `.tres` materials and tune:
+
+| Property | Meaning |
+|----------|---------|
+| `absorption_low/mid/high` | Reflected energy absorbed in each band; used for room/reverb estimation |
+| `transmission_low/mid/high` | Energy passing through an occluder; lower values block more sound |
+| `total_absorption` | Treats the surface as soundproof |
+| `total_absorption_transition_speed` | Smoothing speed when a total absorber is hit |
+| `scattering` | Authored for future diffuse-reflection work; not consumed in 2.0 |
+
+Keep collision layers aligned with `SpatialAcousticsEngine.get_occlusion_collision_mask()`. Untagged colliders still occlude using conservative fallback transmission values.
+
+### Rooms and portals
+
+Use `AcousticRoom3D` to describe an enclosed space. Its `bounds` are local-space half-extents, so a 10 × 6 × 10 metre room uses `Vector3(5, 3, 5)`. The node transform can rotate the oriented box.
+
+| `AcousticRoom3D` property | Purpose |
+|---------------------------|---------|
+| `bounds` | Local half-extents used for room membership |
+| `material` | Dominant surface material for authored RT60 |
+| `shoebox_dimensions` | Optional W/H/D metres for early-reflection timing; zero uses the estimate |
+| `reverb_preset_override` | Optional material that overrides reverb tuning |
+| `room_priority` | Highest value wins when rooms overlap |
+
+Connect adjacent rooms with `AcousticPortal3D`. Place it in the opening; its local XY plane defines the aperture and local +Z is the normal. Assign `room_a_path`, `room_b_path`, and the real `aperture_size`. Open portals redirect the perceived source toward the aperture and apply path diffraction/loss. Closed portals use `transmission_override`, or a small default leak when no override is assigned.
+
+```gdscript
+$DoorPortal.room_a_path = $DoorPortal.get_path_to($RoomA)
+$DoorPortal.room_b_path = $DoorPortal.get_path_to($RoomB)
+$DoorPortal.aperture_size = Vector2(1.0, 2.1)
+$DoorPortal.open = door_is_open
+```
+
+Moving rooms and portals refresh their geometry without forcing a full topology rebuild. Adding/removing rooms, changing bounds, changing room priority, or opening/closing a portal invalidates the relevant path data automatically.
+
+### Runtime tuning and diagnostics
+
+Defaults are suitable for normal use. Change these controls only after profiling representative scenes:
+
+```gdscript
+SpatialAcousticsEngine.set_ray_budget(64)
+SpatialAcousticsEngine.set_scheduler_base_rate(10.0)
+SpatialAcousticsEngine.set_occlusion_collision_mask(1)
+SpatialAcousticsEngine.set_volumetric_sample_count(8)
+SpatialAcousticsEngine.set_room_ray_count(32)
+SpatialAcousticsEngine.set_air_absorption_scale(1.0)
+```
+
+Useful runtime counters include `get_scheduler_rays_issued()`, `get_scheduler_emitters_serviced()`, `get_scheduler_emitters_skipped()`, `get_cache_hits()`, `get_cache_misses()`, `get_reverb_active_slot_count()`, `get_reverb_migrations()`, and `get_reverb_degraded_assignments()`.
+
+The unified ray budget is the main scaling control. In the 2.0 verification benchmark it stayed at or below 64 billed rays per frame from 10 through 200 always-due emitters. Inaudible and virtualized voices are skipped, while round-robin scheduling prevents long-term starvation.
+
+### Current limitations
+
+- Spatial graph processing is mono; Godot performs downstream panning. There is no HRTF path in 2.0.
+- Reverb routing uses one bus per `AudioStreamPlayer3D`; it is not a native per-voice auxiliary send.
+- Early-reflection room dimensions currently drive reverb predelay in the Game Audio Layer because Symphony does not yet provide an `AudioEffect` insert for its DSP operator.
+- The 12 material presets are technically verified but still need a project-specific interactive listening/tuning pass.
 
 ---
 
@@ -1816,6 +1927,45 @@ func _on_music_slider_changed(value: float):
 ---
 
 ## Changelog
+
+### v2.0 — Spatial Acoustics (2026-09-01)
+
+Symphony 2.0 completes the spatial-acoustics engine and its Game Audio Layer integration.
+
+**Authoring and runtime:**
+
+- Added `AcousticMaterial`, `AcousticBody3D`, `AcousticRoom3D`, and `AcousticPortal3D`, with editor-visible room and portal gizmos.
+- Added the `SpatialAcousticsEngine` singleton for material-aware spectral occlusion, volumetric-source occlusion, distance-based air absorption, room estimation, propagation delay, and smoothed spatial parameters.
+- Added 12 acoustic material presets: generic, concrete, wood, glass, carpet, metal, brick, plaster, acoustic foam, curtain, marble, and tile.
+- Added authored room materials, shoebox dimensions, reverb overrides, overlapping-room priority, and portal transmission overrides.
+- Added portal-graph routing with bounded path caching, aperture-aware path selection, diffraction filtering, apparent-position redirection, open/closed state changes, and neighbour-room reverb coupling.
+- Added shared reverb-slot clustering with hysteresis, dwell time, wet-gain ramps, and equal-power migrations.
+- Added `SoundEvent.source_radius` for volumetric emitters and the `SymphonyEarlyReflections` DSP operator.
+- Game Audio Layer integration now applies apparent position, spectral/volumetric occlusion, air absorption, portal gain, propagation delay, reverb routing, and listener-body exclusion for 3D events.
+
+**Correctness and performance:**
+
+- Occlusion uses a forward-only multi-hit ray march and avoids double-counting the entry/exit faces of a solid wall.
+- Room estimation uses corrected open-boundary energy handling and supports authored material fast paths.
+- Spatial smoothing is frame-rate independent; frequency smoothing and portal diffraction operate in the log domain.
+- The unified probe scheduler enforces one billed ray pool across occlusion, volumetric sampling, and room estimation. Probe and portal caches are bounded and invalidate on the appropriate topology changes.
+- Main-thread spatial state is published through a `SeqLock`; playback remains allocation-free on the audio thread.
+- Propagation-delay countdown is driven by real frame delta and is pause-safe.
+
+**Verification:**
+
+- C++: 182/182 Symphony cases, 195,815 assertions, 0 failures.
+- ThreadSanitizer: 182/182 cases, 0 data races.
+- Cross-repo GdUnit4 spatial integration: 14/14 cases.
+- Scaling benchmark: billed rays remained at or below the 64-ray budget for 10–200 always-due emitters.
+
+**Known limitations:**
+
+- Graph output remains mono and uses Godot's downstream 3D panner; HRTF is deferred to a future project.
+- Reverb uses the player's single bus rather than a true per-voice auxiliary send. Early-reflection timing is represented through reverb predelay.
+- Acoustic presets have automated correctness coverage; an interactive listening pass is still recommended before final project-specific tuning.
+
+---
 
 ### v1.7.1 — Real-time runtime / LOD authoring (2026-08-13)
 

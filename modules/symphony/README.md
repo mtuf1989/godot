@@ -1,8 +1,10 @@
-# Symphony
+# Symphony 2.0
 
 In-tree **Godot C++ module** (`modules/symphony/`). It is **not** a GDExtension: you compile it with the engine.
 
 This folder lives inside a Godot source tree. Build from the **Godot repo root**, not from this directory.
+
+Version 2.0 adds the completed spatial-acoustics stack: material-aware spectral and volumetric occlusion, air absorption, room estimation, shared reverb, propagation delay, and portal routing. `SpatialAcousticsEngine` performs bounded main-thread simulation and publishes smoothed parameters to the allocation-free audio path. See the [Spatial Acoustics chapter](user_guide.md#spatial-acoustics) for authoring and runtime usage.
 
 ## Prerequisites (macOS)
 
@@ -64,6 +66,8 @@ Equivalent filter:
 bin/godot.macos.editor.arm64 --headless --test --test-case='*Symphony*'
 ```
 
+The Symphony 2.0 baseline is **182/182 cases, 195,815 assertions, 0 failures**. Spatial integration in the separate `game-template` repo adds **14/14 GdUnit4 cases**.
+
 **Do not** pass `'[Symphony]'` alone. Doctest treats `[...]` as a character-class glob and will run almost every engine test.
 
 After a small C++ change, the same `scons` line is incremental (only dirty TUs + relink).
@@ -109,6 +113,7 @@ modules/symphony/
 ├── core/       Graph compiler, arena, packages, VoiceManager, RT-scope
 ├── nodes/      DSP operators
 ├── runtime/    EventDispatcher, RTPCEngine, BeatClock, BusController, …
+├── spatial/    Materials, occlusion, room/reverb estimation, portals, scheduler/cache
 ├── stream/     AudioStreamSymphony + playback
 ├── editor/     Graph editor (editor target only)
 └── thirdparty/pffft/   FFT used by spectral nodes
@@ -118,6 +123,8 @@ modules/symphony/
 
 - Expected `ERROR:` from a stress test that sets `global_limit_bytes=1` (budget rejection). That case is intentional.
 - `GrainCloud` may warn about unused `trigger_value` while compiling `register_types.cpp` (pre-existing).
+- Spatial graph output remains mono and delegates final panning to Godot. HRTF is outside the 2.0 scope.
+- The bundled acoustic presets have automated correctness coverage; do an interactive listening pass for project-specific tuning.
 - API breaks for GDScript are listed in `MIGRATION.md`. Authoring/runtime usage is in `user_guide.md`.
 
 ## Using it in a game
