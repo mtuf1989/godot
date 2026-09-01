@@ -69,8 +69,16 @@ public:
 		int spatial_mode = 0; // SoundEvent::SpatialMode (0=NonPositional,1=2D,2=3D)
 		int attenuation_model = 0; // SoundEvent::AttenuationModel (0=Linear,1=Log,2=Custom)
 		float max_distance = 2000.0f;
+		float inner_radius = 0.0f;
+		float falloff_distance = 0.0f;
 		float attenuation_volume = 1.0f; // 0.0 (silent) to 1.0 (full volume) — computed each update
 		bool virtualize_when_inaudible = true;
+
+		// Propagation delay (Task 11): while > 0, the slot is held in VOICE_TO_PLAY
+		// and counts down each frame before transitioning to VOICE_PLAYING. This
+		// realizes a deferred one-shot start without a SceneTreeTimer or any
+		// per-play allocation (the field lives in the pre-allocated slot).
+		float pending_start_delay_s = 0.0f;
 
 		// Per-voice local RTPC parameters (override global)
 		StringName local_param_names[MAX_LOCAL_PARAMS];
@@ -170,10 +178,34 @@ public:
 	void set_slot_spatial_mode(int p_slot, int p_mode);
 	void set_slot_attenuation_model(int p_slot, int p_model);
 	void set_slot_max_distance(int p_slot, float p_distance);
+	void set_slot_inner_radius(int p_slot, float p_radius);
+	void set_slot_falloff_distance(int p_slot, float p_distance);
 	void set_slot_virtualize_when_inaudible(int p_slot, bool p_virtualize);
 	float get_slot_attenuation_volume(int p_slot) const;
 	void set_slot_attenuation_curve(int p_slot, const Ref<Curve> &p_curve);
 	Ref<Curve> get_slot_attenuation_curve(int p_slot) const;
+
+	// State pull-through for the SpatialAcousticsEngine (Phase 2.3). The engine
+	// refreshes each emitter from the pool at the top of every frame so moving
+	// sounds re-solve and pan; recycled slots never carry a stale position.
+	Vector3 get_slot_position(int p_slot) const;
+	float get_slot_attenuation(int p_slot) const; // alias of attenuation_volume
+	float get_slot_max_distance(int p_slot) const;
+	// Audible = an active (non-free/stopped) slot that is not virtualized and
+	// whose attenuation volume is above silence. Drives scheduler importance.
+	bool is_slot_audible(int p_slot) const;
+
+	// Propagation delay (Task 11) — deferred one-shot start.
+	// Sets the remaining start delay (seconds); the slot stays in VOICE_TO_PLAY
+	// until it elapses. Clamped to >= 0. Setting 0 starts on the next frame.
+	void set_slot_start_delay(int p_slot, float p_delay_s);
+	float get_slot_start_delay(int p_slot) const;
+	// True while the slot is still counting down its propagation delay.
+	bool is_slot_start_pending(int p_slot) const;
+	// Advance all pending propagation-delay countdowns by p_delta seconds.
+	// Called from process_frame() with the wall-clock delta; exposed for
+	// deterministic delta control (and testing).
+	void tick_deferred_starts(float p_delta);
 
 	// Event Log API
 	void log_event(const StringName &p_event_name, EventResult p_result, int p_slot, float p_importance, const StringName &p_steal_reason = StringName());

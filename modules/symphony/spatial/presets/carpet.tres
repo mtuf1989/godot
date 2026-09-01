@@ -1,0 +1,12 @@
+[gd_resource type="AcousticMaterial" format=3]
+
+; Retuned for forward-only march (Phase 2.2) — see concrete.tres / HANDOFF_NOTES.
+; Carpet: primarily an absorber, not a barrier; low transmission retained.
+[resource]
+absorption_low = 0.24
+absorption_mid = 0.69
+absorption_high = 0.73
+scattering = 0.57
+transmission_low = 0.015
+transmission_mid = 0.004
+transmission_high = 0.002

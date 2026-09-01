@@ -53,6 +53,7 @@ env_symphony.add_source_files(env.modules_sources, "nodes/utility/*.cpp")
 env_symphony.add_source_files(env.modules_sources, "nodes/synthesis/*.cpp")
 env_symphony.add_source_files(env.modules_sources, "nodes/spectral/*.cpp")
 env_symphony.add_source_files(env.modules_sources, "runtime/*.cpp")
+env_symphony.add_source_files(env.modules_sources, "spatial/*.cpp")
 
 if env.editor_build:
     env_symphony.add_source_files(env.modules_sources, "editor/*.cpp")

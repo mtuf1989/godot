@@ -3,6 +3,7 @@
 #include "core/object/object.h"
 #include "core/object/class_db.h"
 #include "core/math/random_pcg.h"
+#include "core/math/vector3.h"
 #include "sound_event.h"
 
 class SymphonyVoicePool;
@@ -58,8 +59,11 @@ public:
 	void on_voice_started(uint64_t p_event_id);
 	void on_voice_stopped(uint64_t p_event_id);
 
-	// GDScript-friendly dispatch that returns Dictionary {slot, result, stream_index, steal_reason}
-	Dictionary play_event(const Ref<SoundEvent> &p_event);
+	// GDScript-friendly dispatch that returns Dictionary {slot, result, stream_index, steal_reason, delay_s}
+	// When p_has_position is true (3D path), the propagation delay for one-shots is
+	// computed from the distance between p_source_position and the VoicePool listener,
+	// set on the acquired slot (deferred start), and returned as "delay_s".
+	Dictionary play_event(const Ref<SoundEvent> &p_event, const Vector3 &p_source_position = Vector3(), bool p_has_position = false);
 
 	SymphonyEventDispatcher();
 	~SymphonyEventDispatcher();

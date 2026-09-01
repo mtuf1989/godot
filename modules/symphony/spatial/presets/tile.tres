@@ -1,0 +1,12 @@
+[gd_resource type="AcousticMaterial" format=3]
+
+; Retuned for forward-only march (Phase 2.2) — see concrete.tres / HANDOFF_NOTES.
+; Tile (hard, thin over substrate): STL ~30 dB.
+[resource]
+absorption_low = 0.01
+absorption_mid = 0.02
+absorption_high = 0.02
+scattering = 0.05
+transmission_low = 0.045
+transmission_mid = 0.030
+transmission_high = 0.008

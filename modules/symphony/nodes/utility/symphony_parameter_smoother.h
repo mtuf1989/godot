@@ -8,6 +8,12 @@
 // One-pole smoothing filter on a Float input.
 // Eliminates clicks when RTPC parameters change at 60Hz game rate.
 // Operates at control rate (once per micro-block), not per sample.
+//
+// Modes:
+//   0 (Linear): Standard exponential smoothing in linear domain.
+//   1 (Log):    Smoothing in log domain for perceptually even frequency sweeps.
+//               Ensures equal ratios per unit time (e.g., 1000→2000 Hz takes the
+//               same time as 2000→4000 Hz), matching human pitch/frequency perception.
 class SymphonyParameterSmoother : public SymphonyOperator {
 private:
 	const float *SYMPHONY_RESTRICT value_input = nullptr;
@@ -17,11 +23,12 @@ private:
 	float smoothed = 0.0f;
 	float default_smooth_ms = 5.0f;
 	float mix_rate = 44100.0f;
+	int mode = 0; // 0=linear, 1=log
 	bool initialized = false;
 
 public:
-	SymphonyParameterSmoother(float p_mix_rate, float p_smooth_ms)
-			: default_smooth_ms(p_smooth_ms), mix_rate(p_mix_rate) {}
+	SymphonyParameterSmoother(float p_mix_rate, float p_smooth_ms, int p_mode = 0)
+			: default_smooth_ms(p_smooth_ms), mix_rate(p_mix_rate), mode(p_mode) {}
 
 	virtual void bind_pins(void **p_input_ptrs, void **p_output_ptrs) override {
 		value_input = (const float *)p_input_ptrs[0];
@@ -43,7 +50,18 @@ public:
 				float block_duration = (float)p_num_frames / mix_rate;
 				float tau = smooth_ms * 0.001f;
 				float coeff = 1.0f - Math::exp(-block_duration / tau);
-				smoothed += coeff * (target - smoothed);
+
+				if (mode == 1) {
+					// Log-domain smoothing: interpolate in log space for perceptually
+					// even frequency sweeps. Protects against zero/negative values.
+					float log_target = Math::log(MAX(target, 1.0f));
+					float log_smoothed = Math::log(MAX(smoothed, 1.0f));
+					log_smoothed += coeff * (log_target - log_smoothed);
+					smoothed = Math::exp(log_smoothed);
+				} else {
+					// Linear-domain smoothing (default).
+					smoothed += coeff * (target - smoothed);
+				}
 			}
 		}
 
@@ -74,6 +92,7 @@ public:
 		desc.inputs.push_back({ "smooth_time_ms", SymphonyPinType::FLOAT, false });
 		desc.outputs.push_back({ "smoothed", SymphonyPinType::FLOAT, false });
 		desc.params.push_back({ "smooth_time_ms", 5.0f, 0.0f, 1000.0f, 0.1f });
+		desc.params.push_back({ "mode", 0.0f, 0.0f, 1.0f, 1.0f }); // 0=linear, 1=log
 		desc.state_size = sizeof(SymphonyParameterSmoother);
 		desc.state_align = alignof(SymphonyParameterSmoother);
 		desc.create_fn = &SymphonyParameterSmoother::create;
@@ -82,7 +101,8 @@ public:
 
 	static SymphonyOperator *create(ArenaAllocator &p_arena, const HashMap<StringName, Variant> &p_params, float p_mix_rate) {
 		float ms = p_params.has("smooth_time_ms") ? (float)p_params["smooth_time_ms"] : 5.0f;
+		int m = p_params.has("mode") ? (int)(float)p_params["mode"] : 0;
 		void *mem = p_arena.alloc(sizeof(SymphonyParameterSmoother), alignof(SymphonyParameterSmoother));
-		return new (mem) SymphonyParameterSmoother(p_mix_rate, ms);
+		return new (mem) SymphonyParameterSmoother(p_mix_rate, ms, m);
 	}
 };

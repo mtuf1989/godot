@@ -1,8 +1,10 @@
-# Symphony
+# Symphony 2.0
 
 In-tree **Godot C++ module** (`modules/symphony/`). It is **not** a GDExtension: you compile it with the engine.
 
 This folder lives inside a Godot source tree. Build from the **Godot repo root**, not from this directory.
+
+Version 2.0 adds the completed spatial-acoustics stack: material-aware spectral and volumetric occlusion, air absorption, room estimation, shared reverb, propagation delay, and portal routing. `SpatialAcousticsEngine` performs bounded main-thread simulation and publishes smoothed parameters to the allocation-free audio path. See the [Spatial Acoustics chapter](user_guide.md#spatial-acoustics) for authoring and runtime usage.
 
 ## Prerequisites (macOS)
 
@@ -35,10 +37,22 @@ scons platform=macos target=editor arch=arm64 tests=yes module_raycast_enabled=n
 | `platform=macos` `arch=arm64` | Apple Silicon editor. Use `arch=x86_64` on Intel. |
 | `target=editor` | Editor + tests. Game exports use `template_release` / `template_debug`. |
 | `tests=yes` | Builds doctest cases under `tests/modules/test_symphony_*.cpp`. |
-| `module_raycast_enabled=no` | Faster local compiles; Symphony does not need raycast. |
+| `module_raycast_enabled=no` | Required for macOS `--test` (see below). Not a Symphony compile dependency. |
 | `-j$(sysctl -n hw.ncpu)` | Parallel compile. On Linux use `-j$(nproc)`. |
 
 Binary: `bin/godot.macos.editor.arm64`
+
+### Why `module_raycast_enabled=no`
+
+Symphony does **not** use the `raycast` module. That module is Godot’s Embree wrapper (CPU BVH): occlusion culling, editor lightmap baking, and static mesh ray queries.
+
+Keep it **disabled on macOS test binaries**. `--headless --test` still boots the full engine, so `initialize_raycast_module()` runs. On shutdown Embree’s internal task pool (`TASKING_INTERNAL`) crashes in `embree::TaskScheduler::removeScheduler` — a pre-existing engine bug, not a Symphony one. It also takes down stock tests such as `test_audio_stream_wav`. Doctest then looks like a failure even if Symphony assertions already passed.
+
+Secondary effects of leaving it off: Embree is a large compile (dozens of BVH/SSE2NEON TUs), and TSan would instrument Embree’s worker threads.
+
+Symphony **compiles and links with raycast enabled**. Do not treat this flag as a DSP/build-system conflict. Once a tree is built with the flag, keep passing it; dropping it regenerates `modules_enabled.gen.h` and forces a large rebuild.
+
+A shipping editor that needs occlusion culling or Embree lightmaps should enable `raycast`. Use a separate binary (or omit the flag) for that; do not use that binary for macOS Symphony `--test` / TSan runs.
 
 ### Run Symphony tests
 
@@ -51,6 +65,8 @@ Equivalent filter:
 ```bash
 bin/godot.macos.editor.arm64 --headless --test --test-case='*Symphony*'
 ```
+
+The Symphony 2.0 baseline is **182/182 cases, 195,815 assertions, 0 failures**. Spatial integration in the separate `game-template` repo adds **14/14 GdUnit4 cases**.
 
 **Do not** pass `'[Symphony]'` alone. Doctest treats `[...]` as a character-class glob and will run almost every engine test.
 
@@ -76,19 +92,19 @@ scons platform=macos target=editor arch=arm64 tests=yes use_tsan=yes module_rayc
 TSAN_OPTIONS="halt_on_error=1 print_stacktrace=1" bin/godot.macos.editor.arm64.san --headless --test --source-file='*symphony*'
 ```
 
-First TSan compile is a full engine rebuild. GrainCloud µs/unit and release mix-timing gates are skipped or unenforced under sanitizers (instrumentation distorts timings).
+First TSan compile is a full engine rebuild. Keep `module_raycast_enabled=no`: Embree’s thread pool is noisy under TSan and expensive to instrument. GrainCloud µs/unit and release mix-timing gates are skipped or unenforced under sanitizers (instrumentation distorts timings).
 
 ## Other platforms (same module)
 
 ```bash
-# Linux
-scons platform=linuxbsd target=editor tests=yes module_raycast_enabled=no -j$(nproc)
+# Linux — raycast can stay on; the Embree shutdown crash is a macOS test-runner issue.
+scons platform=linuxbsd target=editor tests=yes -j$(nproc)
 
 # Windows (from an MSVC/SCons environment)
-scons platform=windows target=editor tests=yes module_raycast_enabled=no
+scons platform=windows target=editor tests=yes
 ```
 
-Adjust `arch` if needed. Tests and binary names follow Godot’s usual `bin/godot.<platform>.<target>.<arch>` pattern.
+Adjust `arch` if needed. Tests and binary names follow Godot’s usual `bin/godot.<platform>.<target>.<arch>` pattern. On Linux/Windows, add `module_raycast_enabled=no` only if you want a smaller compile or hit the same Embree shutdown crash.
 
 ## Layout
 
@@ -97,6 +113,7 @@ modules/symphony/
 ├── core/       Graph compiler, arena, packages, VoiceManager, RT-scope
 ├── nodes/      DSP operators
 ├── runtime/    EventDispatcher, RTPCEngine, BeatClock, BusController, …
+├── spatial/    Materials, occlusion, room/reverb estimation, portals, scheduler/cache
 ├── stream/     AudioStreamSymphony + playback
 ├── editor/     Graph editor (editor target only)
 └── thirdparty/pffft/   FFT used by spectral nodes
@@ -106,6 +123,8 @@ modules/symphony/
 
 - Expected `ERROR:` from a stress test that sets `global_limit_bytes=1` (budget rejection). That case is intentional.
 - `GrainCloud` may warn about unused `trigger_value` while compiling `register_types.cpp` (pre-existing).
+- Spatial graph output remains mono and delegates final panning to Godot. HRTF is outside the 2.0 scope.
+- The bundled acoustic presets have automated correctness coverage; do an interactive listening pass for project-specific tuning.
 - API breaks for GDScript are listed in `MIGRATION.md`. Authoring/runtime usage is in `user_guide.md`.
 
 ## Using it in a game

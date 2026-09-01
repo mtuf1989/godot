@@ -68,10 +68,16 @@ void SymphonyVoicePool::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_slot_spatial_mode", "slot", "mode"), &SymphonyVoicePool::set_slot_spatial_mode);
 	ClassDB::bind_method(D_METHOD("set_slot_attenuation_model", "slot", "model"), &SymphonyVoicePool::set_slot_attenuation_model);
 	ClassDB::bind_method(D_METHOD("set_slot_max_distance", "slot", "distance"), &SymphonyVoicePool::set_slot_max_distance);
+	ClassDB::bind_method(D_METHOD("set_slot_inner_radius", "slot", "radius"), &SymphonyVoicePool::set_slot_inner_radius);
+	ClassDB::bind_method(D_METHOD("set_slot_falloff_distance", "slot", "distance"), &SymphonyVoicePool::set_slot_falloff_distance);
 	ClassDB::bind_method(D_METHOD("set_slot_virtualize_when_inaudible", "slot", "virtualize"), &SymphonyVoicePool::set_slot_virtualize_when_inaudible);
 	ClassDB::bind_method(D_METHOD("get_slot_attenuation_volume", "slot"), &SymphonyVoicePool::get_slot_attenuation_volume);
 	ClassDB::bind_method(D_METHOD("set_slot_attenuation_curve", "slot", "curve"), &SymphonyVoicePool::set_slot_attenuation_curve);
 	ClassDB::bind_method(D_METHOD("get_slot_attenuation_curve", "slot"), &SymphonyVoicePool::get_slot_attenuation_curve);
+	ClassDB::bind_method(D_METHOD("set_slot_start_delay", "slot", "delay_s"), &SymphonyVoicePool::set_slot_start_delay);
+	ClassDB::bind_method(D_METHOD("get_slot_start_delay", "slot"), &SymphonyVoicePool::get_slot_start_delay);
+	ClassDB::bind_method(D_METHOD("is_slot_start_pending", "slot"), &SymphonyVoicePool::is_slot_start_pending);
+	ClassDB::bind_method(D_METHOD("tick_deferred_starts", "delta"), &SymphonyVoicePool::tick_deferred_starts);
 
 	BIND_ENUM_CONSTANT(VOICE_FREE);
 	BIND_ENUM_CONSTANT(VOICE_TO_PLAY);
@@ -119,6 +125,7 @@ static void _activate_slot(SymphonyVoicePool::VoiceSlot &slot, int p_priority) {
 	slot.start_time = OS::get_singleton()->get_ticks_usec();
 	slot.local_param_count = 0;
 	slot.attenuation_volume = 1.0f;
+	slot.pending_start_delay_s = 0.0f;
 	slot.lod_threshold_1 = 0.3f;
 	slot.lod_threshold_2 = 0.7f;
 	slot.current_lod = 0;
@@ -144,6 +151,9 @@ void SymphonyVoicePool::release_slot(int p_index, bool p_immediate) {
 		slots[p_index].state = VOICE_FREE;
 		slots[p_index].event_id = 0;
 		slots[p_index].rms_valid = false;
+		slots[p_index].inner_radius = 0.0f;
+		slots[p_index].falloff_distance = 0.0f;
+		slots[p_index].pending_start_delay_s = 0.0f;
 	} else {
 		slots[p_index].state = VOICE_STOPPING;
 		slots[p_index].fade_progress = 1.0f;
@@ -340,12 +350,22 @@ void SymphonyVoicePool::set_slot_spatial_mode(int p_slot, int p_mode) {
 
 void SymphonyVoicePool::set_slot_attenuation_model(int p_slot, int p_model) {
 	ERR_FAIL_INDEX(p_slot, pool_size);
-	slots[p_slot].attenuation_model = CLAMP(p_model, 0, 2);
+	slots[p_slot].attenuation_model = CLAMP(p_model, 0, 5);
 }
 
 void SymphonyVoicePool::set_slot_max_distance(int p_slot, float p_distance) {
 	ERR_FAIL_INDEX(p_slot, pool_size);
 	slots[p_slot].max_distance = MAX(p_distance, 1.0f);
+}
+
+void SymphonyVoicePool::set_slot_inner_radius(int p_slot, float p_radius) {
+	ERR_FAIL_INDEX(p_slot, pool_size);
+	slots[p_slot].inner_radius = MAX(p_radius, 0.0f);
+}
+
+void SymphonyVoicePool::set_slot_falloff_distance(int p_slot, float p_distance) {
+	ERR_FAIL_INDEX(p_slot, pool_size);
+	slots[p_slot].falloff_distance = MAX(p_distance, 0.0f);
 }
 
 void SymphonyVoicePool::set_slot_virtualize_when_inaudible(int p_slot, bool p_virtualize) {
@@ -366,6 +386,65 @@ void SymphonyVoicePool::set_slot_attenuation_curve(int p_slot, const Ref<Curve> 
 Ref<Curve> SymphonyVoicePool::get_slot_attenuation_curve(int p_slot) const {
 	ERR_FAIL_INDEX_V(p_slot, pool_size, Ref<Curve>());
 	return slot_attenuation_curves[p_slot];
+}
+
+Vector3 SymphonyVoicePool::get_slot_position(int p_slot) const {
+	ERR_FAIL_INDEX_V(p_slot, pool_size, Vector3());
+	return slots[p_slot].position;
+}
+
+float SymphonyVoicePool::get_slot_attenuation(int p_slot) const {
+	ERR_FAIL_INDEX_V(p_slot, pool_size, 1.0f);
+	return slots[p_slot].attenuation_volume;
+}
+
+float SymphonyVoicePool::get_slot_max_distance(int p_slot) const {
+	ERR_FAIL_INDEX_V(p_slot, pool_size, 0.0f);
+	return slots[p_slot].max_distance;
+}
+
+bool SymphonyVoicePool::is_slot_audible(int p_slot) const {
+	ERR_FAIL_INDEX_V(p_slot, pool_size, false);
+	const VoiceSlot &s = slots[p_slot];
+	switch (s.state) {
+		case VOICE_FREE:
+		case VOICE_VIRTUAL:
+		case VOICE_VIRTUALIZING:
+		case VOICE_STOPPED:
+			return false;
+		default:
+			break;
+	}
+	return s.attenuation_volume > 0.0001f;
+}
+
+void SymphonyVoicePool::set_slot_start_delay(int p_slot, float p_delay_s) {
+	ERR_FAIL_INDEX(p_slot, pool_size);
+	slots[p_slot].pending_start_delay_s = MAX(p_delay_s, 0.0f);
+}
+
+float SymphonyVoicePool::get_slot_start_delay(int p_slot) const {
+	ERR_FAIL_INDEX_V(p_slot, pool_size, 0.0f);
+	return slots[p_slot].pending_start_delay_s;
+}
+
+bool SymphonyVoicePool::is_slot_start_pending(int p_slot) const {
+	ERR_FAIL_INDEX_V(p_slot, pool_size, false);
+	return slots[p_slot].state == VOICE_TO_PLAY && slots[p_slot].pending_start_delay_s > 0.0f;
+}
+
+void SymphonyVoicePool::tick_deferred_starts(float p_delta) {
+	if (p_delta <= 0.0f) {
+		return;
+	}
+	for (int i = 0; i < pool_size; i++) {
+		if (slots[i].state == VOICE_TO_PLAY && slots[i].pending_start_delay_s > 0.0f) {
+			slots[i].pending_start_delay_s -= p_delta;
+			if (slots[i].pending_start_delay_s < 0.0f) {
+				slots[i].pending_start_delay_s = 0.0f;
+			}
+		}
+	}
 }
 
 void SymphonyVoicePool::update_importance() {
@@ -417,39 +496,72 @@ void SymphonyVoicePool::_update_importance_batch(int p_start, int p_count) {
 		float distance = Math::sqrt(distance_sq);
 		float normalized_distance = CLAMP(distance / max_dist, 0.0f, 1.0f);
 
+		float alpha;
+		float effective_max;
+		if (slots[i].inner_radius > 0.0f || slots[i].falloff_distance > 0.0f) {
+			effective_max = slots[i].inner_radius + (slots[i].falloff_distance > 0.0f ? slots[i].falloff_distance : max_dist - slots[i].inner_radius);
+			if (distance <= slots[i].inner_radius) {
+				slots[i].attenuation_volume = 1.0f;
+				// Still check virtualization with effective_max
+				if (distance >= effective_max && slots[i].virtualize_when_inaudible) {
+					if (slots[i].state == VOICE_PLAYING) {
+						_log_event(StringName(), EVENT_VIRTUALIZED, i, slots[i].importance, StringName("distance_exceeded"));
+						slots[i].state = VOICE_VIRTUALIZING;
+						slots[i].fade_progress = 1.0f;
+						slots[i].fade_speed = 1.0f / ANTI_CLICK_SAMPLES;
+					}
+				}
+				continue;
+			}
+			if (distance >= effective_max) {
+				alpha = 1.0f;
+			} else {
+				alpha = (distance - slots[i].inner_radius) / (effective_max - slots[i].inner_radius);
+			}
+		} else {
+			effective_max = max_dist;
+			alpha = normalized_distance; // Same as before
+		}
+
 		float attenuation = 1.0f;
 		switch (slots[i].attenuation_model) {
 			case 0: // Linear
-				attenuation = 1.0f - normalized_distance;
+				attenuation = 1.0f - alpha;
 				break;
-			case 1: // Logarithmic (inverse distance)
-				attenuation = 1.0f / (1.0f + normalized_distance * 9.0f); // 1.0 at 0, ~0.1 at max
+			case 1: // Logarithmic
+				attenuation = 1.0f - (Math::log(alpha * 9.0f + 1.0f) / Math::log(10.0f));
 				break;
 			case 2: { // Custom curve
 				Ref<Curve> curve = slot_attenuation_curves[i];
 				if (curve.is_valid()) {
-					// Curve input: normalized_distance (0=close, 1=max_distance)
-					// Curve output: volume (1.0=full, 0.0=silent)
-					attenuation = CLAMP(curve->sample(normalized_distance), 0.0f, 1.0f);
+					attenuation = CLAMP(curve->sample(alpha), 0.0f, 1.0f);
 				} else {
-					// Fallback to linear if no curve set
-					attenuation = 1.0f - normalized_distance;
+					attenuation = 1.0f - alpha;
 				}
 			} break;
+			case 3: // Natural
+				attenuation = Math::pow(1.0f - alpha, 1.5f);
+				break;
+			case 4: // Log Reverse
+				attenuation = Math::log(1.0f + (1.0f - alpha) * 9.0f) / Math::log(10.0f);
+				break;
+			case 5: // Inverse Square
+				attenuation = 1.0f / (1.0f + alpha * 9.0f);
+				break;
 		}
 
 		slots[i].attenuation_volume = attenuation;
 
-		// Auto-virtualize if beyond max_distance and virtualize_when_inaudible is set
-		if (distance >= max_dist && slots[i].virtualize_when_inaudible) {
+		// Auto-virtualize if beyond effective_max and virtualize_when_inaudible is set
+		if (distance >= effective_max && slots[i].virtualize_when_inaudible) {
 			if (slots[i].state == VOICE_PLAYING) {
 				_log_event(StringName(), EVENT_VIRTUALIZED, i, slots[i].importance, StringName("distance_exceeded"));
 				slots[i].state = VOICE_VIRTUALIZING;
 				slots[i].fade_progress = 1.0f;
 				slots[i].fade_speed = 1.0f / ANTI_CLICK_SAMPLES;
 			}
-		} else if (slots[i].state == VOICE_VIRTUAL && distance < max_dist * 0.95f) {
-			// Devirtualize when listener comes back within 95% of max_distance (hysteresis)
+		} else if (slots[i].state == VOICE_VIRTUAL && distance < effective_max * 0.95f) {
+			// Devirtualize when listener comes back within 95% of effective_max (hysteresis)
 			_log_event(StringName(), EVENT_DEVIRTUALIZED, i, slots[i].importance, StringName("listener_returned"));
 			slots[i].state = VOICE_DEVIRTUALIZING;
 			slots[i].fade_progress = 0.0f;
@@ -638,9 +750,23 @@ void SymphonyVoicePool::process_frame() {
 	int active = 0;
 	int virtual_count = 0;
 
+	// Propagation-delay countdowns are advanced by tick_deferred_starts(delta),
+	// which the game layer drives from AudioManager._process(delta). Driving it
+	// from _process (which respects SceneTree pause) avoids the resume-from-pause
+	// mass-fire bug: a wall-clock delta measured here would accumulate the entire
+	// pause duration into one frame and fire every pending voice simultaneously.
+	// process_frame() therefore does NOT tick the countdown itself.
+
 	for (int i = 0; i < pool_size; i++) {
 		switch (slots[i].state) {
 			case VOICE_TO_PLAY:
+				// Propagation delay: hold the voice until its start delay elapses
+				// (deferred one-shot start, no SceneTreeTimer). While pending it
+				// counts as an active voice so it isn't reclaimed as "free".
+				if (slots[i].pending_start_delay_s > 0.0f) {
+					active++;
+					break;
+				}
 				slots[i].state = VOICE_PLAYING;
 				slots[i].fade_progress = MIN(slots[i].fade_progress + slots[i].fade_speed * ANTI_CLICK_SAMPLES, 1.0f);
 				active++;
