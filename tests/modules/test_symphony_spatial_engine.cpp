@@ -115,27 +115,104 @@ TEST_CASE("[Symphony][Spatial][Engine] Air cutoff recovers upward (no monotonic 
 	SpatialAcousticsEngine *e = engine();
 	const int slot = 920;
 	e->register_emitter(slot);
+	e->set_occlusion_enabled(false);
+	e->set_room_estimation_enabled(false);
+	e->set_portal_propagation_enabled(false);
+	e->set_air_absorption_enabled(true);
+	e->set_listener_position(Vector3(0, 0, 0));
 
-	// Start wide open and snap.
-	e->set_emitter_air_cutoff(slot, 20000.0f);
+	// Near source → wide open cutoff; snap.
+	e->set_emitter_position(slot, Vector3(1, 0, 0));
 	e->update(1.0f / 60.0f);
+	float near_cut = e->read_params(slot).air_cutoff;
+	CHECK(near_cut > 10000.0f);
 
-	// Drop the cutoff (occluded / diffracted), let it settle down.
-	e->set_emitter_air_cutoff(slot, 1000.0f);
+	// Far source → rolled off; settle.
+	e->set_emitter_position(slot, Vector3(100, 0, 0));
 	for (int i = 0; i < 240; i++) {
 		e->update(1.0f / 60.0f);
 	}
 	float low = e->read_params(slot).air_cutoff;
-	CHECK(low < 3000.0f); // clearly rolled off
+	CHECK(low < near_cut * 0.5f);
 
-	// Now the path opens up again — the cutoff MUST be able to climb back.
-	e->set_emitter_air_cutoff(slot, 20000.0f);
+	// Move near again — cutoff MUST climb back (no ratchet).
+	e->set_emitter_position(slot, Vector3(1, 0, 0));
 	for (int i = 0; i < 240; i++) {
 		e->update(1.0f / 60.0f);
 	}
 	float high = e->read_params(slot).air_cutoff;
-	CHECK(high > low * 3.0f);           // recovered substantially
-	CHECK(high == doctest::Approx(20000.0f).epsilon(0.05));
+	CHECK(high > low * 2.0f);
+	CHECK(high == doctest::Approx(near_cut).epsilon(0.05));
+
+	e->set_occlusion_enabled(true);
+	e->set_room_estimation_enabled(true);
+	e->set_portal_propagation_enabled(true);
+	e->unregister_emitter(slot);
+}
+
+TEST_CASE("[Symphony][Spatial][Engine] Air absorption updates with occlusion disabled") {
+	SpatialAcousticsEngine *e = engine();
+	const int slot = 921;
+	e->register_emitter(slot);
+	e->set_occlusion_enabled(false);
+	e->set_room_estimation_enabled(false);
+	e->set_portal_propagation_enabled(false);
+	e->set_air_absorption_enabled(true);
+	e->set_listener_position(Vector3());
+
+	e->set_emitter_position(slot, Vector3(5, 0, 0));
+	e->update(1.0f / 60.0f);
+	const float near_cut = e->compute_air_cutoff(slot);
+
+	e->set_emitter_position(slot, Vector3(80, 0, 0));
+	e->update(1.0f / 60.0f);
+	const float far_cut = e->compute_air_cutoff(slot);
+	CHECK(far_cut < near_cut);
+
+	e->set_occlusion_enabled(true);
+	e->set_room_estimation_enabled(true);
+	e->set_portal_propagation_enabled(true);
+	e->unregister_emitter(slot);
+}
+
+TEST_CASE("[Symphony][Spatial][Engine] Apparent position tracks source without rooms") {
+	SpatialAcousticsEngine *e = engine();
+	const int slot = 922;
+	e->register_emitter(slot);
+	e->set_portal_propagation_enabled(false);
+	e->set_emitter_position(slot, Vector3(10, 0, 0));
+	e->update(1.0f / 60.0f);
+	CHECK(e->get_emitter_apparent_position(slot).x == doctest::Approx(10.0f));
+
+	e->set_emitter_position(slot, Vector3(20, 0, 0));
+	e->update(1.0f / 60.0f);
+	// First-update snap already consumed; smoothed lerps — after many frames settles.
+	for (int i = 0; i < 240; i++) {
+		e->update(1.0f / 60.0f);
+	}
+	CHECK(e->get_emitter_apparent_position(slot).x == doctest::Approx(20.0f).epsilon(0.05));
+
+	e->set_portal_propagation_enabled(true);
+	e->unregister_emitter(slot);
+}
+
+TEST_CASE("[Symphony][Spatial][Engine] Closed-door transmission does not compound across frames") {
+	SpatialAcousticsEngine *e = engine();
+	const int slot = 923;
+	e->register_emitter(slot);
+	// Simulate occlusion base then portal composition via setters + manual base.
+	e->set_emitter_transmission(slot, 0.5f, 0.5f, 0.5f);
+	e->set_emitter_occlusion(slot, 0.5f);
+	e->update(1.0f / 60.0f); // snap
+
+	const float gain0 = e->compute_spatial_gain(slot);
+	// Drive many frames without a new occlusion solve (no physics space).
+	// Portal pass with zero rooms is a no-op; transmission must stay at base.
+	for (int i = 0; i < 60; i++) {
+		e->update(1.0f / 60.0f);
+	}
+	const float gain1 = e->compute_spatial_gain(slot);
+	CHECK(gain1 == doctest::Approx(gain0).epsilon(0.02));
 	e->unregister_emitter(slot);
 }
 

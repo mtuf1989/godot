@@ -72,13 +72,18 @@ private:
 		                                  // solve writes this each frame; the portal solve then ASSIGNS
 		                                  // target.air_cutoff = MIN(air_cutoff_base, diffraction) fresh so
 		                                  // the cutoff never ratchets monotonically downward across frames.
+		// Direct-path transmission/occlusion before per-frame portal composition (closed-door fold).
+		float base_transmission[3] = { 1.0f, 1.0f, 1.0f };
+		float base_occlusion = 0.0f;
 		// Phase 5.2 — portal membership cache. last_src_room is the ObjectID of
 		// the room this emitter was in last frame; re-tested with one
-		// contains_point before falling back to the full room scan. last_path_key
-		// packs (src_node, lis_node); a portal path is re-solved only when the
-		// pair changes or the portal topology epoch bumps.
+		// contains_point before falling back to the full room scan. Invalidated
+		// when membership_epoch bumps (room registry reorder / delete).
 		uint64_t last_src_room_id = 0;
 		int last_src_node = -1;
+		uint64_t membership_epoch_seen = 0;
+		// First occlusion/room solve should run immediately, not after the throttle interval.
+		bool force_initial_solve = false;
 
 		// Phase 6 (Task 4) — per-emitter smoothing-speed override. When the
 		// occlusion solve hits a total_absorption material, the material's
@@ -131,6 +136,9 @@ private:
 
 	// Returns the number of physics rays actually issued (for budget correction).
 	int _solve_occlusion_for_emitter(int p_emitter_idx, PhysicsDirectSpaceState3D *p_space);
+
+	// Distance-only air absorption — independent of occlusion / physics / scheduler.
+	void _update_air_absorption_for_emitter(int p_emitter_idx);
 
 	// Room estimation
 	RoomEstimator::Config room_config;

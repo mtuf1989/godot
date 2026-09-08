@@ -52,7 +52,7 @@ int ProbeScheduler::schedule(const EmitterInfo *p_emitters, int p_count, float p
 		float emitter_interval = base_interval * distance_factor;
 
 		// Is this emitter due for an update?
-		if (info.last_update_time >= emitter_interval) {
+		if (info.force_initial_solve || info.last_update_time >= emitter_interval) {
 			candidates.push_back(i);
 		}
 	}

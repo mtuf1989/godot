@@ -221,8 +221,14 @@ one C++ edit removed dead code). game-template GdUnit4 **14/14** (was 6/6; Phase
   budget-division derivation dropped (now `CLAMP(config.sample_count, 2, 128)`).
 - **5.2** Portal pass: listener room resolved ONCE/frame (`frame_listener_room`/`_node`, hoisted).
   Per-emitter source-room membership cache (`EmitterState.last_src_room_id`/`last_src_node`),
-  re-tested via `ObjectDB::get_instance` + `contains_point` before the full scan; invalidated by
-  `membership_epoch` on topology change. Path re-solved only on room-pair change / epoch bump.
+  re-tested via `ObjectDB::get_instance` + `contains_point` before the full scan; each emitter
+  stores `membership_epoch_seen` and clears the cache when it differs from the engine's
+  `membership_epoch` (bumped on topology rebuild). Path re-solved only on room-pair change /
+  epoch bump. Closed-door transmission composes from `base_transmission[]` each frame (never
+  accumulates). Air absorption updates every frame via `_update_air_absorption_for_emitter`
+  (independent of occlusion). New emitters set `force_initial_solve` so the first occlusion
+  is not throttled. Apparent position is seeded from `source_position` every frame before the
+  optional portal redirect.
 - **5.3** **Split epochs.** Both `AcousticRoom3D` and `AcousticPortal3D` now have BOTH a topology
   epoch (`registry_epoch` / `state_epoch`) AND a `transform_epoch` (`get_transform_epoch()`).
   `NOTIFICATION_TRANSFORM_CHANGED` bumps `transform_epoch` ONLY. `_rebuild_portal_graph_if_needed()`

@@ -79,6 +79,17 @@ int SpatialAcousticsEngine::register_emitter(int p_voice_slot) {
 	emitters[idx].voice_slot = p_voice_slot;
 	emitters[idx].source_radius = 0.0f;
 	emitters[idx].max_distance = 0.0f;
+	emitters[idx].last_update_time = 0.0f;
+	emitters[idx].force_initial_solve = true;
+	emitters[idx].last_src_room_id = 0;
+	emitters[idx].last_src_node = -1;
+	emitters[idx].membership_epoch_seen = 0;
+	emitters[idx].air_cutoff_base = 20000.0f;
+	emitters[idx].base_transmission[0] = 1.0f;
+	emitters[idx].base_transmission[1] = 1.0f;
+	emitters[idx].base_transmission[2] = 1.0f;
+	emitters[idx].base_occlusion = 0.0f;
+	emitters[idx].smoothing_speed_override = 0.0f;
 	emitters[idx].target = SpatialParams();
 	emitters[idx].smoothed = SpatialParams();
 
@@ -96,6 +107,11 @@ void SpatialAcousticsEngine::unregister_emitter(int p_voice_slot) {
 	emitters[idx].active = false;
 	emitters[idx].first_update = true;
 	emitters[idx].voice_slot = -1;
+	emitters[idx].last_update_time = 0.0f;
+	emitters[idx].force_initial_solve = false;
+	emitters[idx].last_src_room_id = 0;
+	emitters[idx].last_src_node = -1;
+	emitters[idx].membership_epoch_seen = 0;
 
 	reverb_pool.release(p_voice_slot);
 	slot_to_emitter.erase(p_voice_slot);
@@ -158,6 +174,12 @@ void SpatialAcousticsEngine::update(float p_delta) {
 			importance = pool->get_slot_importance(vs);
 		}
 
+		// Baseline apparent position every frame; portal pass may redirect afterward.
+		emitters[i].target.apparent_position = emitters[i].source_position;
+
+		// Distance-only air absorption — not gated on occlusion or physics.
+		_update_air_absorption_for_emitter(i);
+
 		// Accumulate time since last occlusion solve.
 		emitters[i].last_update_time += p_delta;
 
@@ -183,6 +205,7 @@ void SpatialAcousticsEngine::update(float p_delta) {
 		info.audible = audible;
 		info.last_update_time = emitters[i].last_update_time;
 		info.estimated_cost = MAX(est_cost, 1);
+		info.force_initial_solve = emitters[i].force_initial_solve;
 		info_count++;
 	}
 
@@ -209,6 +232,7 @@ void SpatialAcousticsEngine::update(float p_delta) {
 				actual_rays += _solve_room_for_emitter(emitter_idx, space);
 			}
 			emitters[emitter_idx].last_update_time = 0.0f; // Reset timer after solve.
+			emitters[emitter_idx].force_initial_solve = false;
 		}
 		scheduler.report_actual_rays(actual_rays);
 	}
@@ -386,13 +410,24 @@ void SpatialAcousticsEngine::_solve_portals_for_emitter(int p_emitter_idx) {
 	// gain never compounds across frames.
 	e.target.portal_gain = 1.0f;
 	e.target.apparent_position = e.source_position;
+	// Compose transmission from the direct-path base each frame (never accumulate
+	// closed-door multipliers across frames between occlusion solves).
+	e.target.transmission[0] = e.base_transmission[0];
+	e.target.transmission[1] = e.base_transmission[1];
+	e.target.transmission[2] = e.base_transmission[2];
+	e.target.occlusion = e.base_occlusion;
 
 	// Resolve the SOURCE room using the per-emitter membership cache (Phase 5.2):
 	// most emitters stay put frame to frame, so first re-test the cached room
 	// with a single contains_point before falling back to the full O(#rooms)
-	// scan. The cache is invalidated wholesale when the topology epoch bumps.
+	// scan. Invalidate when the topology membership epoch bumps.
 	AcousticRoom3D *src_room = nullptr;
 	int src_node = -1;
+	if (e.membership_epoch_seen != membership_epoch) {
+		e.last_src_room_id = 0;
+		e.last_src_node = -1;
+		e.membership_epoch_seen = membership_epoch;
+	}
 	if (e.last_src_room_id != 0 && e.last_src_node >= 0) {
 		AcousticRoom3D *cached_room = Object::cast_to<AcousticRoom3D>(ObjectDB::get_instance(ObjectID(e.last_src_room_id)));
 		if (cached_room != nullptr && cached_room->contains_point(e.source_position)) {
@@ -524,11 +559,12 @@ void SpatialAcousticsEngine::_apply_closed_portal_transmission(EmitterState &p_e
 	// Fold into the emitter's bands multiplicatively so it stacks with any wall
 	// transmission the occlusion solve already found (both attenuate the leak).
 	// Keep material_transmission[] as the raw material value for the overlay.
+	// Caller already restored target from base_transmission this frame.
 	p_emitter.target.transmission[0] = CLAMP(p_emitter.target.transmission[0] * t_low, 0.0f, 1.0f);
 	p_emitter.target.transmission[1] = CLAMP(p_emitter.target.transmission[1] * t_mid, 0.0f, 1.0f);
 	p_emitter.target.transmission[2] = CLAMP(p_emitter.target.transmission[2] * t_high, 0.0f, 1.0f);
 	const float mean_t = (p_emitter.target.transmission[0] + p_emitter.target.transmission[1] + p_emitter.target.transmission[2]) / 3.0f;
-	p_emitter.target.occlusion = MAX(p_emitter.target.occlusion, 1.0f - mean_t);
+	p_emitter.target.occlusion = MAX(p_emitter.base_occlusion, 1.0f - mean_t);
 }
 
 int SpatialAcousticsEngine::_solve_occlusion_for_emitter(int p_emitter_idx, PhysicsDirectSpaceState3D *p_space) {
@@ -555,6 +591,9 @@ int SpatialAcousticsEngine::_solve_occlusion_for_emitter(int p_emitter_idx, Phys
 	e.target.transmission[0] = result.transmission[0];
 	e.target.transmission[1] = result.transmission[1];
 	e.target.transmission[2] = result.transmission[2];
+	e.base_transmission[0] = result.transmission[0];
+	e.base_transmission[1] = result.transmission[1];
+	e.base_transmission[2] = result.transmission[2];
 
 	// Phase 6 (Task 4): when a total-absorption material is on the direct path,
 	// its total_absorption_transition_speed governs how fast this emitter's
@@ -588,27 +627,30 @@ int SpatialAcousticsEngine::_solve_occlusion_for_emitter(int p_emitter_idx, Phys
 		const float occ = vres.occlusion;
 		for (int b = 0; b < 3; b++) {
 			e.target.transmission[b] = (1.0f - occ) + occ * result.transmission[b];
+			e.base_transmission[b] = e.target.transmission[b];
 		}
 		e.target.occlusion = occ;
+		e.base_occlusion = occ;
 		rays += vres.rays_issued;
 	} else {
 		e.target.occlusion = result.occlusion;
+		e.base_occlusion = result.occlusion;
 	}
 
-	// Air absorption: drive the air-absorption LPF cutoff from the
-	// source→listener distance (Task 12 wiring). Farther sources lose highs.
-	// Phase 3.1: write the intermediate air_cutoff_base (never mutate the
-	// previous frame's target.air_cutoff — that ratchets). The portal solve
-	// assigns target.air_cutoff = MIN(base, diffraction) fresh each frame; here
-	// we also seed target.air_cutoff so the no-portal path has a value.
+	// Air absorption is updated every frame in update(); occlusion must not own it.
+	return rays;
+}
+
+void SpatialAcousticsEngine::_update_air_absorption_for_emitter(int p_emitter_idx) {
+	EmitterState &e = emitters[p_emitter_idx];
 	if (air_absorption_enabled) {
 		float distance = e.source_position.distance_to(listener_position);
 		e.air_cutoff_base = SpatialGraphWrapper::distance_to_air_cutoff(distance, air_absorption_scale);
 	} else {
 		e.air_cutoff_base = 20000.0f;
 	}
+	// Seed the no-portal target; portal pass may assign MIN(base, diffraction).
 	e.target.air_cutoff = e.air_cutoff_base;
-	return rays;
 }
 
 int SpatialAcousticsEngine::_solve_room_for_emitter(int p_emitter_idx, PhysicsDirectSpaceState3D *p_space) {
@@ -828,7 +870,9 @@ void SpatialAcousticsEngine::_publish_params(int p_emitter_idx) {
 void SpatialAcousticsEngine::set_emitter_occlusion(int p_voice_slot, float p_occlusion) {
 	int *idx_ptr = slot_to_emitter.getptr(p_voice_slot);
 	if (!idx_ptr) return;
-	emitters[*idx_ptr].target.occlusion = CLAMP(p_occlusion, 0.0f, 1.0f);
+	const float occ = CLAMP(p_occlusion, 0.0f, 1.0f);
+	emitters[*idx_ptr].target.occlusion = occ;
+	emitters[*idx_ptr].base_occlusion = occ;
 }
 
 void SpatialAcousticsEngine::set_emitter_transmission(int p_voice_slot, float p_low, float p_mid, float p_high) {
@@ -837,12 +881,17 @@ void SpatialAcousticsEngine::set_emitter_transmission(int p_voice_slot, float p_
 	emitters[*idx_ptr].target.transmission[0] = CLAMP(p_low, 0.0f, 1.0f);
 	emitters[*idx_ptr].target.transmission[1] = CLAMP(p_mid, 0.0f, 1.0f);
 	emitters[*idx_ptr].target.transmission[2] = CLAMP(p_high, 0.0f, 1.0f);
+	emitters[*idx_ptr].base_transmission[0] = emitters[*idx_ptr].target.transmission[0];
+	emitters[*idx_ptr].base_transmission[1] = emitters[*idx_ptr].target.transmission[1];
+	emitters[*idx_ptr].base_transmission[2] = emitters[*idx_ptr].target.transmission[2];
 }
 
 void SpatialAcousticsEngine::set_emitter_air_cutoff(int p_voice_slot, float p_cutoff_hz) {
 	int *idx_ptr = slot_to_emitter.getptr(p_voice_slot);
 	if (!idx_ptr) return;
-	emitters[*idx_ptr].target.air_cutoff = MAX(p_cutoff_hz, 20.0f);
+	const float cutoff = MAX(p_cutoff_hz, 20.0f);
+	emitters[*idx_ptr].target.air_cutoff = cutoff;
+	emitters[*idx_ptr].air_cutoff_base = cutoff;
 }
 
 void SpatialAcousticsEngine::set_emitter_reverb_send(int p_voice_slot, float p_send) {

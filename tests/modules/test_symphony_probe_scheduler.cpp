@@ -165,6 +165,23 @@ TEST_CASE("[Symphony][Spatial][Scheduler] Emitter not yet due is not scheduled")
 	CHECK(to_update.is_empty());
 }
 
+TEST_CASE("[Symphony][Spatial][Scheduler] REGRESSION: force_initial_solve is due at last_update_time=0") {
+	ProbeScheduler scheduler;
+	ProbeScheduler::Config cfg;
+	cfg.ray_budget_per_frame = 64;
+	cfg.base_rate_hz = 10.0f;
+	scheduler.set_config(cfg);
+
+	ProbeScheduler::EmitterInfo info = make_info(0, 1.0f, 8);
+	info.last_update_time = 0.0f; // fresh emitter — would NOT be due without the flag
+	info.force_initial_solve = true;
+
+	Vector<int> to_update;
+	scheduler.schedule(&info, 1, 0.016f, to_update);
+	REQUIRE(to_update.size() == 1);
+	CHECK(to_update[0] == 0);
+}
+
 // --- Fairness: round-robin over frames ---------------------------------
 
 TEST_CASE("[Symphony][Spatial][Scheduler] Round-robin eventually services all due emitters") {

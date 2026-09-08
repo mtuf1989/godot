@@ -27,6 +27,7 @@ public:
 		int estimated_cost = 8;     // Phase 5.1: predicted ray cost of servicing this
 		                            // emitter (occlusion hits + room fan if a cache miss
 		                            // is predicted + 2×volumetric samples).
+		bool force_initial_solve = false; // New emitters: due immediately once.
 	};
 
 	struct Config {
