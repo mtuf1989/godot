@@ -1,16 +1,29 @@
 #include "spatial_graph_wrapper.h"
 #include "core/math/math_funcs.h"
 
-const StringName SpatialGraphWrapper::PARAM_AIR_CUTOFF = "spatial_air_cutoff";
-const StringName SpatialGraphWrapper::PARAM_OCCLUSION_CUTOFF = "spatial_occlusion_cutoff";
-const StringName SpatialGraphWrapper::PARAM_GAIN = "spatial_gain";
+bool SpatialGraphWrapper::is_wrappable_wav(const Ref<AudioStream> &p_stream) {
+	if (p_stream.is_null()) {
+		return false;
+	}
+	if (p_stream->get_path().is_empty()) {
+		return false;
+	}
+	const AudioStreamWAV *wav = Object::cast_to<AudioStreamWAV>(p_stream.ptr());
+	if (wav == nullptr) {
+		return false;
+	}
+	return wav->get_format() == AudioStreamWAV::FORMAT_16_BITS;
+}
 
 bool SpatialGraphWrapper::needs_wrapping(const Ref<AudioStream> &p_stream) {
 	if (p_stream.is_null()) {
 		return false;
 	}
 	// Already a Symphony graph — no wrapping needed.
-	return !Object::cast_to<AudioStreamSymphony>(p_stream.ptr());
+	if (Object::cast_to<AudioStreamSymphony>(p_stream.ptr())) {
+		return false;
+	}
+	return is_wrappable_wav(p_stream);
 }
 
 Ref<AudioStreamSymphony> SpatialGraphWrapper::create_spatial_stream(const Ref<AudioStream> &p_source, bool p_loop) {
@@ -18,14 +31,28 @@ Ref<AudioStreamSymphony> SpatialGraphWrapper::create_spatial_stream(const Ref<Au
 		return Ref<AudioStreamSymphony>();
 	}
 
+	if (Object::cast_to<AudioStreamSymphony>(p_source.ptr())) {
+		return Ref<AudioStreamSymphony>();
+	}
+
 	String resource_path = p_source->get_path();
 	if (resource_path.is_empty()) {
-		return Ref<AudioStreamSymphony>(); // Can't load without a path.
+		WARN_PRINT_ONCE("SpatialGraphWrapper: refusing to wrap stream with empty resource path.");
+		return Ref<AudioStreamSymphony>();
+	}
+
+	const AudioStreamWAV *wav = Object::cast_to<AudioStreamWAV>(p_source.ptr());
+	if (wav == nullptr || wav->get_format() != AudioStreamWAV::FORMAT_16_BITS) {
+		WARN_PRINT_ONCE(vformat(
+				"SpatialGraphWrapper: refusing to wrap unsupported stream '%s' (need 16-bit PCM WAV).",
+				resource_path));
+		return Ref<AudioStreamSymphony>();
 	}
 
 	Ref<AudioStreamSymphony> stream;
 	stream.instantiate();
 	stream->set_mix_rate(44100.0f); // Will be overridden by AudioServer mix rate at playback.
+	stream->set_stop_on_source_finished(!p_loop);
 
 	// Build the graph description:
 	// Node IDs:
@@ -68,7 +95,7 @@ Ref<AudioStreamSymphony> SpatialGraphWrapper::create_spatial_stream(const Ref<Au
 		node.id = 2;
 		node.type_name = "SVFilter";
 		node.params["cutoff"] = 20000.0f; // Default: wide open
-		node.params["resonance"] = 0.0f;  // No resonance for natural occlusion
+		node.params["resonance"] = 0.0f; // No resonance for natural occlusion
 		desc.nodes.push_back(node);
 	}
 
@@ -94,7 +121,7 @@ Ref<AudioStreamSymphony> SpatialGraphWrapper::create_spatial_stream(const Ref<Au
 		NodeDesc node;
 		node.id = 5;
 		node.type_name = "GraphInput";
-		node.params["parameter_name"] = String(PARAM_AIR_CUTOFF);
+		node.params["parameter_name"] = String(param_air_cutoff());
 		node.params["default_value"] = 20000.0f;
 		node.params["pin_type"] = 1.0f; // FLOAT
 		desc.nodes.push_back(node);
@@ -105,7 +132,7 @@ Ref<AudioStreamSymphony> SpatialGraphWrapper::create_spatial_stream(const Ref<Au
 		NodeDesc node;
 		node.id = 6;
 		node.type_name = "GraphInput";
-		node.params["parameter_name"] = String(PARAM_OCCLUSION_CUTOFF);
+		node.params["parameter_name"] = String(param_occlusion_cutoff());
 		node.params["default_value"] = 20000.0f;
 		node.params["pin_type"] = 1.0f; // FLOAT
 		desc.nodes.push_back(node);
@@ -116,7 +143,7 @@ Ref<AudioStreamSymphony> SpatialGraphWrapper::create_spatial_stream(const Ref<Au
 		NodeDesc node;
 		node.id = 7;
 		node.type_name = "GraphInput";
-		node.params["parameter_name"] = String(PARAM_GAIN);
+		node.params["parameter_name"] = String(param_gain());
 		node.params["default_value"] = 1.0f;
 		node.params["pin_type"] = 1.0f; // FLOAT
 		desc.nodes.push_back(node);

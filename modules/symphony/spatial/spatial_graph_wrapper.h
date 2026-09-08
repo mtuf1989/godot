@@ -2,10 +2,13 @@
 #define SPATIAL_GRAPH_WRAPPER_H
 
 #include "../stream/audio_stream_symphony.h"
+#include "core/string/string_name.h"
 #include "scene/resources/audio/audio_stream.h"
+#include "scene/resources/audio/audio_stream_wav.h"
 
 // Factory that generates a spatial-processing AudioStreamSymphony for plain
-// AudioStream resources (WAVs, OGGs, etc.) that don't have their own graph.
+// AudioStreamWAV resources (16-bit PCM only) that don't have their own graph.
+// Unsupported formats are not wrapped — callers keep native Godot playback.
 //
 // The generated graph:
 //   WavePlayer → OnePole (air absorption) → SVFilter LP (occlusion) → Gain → GraphOutput
@@ -22,18 +25,29 @@
 // wrapped — they use their own graph as-is.
 class SpatialGraphWrapper {
 public:
-	// Parameter names used by the wrapper graph.
-	static const StringName PARAM_AIR_CUTOFF;
-	static const StringName PARAM_OCCLUSION_CUTOFF;
-	static const StringName PARAM_GAIN;
+	// Lazy StringName accessors (SNAME) — never construct StringName at static init.
+	static const StringName &param_air_cutoff() {
+		static const StringName n = SNAME("spatial_air_cutoff");
+		return n;
+	}
+	static const StringName &param_occlusion_cutoff() {
+		static const StringName n = SNAME("spatial_occlusion_cutoff");
+		return n;
+	}
+	static const StringName &param_gain() {
+		static const StringName n = SNAME("spatial_gain");
+		return n;
+	}
 
-	// Create a wrapped AudioStreamSymphony for the given plain audio stream.
-	// The stream's resource_path is used by WavePlayer to load the audio.
-	// Returns null if the stream has no resource_path (can't be loaded by WavePlayer).
+	// Create a wrapped AudioStreamSymphony for a 16-bit PCM WAV with a resource path.
+	// Returns null if the stream cannot be loaded by WavePlayer (wrong type/format/path).
 	static Ref<AudioStreamSymphony> create_spatial_stream(const Ref<AudioStream> &p_source, bool p_loop = false);
 
-	// Check if a stream is already an AudioStreamSymphony (no wrapping needed).
+	// True only when wrapping will succeed (16-bit WAV with a path, not already Symphony).
 	static bool needs_wrapping(const Ref<AudioStream> &p_stream);
+
+	// True when p_stream is a 16-bit PCM AudioStreamWAV with a non-empty resource path.
+	static bool is_wrappable_wav(const Ref<AudioStream> &p_stream);
 
 	// Compute occlusion cutoff from transmission values.
 	// Uses minimum-frequency stacking (plan requirement): takes the min of

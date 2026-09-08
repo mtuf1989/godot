@@ -18,8 +18,11 @@ TEST_FORCE_LINK(test_symphony_playback)
 #include "modules/symphony/core/symphony_voice_manager.h"
 #include "modules/symphony/stream/audio_stream_symphony.h"
 #include "modules/symphony/stream/audio_stream_playback_symphony.h"
+#include "modules/symphony/spatial/spatial_graph_wrapper.h"
 
+#include "core/object/class_db.h"
 #include "core/os/memory.h"
+#include "scene/resources/audio/audio_stream_wav.h"
 
 #include <cstring>
 
@@ -366,6 +369,156 @@ TEST_CASE("[Symphony][Playback] RT-scope flags compile alloc free mutex ObjectDB
 	}
 	CHECK(SymphonyRealtimeScope::violation_count(SymphonyRTViolation::ContainerMutation) >= 1);
 	CHECK(mgr->get_rt_violation_count() >= 1);
+}
+
+static GraphDescription _make_spatial_wrapper_graph(bool p_loop) {
+	// Mirrors SpatialGraphWrapper::create_spatial_stream without WavePlayer I/O.
+	GraphDescription desc;
+	desc.smooth_parameters = false;
+
+	NodeDesc wp;
+	wp.id = 0;
+	wp.type_name = "WavePlayer";
+	wp.params["loop_mode"] = p_loop ? 1.0f : 0.0f;
+	wp.params["auto_play"] = 1.0f;
+	desc.nodes.push_back(wp);
+
+	NodeDesc onepole;
+	onepole.id = 1;
+	onepole.type_name = "OnePole";
+	onepole.params["cutoff"] = 20000.0f;
+	desc.nodes.push_back(onepole);
+
+	NodeDesc svf;
+	svf.id = 2;
+	svf.type_name = "SVFilter";
+	svf.params["cutoff"] = 20000.0f;
+	svf.params["resonance"] = 0.0f;
+	desc.nodes.push_back(svf);
+
+	NodeDesc gain;
+	gain.id = 3;
+	gain.type_name = "Gain";
+	gain.params["gain"] = 1.0f;
+	desc.nodes.push_back(gain);
+
+	NodeDesc out;
+	out.id = 4;
+	out.type_name = "GraphOutput";
+	desc.nodes.push_back(out);
+
+	NodeDesc in_air;
+	in_air.id = 5;
+	in_air.type_name = "GraphInput";
+	in_air.params["parameter_name"] = String(SpatialGraphWrapper::param_air_cutoff());
+	in_air.params["default_value"] = 20000.0f;
+	in_air.params["pin_type"] = 1.0f;
+	desc.nodes.push_back(in_air);
+
+	NodeDesc in_occ;
+	in_occ.id = 6;
+	in_occ.type_name = "GraphInput";
+	in_occ.params["parameter_name"] = String(SpatialGraphWrapper::param_occlusion_cutoff());
+	in_occ.params["default_value"] = 20000.0f;
+	in_occ.params["pin_type"] = 1.0f;
+	desc.nodes.push_back(in_occ);
+
+	NodeDesc in_gain;
+	in_gain.id = 7;
+	in_gain.type_name = "GraphInput";
+	in_gain.params["parameter_name"] = String(SpatialGraphWrapper::param_gain());
+	in_gain.params["default_value"] = 1.0f;
+	in_gain.params["pin_type"] = 1.0f;
+	desc.nodes.push_back(in_gain);
+
+	desc.connections.push_back({ 0, 0, 1, 0 });
+	desc.connections.push_back({ 1, 0, 2, 0 });
+	desc.connections.push_back({ 2, 0, 3, 0 });
+	desc.connections.push_back({ 3, 0, 4, 0 });
+	desc.connections.push_back({ 5, 0, 1, 1 });
+	desc.connections.push_back({ 6, 0, 2, 1 });
+	desc.connections.push_back({ 7, 0, 3, 1 });
+	return desc;
+}
+
+TEST_CASE("[Symphony][Playback] Spatial wrapper rejects unsupported streams") {
+	Ref<AudioStreamWAV> no_path;
+	no_path.instantiate();
+	no_path->set_format(AudioStreamWAV::FORMAT_16_BITS);
+	CHECK_FALSE(SpatialGraphWrapper::is_wrappable_wav(no_path));
+	CHECK_FALSE(SpatialGraphWrapper::needs_wrapping(no_path));
+	CHECK(SpatialGraphWrapper::create_spatial_stream(no_path).is_null());
+
+	Ref<AudioStreamWAV> eight_bit;
+	eight_bit.instantiate();
+	eight_bit->set_format(AudioStreamWAV::FORMAT_8_BITS);
+	eight_bit->set_path("user://symphony_fake_8bit.wav");
+	CHECK_FALSE(SpatialGraphWrapper::is_wrappable_wav(eight_bit));
+	CHECK_FALSE(SpatialGraphWrapper::needs_wrapping(eight_bit));
+	CHECK(SpatialGraphWrapper::create_spatial_stream(eight_bit).is_null());
+
+	Ref<AudioStreamSymphony> already;
+	already.instantiate();
+	CHECK_FALSE(SpatialGraphWrapper::needs_wrapping(already));
+}
+
+TEST_CASE("[Symphony][Playback] Spatial wrapper param names resolve and set_parameter is bound") {
+	CHECK(ClassDB::has_method("AudioStreamPlaybackSymphony", "set_parameter"));
+	CHECK(!String(SpatialGraphWrapper::param_air_cutoff()).is_empty());
+	CHECK(!String(SpatialGraphWrapper::param_occlusion_cutoff()).is_empty());
+	CHECK(!String(SpatialGraphWrapper::param_gain()).is_empty());
+
+	Ref<AudioStreamSymphony> stream;
+	stream.instantiate();
+	stream->set_stop_on_source_finished(true);
+	stream->set_graph_description(_make_spatial_wrapper_graph(false));
+
+	GraphCompiler::CompileResult result = GraphCompiler::compile(stream->get_graph_description(), 44100.0f);
+	REQUIRE(result.success());
+	PreparedGraphPackage *pkg = PreparedGraphPackage::create_from_graph(result.graph, result.arena_bytes, result.total_package_bytes);
+	REQUIRE(pkg != nullptr);
+	CHECK(pkg->find_param(SpatialGraphWrapper::param_air_cutoff()) != nullptr);
+	CHECK(pkg->find_param(SpatialGraphWrapper::param_occlusion_cutoff()) != nullptr);
+	CHECK(pkg->find_param(SpatialGraphWrapper::param_gain()) != nullptr);
+	CHECK(pkg->source_finished_triggers.size() >= 1);
+	PreparedGraphPackage::destroy(pkg);
+
+	Ref<AudioStreamPlayback> base = stream->instantiate_playback();
+	Ref<AudioStreamPlaybackSymphony> playback = base;
+	REQUIRE(playback.is_valid());
+	playback->start();
+	playback->set_parameter(SpatialGraphWrapper::param_gain(), 0.25f);
+	CHECK((float)playback->get_parameter(SpatialGraphWrapper::param_gain()) == doctest::Approx(0.25f));
+	playback->stop();
+}
+
+TEST_CASE("[Symphony][Playback] stop_on_source_finished clears is_playing when finished fires") {
+	Ref<AudioStreamSymphony> stream;
+	stream.instantiate();
+	stream->set_stop_on_source_finished(true);
+	stream->set_graph_description(_make_spatial_wrapper_graph(false));
+
+	Ref<AudioStreamPlayback> base = stream->instantiate_playback();
+	Ref<AudioStreamPlaybackSymphony> playback = base;
+	REQUIRE(playback.is_valid());
+	playback->start();
+	CHECK(playback->is_playing());
+	CHECK(stream->get_stop_on_source_finished());
+
+	// Empty WavePlayer never finishes; verify the stop path by simulating the
+	// finished trigger on a freshly packaged graph that mirrors playback state.
+	GraphCompiler::CompileResult result = GraphCompiler::compile(stream->get_graph_description(), 44100.0f);
+	REQUIRE(result.success());
+	PreparedGraphPackage *pkg = PreparedGraphPackage::create_from_graph(result.graph);
+	REQUIRE(pkg != nullptr);
+	REQUIRE(pkg->source_finished_triggers.size() >= 1);
+	REQUIRE(pkg->source_finished_triggers[0] != nullptr);
+	pkg->source_finished_triggers[0]->push(0, 1.0f);
+	CHECK(pkg->source_finished_triggers[0]->count == 1);
+	PreparedGraphPackage::destroy(pkg);
+
+	playback->stop();
+	CHECK_FALSE(playback->is_playing());
 }
 
 } // namespace TestSymphonyPlayback

@@ -63,6 +63,9 @@ private:
 public:
 	SymphonyWavePlayer() {}
 
+	// Exposed so PreparedGraphPackage can watch one-shot completion.
+	TriggerBuffer *get_finished_output() const { return finished_output; }
+
 	virtual void bind_pins(void **p_input_ptrs, void **p_output_ptrs) override {
 		gate_input = (const TriggerBuffer *)p_input_ptrs[0];
 		pitch_input = (const float *)p_input_ptrs[1];
@@ -182,6 +185,10 @@ public:
 		}
 
 		Ref<AudioStreamWAV> wav = ResourceLoader::load(path, "AudioStreamWAV");
+		if (wav.is_null()) {
+			Dictionary options;
+			wav = AudioStreamWAV::load_from_file(path, options);
+		}
 		if (wav.is_null()) {
 			return wp;
 		}

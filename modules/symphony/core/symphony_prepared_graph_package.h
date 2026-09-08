@@ -5,6 +5,7 @@
 #pragma once
 
 #include "symphony_compiled_graph.h"
+#include "symphony_trigger.h"
 #include "../nodes/io/symphony_graph_output.h"
 #include "../nodes/io/symphony_graph_input.h"
 #include "../nodes/io/symphony_trigger_input.h"
@@ -42,6 +43,8 @@ struct PreparedGraphPackage {
 	Vector<ParamRoute> param_routes;
 	Vector<TriggerRoute> trigger_routes;
 	Vector<OperatorFingerprint> fingerprints;
+	// WavePlayer finished triggers — watched by playback when stop_on_source_finished.
+	Vector<TriggerBuffer *> source_finished_triggers;
 
 	size_t arena_bytes = 0;
 	size_t total_package_bytes = 0;

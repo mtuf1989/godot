@@ -4,6 +4,7 @@
 
 #include "symphony_prepared_graph_package.h"
 #include "symphony_realtime_scope.h"
+#include "../nodes/generators/symphony_wave_player.h"
 
 #include "core/os/memory.h"
 #include "core/templates/hashfuncs.h"
@@ -54,6 +55,12 @@ PreparedGraphPackage *PreparedGraphPackage::create_from_graph(CompiledGraph *p_g
 		}
 		if (auto *gout = dynamic_cast<SymphonyGraphOutput *>(op)) {
 			pkg->graph_output = gout;
+		}
+		if (auto *wp = dynamic_cast<SymphonyWavePlayer *>(op)) {
+			TriggerBuffer *finished = wp->get_finished_output();
+			if (finished != nullptr) {
+				pkg->source_finished_triggers.push_back(finished);
+			}
 		}
 		if (auto *gin = dynamic_cast<SymphonyGraphInput *>(op)) {
 			StringName name = p_graph->node_names ? p_graph->node_names[i] : StringName();

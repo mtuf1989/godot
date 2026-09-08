@@ -31,6 +31,8 @@ void _pkg_outgoing(int32_t d) {
 } // namespace
 
 void AudioStreamPlaybackSymphony::_bind_methods() {
+	ClassDB::bind_method(D_METHOD("set_parameter", "name", "value"), &AudioStreamPlaybackSymphony::set_parameter);
+	ClassDB::bind_method(D_METHOD("get_parameter", "name"), &AudioStreamPlaybackSymphony::get_parameter);
 	ClassDB::bind_method(D_METHOD("trigger", "name", "value"), &AudioStreamPlaybackSymphony::trigger, DEFVAL(1.0f));
 	ClassDB::bind_method(D_METHOD("get_voice_cpu_microseconds"), &AudioStreamPlaybackSymphony::get_voice_cpu_microseconds);
 	ClassDB::bind_method(D_METHOD("get_budget_percent"), &AudioStreamPlaybackSymphony::get_budget_percent);
@@ -365,23 +367,44 @@ int AudioStreamPlaybackSymphony::mix(AudioFrame *p_buffer, float p_rate_scale, i
 		}
 
 		frames_processed += chunk;
+
+		// Wrapped one-shots: WavePlayer finished → stop outer playback so voice cleanup runs.
+		if (stream.is_valid() && stream->get_stop_on_source_finished() && current_package) {
+			bool source_finished = false;
+			for (int t = 0; t < current_package->source_finished_triggers.size(); t++) {
+				const TriggerBuffer *buf = current_package->source_finished_triggers[t];
+				if (buf != nullptr && buf->count > 0) {
+					source_finished = true;
+					break;
+				}
+			}
+			if (source_finished) {
+				for (int i = frames_processed; i < p_frames; i++) {
+					p_buffer[i] = AudioFrame(0, 0);
+				}
+				active.store(false, std::memory_order_release);
+				stop_pending.store(true, std::memory_order_relaxed);
+				frames_processed = p_frames;
+				break;
+			}
+		}
 	}
 
 	uint64_t t_end = symphony_time_usec();
 	last_mix_time_us = (float)(t_end - t_start);
-	last_frame_count = p_frames;
+	last_frame_count = frames_processed;
 
 	float sum_sq = 0.0f;
-	for (int i = 0; i < p_frames; i++) {
+	for (int i = 0; i < frames_processed; i++) {
 		sum_sq += p_buffer[i].left * p_buffer[i].left + p_buffer[i].right * p_buffer[i].right;
 	}
-	float rms_candidate = sqrtf(sum_sq / (2.0f * (float)p_frames));
+	float rms_candidate = frames_processed > 0 ? sqrtf(sum_sq / (2.0f * (float)frames_processed)) : 0.0f;
 	if (unlikely(std::isnan(rms_candidate) || std::isinf(rms_candidate))) {
 		rms_candidate = 0.0f;
 	}
 	last_rms = rms_candidate;
 
-	return p_frames;
+	return frames_processed;
 }
 
 void AudioStreamPlaybackSymphony::swap_graph(CompiledGraph *p_graph) {
@@ -426,6 +449,18 @@ void AudioStreamPlaybackSymphony::set_parameter(const StringName &p_name, const 
 		}
 		// Package swapped after the write; retry so the live graph receives the value.
 	}
+}
+
+Variant AudioStreamPlaybackSymphony::get_parameter(const StringName &p_name) const {
+	PreparedGraphPackage *pkg = control_package.load(std::memory_order_acquire);
+	if (!pkg) {
+		return Variant();
+	}
+	SymphonyGraphInput *input = pkg->find_param(p_name);
+	if (!input) {
+		return Variant();
+	}
+	return input->get_value();
 }
 
 bool AudioStreamPlaybackSymphony::trigger(const StringName &p_name, float p_value) {

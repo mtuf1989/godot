@@ -14,6 +14,8 @@ private:
 	float mix_rate = 44100.0f;
 	int voice_priority = 50; // 0-100, higher = harder to steal
 	GraphDescription graph_desc; // LOD 0 (full quality)
+	// When true, AudioStreamPlaybackSymphony clears is_playing after WavePlayer fires finished.
+	bool stop_on_source_finished = false;
 
 	// LOD system: simplified graph variants for distance/importance-based degradation.
 	// lod_graphs[0] = LOD 1 (simplified), lod_graphs[1] = LOD 2 (minimal).
@@ -43,6 +45,9 @@ public:
 
 	void set_voice_priority(int p_priority);
 	int get_voice_priority() const;
+
+	void set_stop_on_source_finished(bool p_enable) { stop_on_source_finished = p_enable; }
+	[[nodiscard]] bool get_stop_on_source_finished() const { return stop_on_source_finished; }
 
 	void set_graph_description(const GraphDescription &p_desc);
 	const GraphDescription &get_graph_description() const;

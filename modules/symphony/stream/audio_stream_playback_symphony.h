@@ -105,6 +105,7 @@ public:
 	[[nodiscard]] int get_cached_max_lod() const { return cached_max_lod; }
 
 	virtual void set_parameter(const StringName &p_name, const Variant &p_value) override;
+	virtual Variant get_parameter(const StringName &p_name) const override;
 	bool trigger(const StringName &p_name, float p_value = 1.0f);
 
 	[[nodiscard]] float get_voice_cpu_microseconds() const;
