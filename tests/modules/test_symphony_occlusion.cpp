@@ -18,42 +18,50 @@ namespace TestSymphonyOcclusion {
 // wrapper around exactly this template.
 //
 // The functor signature is:
-//   bool fn(const Vector3 &from, const Vector3 &to, Vector3 &r_pos, AcousticMaterial **r_mat)
-// returning true on a hit and writing the hit position + the collider's
-// AcousticMaterial* (nullptr = untagged → config fallback transmission).
+//   bool fn(from, to, r_pos, r_mat, r_barrier_id)
 
 // A scripted wall along the x axis: a solid slab spans [x_lo, x_hi]. A forward
 // march from source→listener hits its ENTRY face, then (after advancing past it)
-// its EXIT face — two hits for one solid wall. The functor models exactly that.
+// its EXIT face — two hits for one solid wall. Both faces share barrier_id so
+// transmission is applied once per wall.
 struct WallSet {
 	struct Wall {
 		float x_lo;
 		float x_hi;
 		AcousticMaterial *mat; // may be nullptr (untagged)
+		uint64_t barrier_id = 0; // stable key; 0 → assigned from index+1
 	};
 	LocalVector<Wall> walls;
+	bool skip_start_inside = false; // Godot Physics: ignore shape when from is inside
 
 	// Return the nearest face strictly ahead of `from` toward +x, if any.
-	bool raycast(const Vector3 &from, const Vector3 &to, Vector3 &r_pos, AcousticMaterial **r_mat) const {
+	bool raycast(const Vector3 &from, const Vector3 &to, Vector3 &r_pos, AcousticMaterial **r_mat, uint64_t &r_barrier_id) const {
 		if (to.x <= from.x) {
 			return false; // this synthetic world only occludes along +x
 		}
 		float best = to.x;
 		bool hit = false;
 		AcousticMaterial *hit_mat = nullptr;
+		uint64_t hit_id = 0;
 		for (uint32_t i = 0; i < walls.size(); i++) {
 			const Wall &w = walls[i];
+			const uint64_t id = w.barrier_id != 0 ? w.barrier_id : (uint64_t)(i + 1);
+			if (skip_start_inside && from.x > w.x_lo + 1e-4f && from.x < w.x_hi - 1e-4f) {
+				continue; // start inside solid → Godot Physics skips this shape
+			}
 			// Entry face.
 			if (w.x_lo > from.x + 1e-4f && w.x_lo < best) {
 				best = w.x_lo;
 				hit = true;
 				hit_mat = w.mat;
+				hit_id = id;
 			}
 			// Exit face.
 			if (w.x_hi > from.x + 1e-4f && w.x_hi < best) {
 				best = w.x_hi;
 				hit = true;
 				hit_mat = w.mat;
+				hit_id = id;
 			}
 		}
 		if (!hit) {
@@ -61,9 +69,13 @@ struct WallSet {
 		}
 		r_pos = Vector3(best, from.y, from.z);
 		*r_mat = hit_mat;
+		r_barrier_id = hit_id;
 		return true;
 	}
 };
+
+#define OCC_RAY(world) \
+	[&](const Vector3 &f, const Vector3 &t, Vector3 &p, AcousticMaterial **m, uint64_t &id) { return (world).raycast(f, t, p, m, id); }
 
 static Ref<AcousticMaterial> concrete() {
 	return AcousticMaterial::create_preset(AcousticMaterial::PRESET_CONCRETE);
@@ -75,8 +87,7 @@ TEST_CASE("[Symphony][Spatial][Occlusion] Clear path → full transmission, zero
 	WallSet world; // no walls
 	OcclusionSolver::Config cfg;
 	OcclusionSolver::Result r = OcclusionSolver::compute(
-			Vector3(0, 0, 0), Vector3(10, 0, 0), cfg,
-			[&](const Vector3 &f, const Vector3 &t, Vector3 &p, AcousticMaterial **m) { return world.raycast(f, t, p, m); });
+			Vector3(0, 0, 0), Vector3(10, 0, 0), cfg, OCC_RAY(world));
 	CHECK(r.hit_count == 0);
 	CHECK(r.transmission[0] == doctest::Approx(1.0f));
 	CHECK(r.transmission[1] == doctest::Approx(1.0f));
@@ -95,30 +106,27 @@ TEST_CASE("[Symphony][Spatial][Occlusion] Thin plane (1 hit) → transmission = 
 
 	OcclusionSolver::Config cfg;
 	OcclusionSolver::Result r = OcclusionSolver::compute(
-			Vector3(0, 0, 0), Vector3(10, 0, 0), cfg,
-			[&](const Vector3 &f, const Vector3 &t, Vector3 &p, AcousticMaterial **m) { return world.raycast(f, t, p, m); });
+			Vector3(0, 0, 0), Vector3(10, 0, 0), cfg, OCC_RAY(world));
 	CHECK(r.hit_count == 1);
-	// One hit → no sqrt; transmission equals the material value directly.
+	// One hit → transmission equals the material value directly.
 	CHECK(r.transmission[1] == doctest::Approx(mat->get_transmission_mid()));
 	CHECK(r.transmission[2] == doctest::Approx(mat->get_transmission_high()));
 }
 
-// --- Solid slab regression: 2 hits → t, NOT t² -------------------------
+// --- Solid slab regression: 2 hits same barrier → t, NOT t² ------------
 
 TEST_CASE("[Symphony][Spatial][Occlusion] REGRESSION: solid slab (2 hits) yields t, not t-squared") {
 	Ref<AcousticMaterial> mat = concrete();
 	WallSet world;
-	world.walls.push_back({ 4.0f, 6.0f, mat.ptr() }); // one solid wall, 2 faces
+	world.walls.push_back({ 4.0f, 6.0f, mat.ptr() }); // one solid wall, 2 faces, one barrier_id
 
 	OcclusionSolver::Config cfg;
 	OcclusionSolver::Result r = OcclusionSolver::compute(
-			Vector3(0, 0, 0), Vector3(12, 0, 0), cfg,
-			[&](const Vector3 &f, const Vector3 &t, Vector3 &p, AcousticMaterial **m) { return world.raycast(f, t, p, m); });
+			Vector3(0, 0, 0), Vector3(12, 0, 0), cfg, OCC_RAY(world));
 	REQUIRE(r.hit_count == 2); // entry + exit
-	// After the sqrt correction, one solid wall = one attenuation (t), not t².
+	// Per-barrier: one solid wall = one attenuation (t), not t².
 	CHECK(r.transmission[1] == doctest::Approx(mat->get_transmission_mid()).epsilon(0.001));
 	CHECK(r.transmission[2] == doctest::Approx(mat->get_transmission_high()).epsilon(0.001));
-	// Guard: it must be clearly LARGER than the buggy t² behaviour.
 	CHECK(r.transmission[1] > mat->get_transmission_mid() * mat->get_transmission_mid());
 }
 
@@ -132,11 +140,30 @@ TEST_CASE("[Symphony][Spatial][Occlusion] Two solid walls (4 hits) → t-squared
 
 	OcclusionSolver::Config cfg;
 	OcclusionSolver::Result r = OcclusionSolver::compute(
-			Vector3(0, 0, 0), Vector3(12, 0, 0), cfg,
-			[&](const Vector3 &f, const Vector3 &t, Vector3 &p, AcousticMaterial **m) { return world.raycast(f, t, p, m); });
+			Vector3(0, 0, 0), Vector3(12, 0, 0), cfg, OCC_RAY(world));
 	REQUIRE(r.hit_count == 4); // 2 walls × 2 faces
 	const float t = mat->get_transmission_mid();
 	CHECK(r.transmission[1] == doctest::Approx(t * t).epsilon(0.001));
+}
+
+// --- Godot Physics start-inside: 1 hit/wall still → t² -----------------
+
+TEST_CASE("[Symphony][Spatial][Occlusion] REGRESSION: start-inside skip still attenuates per wall") {
+	Ref<AcousticMaterial> mat = concrete();
+	WallSet world;
+	world.skip_start_inside = true;
+	world.walls.push_back({ 3.0f, 4.0f, mat.ptr() });
+	world.walls.push_back({ 7.0f, 8.0f, mat.ptr() });
+
+	OcclusionSolver::Config cfg;
+	OcclusionSolver::Result r = OcclusionSolver::compute(
+			Vector3(0, 0, 0), Vector3(12, 0, 0), cfg, OCC_RAY(world));
+	// Entry only per wall (exit skipped because next ray starts inside).
+	REQUIRE(r.hit_count == 2);
+	const float t = mat->get_transmission_mid();
+	// Must be t² — NOT the old sqrt(t*t)=t under-attenuation.
+	CHECK(r.transmission[1] == doctest::Approx(t * t).epsilon(0.001));
+	CHECK(r.transmission[1] < t * 0.9f);
 }
 
 // --- Total absorption ---------------------------------------------------
@@ -151,15 +178,13 @@ TEST_CASE("[Symphony][Spatial][Occlusion] Total-absorption wall mutes and stops 
 
 	OcclusionSolver::Config cfg;
 	OcclusionSolver::Result r = OcclusionSolver::compute(
-			Vector3(0, 0, 0), Vector3(12, 0, 0), cfg,
-			[&](const Vector3 &f, const Vector3 &t, Vector3 &p, AcousticMaterial **m) { return world.raycast(f, t, p, m); });
+			Vector3(0, 0, 0), Vector3(12, 0, 0), cfg, OCC_RAY(world));
 	CHECK(r.total_absorption_hit);
 	CHECK(r.transmission[0] == doctest::Approx(0.0f));
 	CHECK(r.transmission[1] == doctest::Approx(0.0f));
 	CHECK(r.transmission[2] == doctest::Approx(0.0f));
 	CHECK(r.occlusion == doctest::Approx(1.0f));
 	CHECK(r.hit_count == 1); // stopped at the first (total) wall
-	// The blocker's transition speed is surfaced for the Phase 6 smoothing override.
 	CHECK(r.total_absorption_speed == doctest::Approx(foam->get_total_absorption_transition_speed()));
 }
 
@@ -172,8 +197,7 @@ TEST_CASE("[Symphony][Spatial][Occlusion] Untagged collider uses config fallback
 	OcclusionSolver::Config cfg;
 	cfg.fallback_transmission_mid = 0.05f;
 	OcclusionSolver::Result r = OcclusionSolver::compute(
-			Vector3(0, 0, 0), Vector3(10, 0, 0), cfg,
-			[&](const Vector3 &f, const Vector3 &t, Vector3 &p, AcousticMaterial **m) { return world.raycast(f, t, p, m); });
+			Vector3(0, 0, 0), Vector3(10, 0, 0), cfg, OCC_RAY(world));
 	CHECK(r.hit_count == 1);
 	CHECK(r.transmission[1] == doctest::Approx(cfg.fallback_transmission_mid));
 }
@@ -183,15 +207,13 @@ TEST_CASE("[Symphony][Spatial][Occlusion] Untagged collider uses config fallback
 TEST_CASE("[Symphony][Spatial][Occlusion] max_hits caps the march") {
 	Ref<AcousticMaterial> mat = concrete();
 	WallSet world;
-	// Many thin walls; the march must stop after max_hits steps.
 	for (int i = 1; i <= 10; i++) {
 		world.walls.push_back({ (float)i, (float)i, mat.ptr() });
 	}
 	OcclusionSolver::Config cfg;
 	cfg.max_hits = 3;
 	OcclusionSolver::Result r = OcclusionSolver::compute(
-			Vector3(0, 0, 0), Vector3(20, 0, 0), cfg,
-			[&](const Vector3 &f, const Vector3 &t, Vector3 &p, AcousticMaterial **m) { return world.raycast(f, t, p, m); });
+			Vector3(0, 0, 0), Vector3(20, 0, 0), cfg, OCC_RAY(world));
 	CHECK(r.hit_count <= cfg.max_hits);
 }
 
@@ -204,9 +226,8 @@ TEST_CASE("[Symphony][Spatial][Occlusion] Hit beyond the listener is ignored") {
 
 	OcclusionSolver::Config cfg;
 	OcclusionSolver::Result r = OcclusionSolver::compute(
-			Vector3(0, 0, 0), Vector3(10, 0, 0), cfg,
-			[&](const Vector3 &f, const Vector3 &t, Vector3 &p, AcousticMaterial **m) { return world.raycast(f, t, p, m); });
-	CHECK(r.hit_count == 0); // the wall is behind the listener → no occlusion
+			Vector3(0, 0, 0), Vector3(10, 0, 0), cfg, OCC_RAY(world));
+	CHECK(r.hit_count == 0);
 	CHECK(r.occlusion == doctest::Approx(0.0f));
 }
 
@@ -216,8 +237,7 @@ TEST_CASE("[Symphony][Spatial][Occlusion] Coincident source and listener → cle
 	WallSet world;
 	OcclusionSolver::Config cfg;
 	OcclusionSolver::Result r = OcclusionSolver::compute(
-			Vector3(1, 2, 3), Vector3(1, 2, 3), cfg,
-			[&](const Vector3 &f, const Vector3 &t, Vector3 &p, AcousticMaterial **m) { return world.raycast(f, t, p, m); });
+			Vector3(1, 2, 3), Vector3(1, 2, 3), cfg, OCC_RAY(world));
 	CHECK(r.occlusion == doctest::Approx(0.0f));
 	CHECK(r.hit_count == 0);
 }

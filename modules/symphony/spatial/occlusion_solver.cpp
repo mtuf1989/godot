@@ -40,7 +40,7 @@ OcclusionSolver::Result OcclusionSolver::solve(
 	}
 
 	// Physics-backed raycast functor: intersect_ray + AcousticBody3D material lookup.
-	auto raycast = [&](const Vector3 &from, const Vector3 &to, Vector3 &r_pos, AcousticMaterial **r_mat) -> bool {
+	auto raycast = [&](const Vector3 &from, const Vector3 &to, Vector3 &r_pos, AcousticMaterial **r_mat, uint64_t &r_barrier_id) -> bool {
 		PS3DT::RayParameters ray_params;
 		ray_params.from = from;
 		ray_params.to = to;
@@ -56,6 +56,7 @@ OcclusionSolver::Result OcclusionSolver::solve(
 		}
 		r_pos = ray_result.position;
 		*r_mat = AcousticBody3D::lookup_material(ray_result.collider_id);
+		r_barrier_id = ray_result.collider_id.is_valid() ? (uint64_t)ray_result.collider_id : 0;
 		return true;
 	};
 

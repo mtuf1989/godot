@@ -20,11 +20,11 @@ void occlusion_material_transmission(const AcousticMaterial *p_mat, float &r_low
 // Computes direct-path occlusion and 3-band material transmission between
 // a source and listener using a forward-only ray march (Phase 2.2).
 //
-// The ray marches source → listener, advancing past each surface. A thin plane
-// is one hit; a solid slab is two (entry + exit). Taking sqrt of the accumulated
-// transmission when hit_count > 1 collapses each slab's entry/exit pair back to
-// a single wall attenuation (one wall = t, N walls = tᴺ). This corrects the
-// reference addon's double-counting where one wall resolved to t².
+// The ray marches source → listener, advancing past each surface. Transmission
+// is applied once per distinct physical barrier (collider_id), so a solid slab's
+// entry+exit faces (same collider) count as one wall attenuation, while Godot
+// Physics' start-inside skip (one hit per wall) still yields the correct product
+// across multiple walls. Do not infer pairs from hit_count / sqrt.
 //
 // Uses PhysicsServer3D direct space state queries — no RayCast3D nodes.
 class OcclusionSolver {
@@ -64,11 +64,9 @@ public:
 	// Core direct-path occlusion computation, decoupled from the physics server
 	// via an injectable raycast functor:
 	//   bool p_raycast(const Vector3 &from, const Vector3 &to,
-	//                  Vector3 &r_pos, AcousticMaterial **r_mat)
-	//     → returns true on a hit; on a hit writes the hit position to r_pos and
-	//       the hit collider's AcousticMaterial* (or nullptr for untagged) to
-	//       r_mat. The physics-backed solve() wraps this with an intersect_ray +
-	//       AcousticBody3D::lookup_material; tests hand back synthetic materials.
+	//                  Vector3 &r_pos, AcousticMaterial **r_mat, uint64_t &r_barrier_id)
+	//     → returns true on a hit; writes hit position, material (or nullptr), and a
+	//       stable barrier key (typically collider ObjectID; 0 = anonymous unique hit).
 	template <typename RaycastFn>
 	static Result compute(
 			const Vector3 &p_source,
@@ -87,13 +85,14 @@ public:
 		float accum_mid = 1.0f;
 		float accum_high = 1.0f;
 
-		// Forward-only ray march (Phase 2.2). March source → listener, advancing
-		// the ray origin `ray_offset` past each hit so the next ray continues from
-		// just beyond the last surface. A thin plane is 1 hit (→ t), a thin box is
-		// 2 hits (entry+exit, → t after sqrt), N thick walls are 2N hits (→ tᴺ).
+		// Forward-only ray march. Apply each barrier's material once (entry+exit of
+		// the same collider share one barrier_id → one multiply).
 		Vector3 march_pos = p_source;
 
 		int hit_count = 0;
+		uint64_t seen_barriers[32];
+		int seen_count = 0;
+		uint64_t anon_barrier_seq = 0;
 
 		for (int step = 0; step < p_config.max_hits; step++) {
 			const Vector3 from = march_pos;
@@ -106,7 +105,8 @@ public:
 
 			Vector3 hit_pos;
 			AcousticMaterial *mat = nullptr;
-			bool hit = p_raycast(from, to, hit_pos, &mat);
+			uint64_t barrier_id = 0;
+			bool hit = p_raycast(from, to, hit_pos, &mat, barrier_id);
 			if (!hit) {
 				break; // Clear path to the listener — done.
 			}
@@ -118,6 +118,21 @@ public:
 			}
 
 			hit_count++;
+
+			if (barrier_id == 0) {
+				// Anonymous hit (no collider id): treat each as unique so we do not
+				// accidentally collapse unrelated surfaces.
+				anon_barrier_seq++;
+				barrier_id = ~(anon_barrier_seq); // top-bit pattern, avoid colliding with ObjectIDs
+			}
+
+			bool already_seen = false;
+			for (int s = 0; s < seen_count; s++) {
+				if (seen_barriers[s] == barrier_id) {
+					already_seen = true;
+					break;
+				}
+			}
 
 			float t_low, t_mid, t_high;
 			bool is_total_absorption = false;
@@ -138,9 +153,14 @@ public:
 				t_high = p_config.fallback_transmission_high;
 			}
 
-			accum_low *= t_low;
-			accum_mid *= t_mid;
-			accum_high *= t_high;
+			if (!already_seen) {
+				if (seen_count < (int)(sizeof(seen_barriers) / sizeof(seen_barriers[0]))) {
+					seen_barriers[seen_count++] = barrier_id;
+				}
+				accum_low *= t_low;
+				accum_mid *= t_mid;
+				accum_high *= t_high;
+			}
 
 			if (is_total_absorption) {
 				result.total_absorption_hit = true;
@@ -154,15 +174,6 @@ public:
 		}
 
 		result.hit_count = hit_count;
-
-		// sqrt correction for double-counting wall entry/exit faces. With the
-		// forward-only march, a solid slab is 2 hits and resolves to sqrt(t·t)=t
-		// (one wall = one attenuation), N slabs → 2N hits → tᴺ.
-		if (hit_count > 1 && !result.total_absorption_hit) {
-			accum_low = Math::sqrt(accum_low);
-			accum_mid = Math::sqrt(accum_mid);
-			accum_high = Math::sqrt(accum_high);
-		}
 
 		result.transmission[0] = CLAMP(accum_low, 0.0f, 1.0f);
 		result.transmission[1] = CLAMP(accum_mid, 0.0f, 1.0f);
