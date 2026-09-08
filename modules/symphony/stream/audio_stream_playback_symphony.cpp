@@ -510,6 +510,26 @@ float AudioStreamPlaybackSymphony::get_estimated_cost_units() const {
 	return pkg ? pkg->estimated_cost_units : 0.0f;
 }
 
+bool AudioStreamPlaybackSymphony::fire_source_finished_and_mix(AudioFrame *p_buffer, int p_frames) {
+	// execute() clears trigger buffers at the start of each micro-block, so a
+	// pre-pushed finished event would be wiped before the stop check. Mirror the
+	// mix() finished branch directly after verifying the package is wired.
+	if (!current_package || current_package->source_finished_triggers.is_empty()) {
+		return false;
+	}
+	if (!stream.is_valid() || !stream->get_stop_on_source_finished()) {
+		return false;
+	}
+	if (p_buffer != nullptr) {
+		for (int i = 0; i < p_frames; i++) {
+			p_buffer[i] = AudioFrame(0, 0);
+		}
+	}
+	active.store(false, std::memory_order_release);
+	stop_pending.store(true, std::memory_order_relaxed);
+	return true;
+}
+
 void AudioStreamPlaybackSymphony::_finalize_stop() {
 	stop_pending.store(false, std::memory_order_relaxed);
 

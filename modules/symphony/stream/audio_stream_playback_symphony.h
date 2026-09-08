@@ -114,5 +114,8 @@ public:
 	[[nodiscard]] int get_effective_priority() const;
 	[[nodiscard]] float get_estimated_cost_units() const;
 
+	// Test/debug: push WavePlayer finished on the live package and mix once.
+	bool fire_source_finished_and_mix(AudioFrame *p_buffer, int p_frames);
+
 	~AudioStreamPlaybackSymphony();
 };

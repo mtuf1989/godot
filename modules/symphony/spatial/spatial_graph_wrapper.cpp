@@ -121,7 +121,7 @@ Ref<AudioStreamSymphony> SpatialGraphWrapper::create_spatial_stream(const Ref<Au
 		NodeDesc node;
 		node.id = 5;
 		node.type_name = "GraphInput";
-		node.params["parameter_name"] = String(param_air_cutoff());
+		node.params["parameter_name"] = "spatial_air_cutoff";
 		node.params["default_value"] = 20000.0f;
 		node.params["pin_type"] = 1.0f; // FLOAT
 		desc.nodes.push_back(node);
@@ -132,7 +132,7 @@ Ref<AudioStreamSymphony> SpatialGraphWrapper::create_spatial_stream(const Ref<Au
 		NodeDesc node;
 		node.id = 6;
 		node.type_name = "GraphInput";
-		node.params["parameter_name"] = String(param_occlusion_cutoff());
+		node.params["parameter_name"] = "spatial_occlusion_cutoff";
 		node.params["default_value"] = 20000.0f;
 		node.params["pin_type"] = 1.0f; // FLOAT
 		desc.nodes.push_back(node);
@@ -143,7 +143,7 @@ Ref<AudioStreamSymphony> SpatialGraphWrapper::create_spatial_stream(const Ref<Au
 		NodeDesc node;
 		node.id = 7;
 		node.type_name = "GraphInput";
-		node.params["parameter_name"] = String(param_gain());
+		node.params["parameter_name"] = "spatial_gain";
 		node.params["default_value"] = 1.0f;
 		node.params["pin_type"] = 1.0f; // FLOAT
 		desc.nodes.push_back(node);

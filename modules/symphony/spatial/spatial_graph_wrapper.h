@@ -26,18 +26,9 @@
 class SpatialGraphWrapper {
 public:
 	// Lazy StringName accessors (SNAME) — never construct StringName at static init.
-	static const StringName &param_air_cutoff() {
-		static const StringName n = SNAME("spatial_air_cutoff");
-		return n;
-	}
-	static const StringName &param_occlusion_cutoff() {
-		static const StringName n = SNAME("spatial_occlusion_cutoff");
-		return n;
-	}
-	static const StringName &param_gain() {
-		static const StringName n = SNAME("spatial_gain");
-		return n;
-	}
+	static StringName param_air_cutoff() { return SNAME("spatial_air_cutoff"); }
+	static StringName param_occlusion_cutoff() { return SNAME("spatial_occlusion_cutoff"); }
+	static StringName param_gain() { return SNAME("spatial_gain"); }
 
 	// Create a wrapped AudioStreamSymphony for a 16-bit PCM WAV with a resource path.
 	// Returns null if the stream cannot be loaded by WavePlayer (wrong type/format/path).

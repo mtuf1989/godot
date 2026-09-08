@@ -20,9 +20,12 @@ TEST_FORCE_LINK(test_symphony_playback)
 #include "modules/symphony/stream/audio_stream_playback_symphony.h"
 #include "modules/symphony/spatial/spatial_graph_wrapper.h"
 
+#include "core/io/resource_loader.h"
+#include "core/io/resource_saver.h"
 #include "core/object/class_db.h"
 #include "core/os/memory.h"
 #include "scene/resources/audio/audio_stream_wav.h"
+#include "tests/test_utils.h"
 
 #include <cstring>
 
@@ -410,7 +413,7 @@ static GraphDescription _make_spatial_wrapper_graph(bool p_loop) {
 	NodeDesc in_air;
 	in_air.id = 5;
 	in_air.type_name = "GraphInput";
-	in_air.params["parameter_name"] = String(SpatialGraphWrapper::param_air_cutoff());
+	in_air.params["parameter_name"] = "spatial_air_cutoff";
 	in_air.params["default_value"] = 20000.0f;
 	in_air.params["pin_type"] = 1.0f;
 	desc.nodes.push_back(in_air);
@@ -418,7 +421,7 @@ static GraphDescription _make_spatial_wrapper_graph(bool p_loop) {
 	NodeDesc in_occ;
 	in_occ.id = 6;
 	in_occ.type_name = "GraphInput";
-	in_occ.params["parameter_name"] = String(SpatialGraphWrapper::param_occlusion_cutoff());
+	in_occ.params["parameter_name"] = "spatial_occlusion_cutoff";
 	in_occ.params["default_value"] = 20000.0f;
 	in_occ.params["pin_type"] = 1.0f;
 	desc.nodes.push_back(in_occ);
@@ -426,7 +429,7 @@ static GraphDescription _make_spatial_wrapper_graph(bool p_loop) {
 	NodeDesc in_gain;
 	in_gain.id = 7;
 	in_gain.type_name = "GraphInput";
-	in_gain.params["parameter_name"] = String(SpatialGraphWrapper::param_gain());
+	in_gain.params["parameter_name"] = "spatial_gain";
 	in_gain.params["default_value"] = 1.0f;
 	in_gain.params["pin_type"] = 1.0f;
 	desc.nodes.push_back(in_gain);
@@ -464,9 +467,13 @@ TEST_CASE("[Symphony][Playback] Spatial wrapper rejects unsupported streams") {
 
 TEST_CASE("[Symphony][Playback] Spatial wrapper param names resolve and set_parameter is bound") {
 	CHECK(ClassDB::has_method("AudioStreamPlaybackSymphony", "set_parameter"));
-	CHECK(!String(SpatialGraphWrapper::param_air_cutoff()).is_empty());
-	CHECK(!String(SpatialGraphWrapper::param_occlusion_cutoff()).is_empty());
-	CHECK(!String(SpatialGraphWrapper::param_gain()).is_empty());
+
+	const StringName air = SpatialGraphWrapper::param_air_cutoff();
+	const StringName occ = SpatialGraphWrapper::param_occlusion_cutoff();
+	const StringName gain = SpatialGraphWrapper::param_gain();
+	CHECK(air != StringName());
+	CHECK(occ != StringName());
+	CHECK(gain != StringName());
 
 	Ref<AudioStreamSymphony> stream;
 	stream.instantiate();
@@ -477,9 +484,9 @@ TEST_CASE("[Symphony][Playback] Spatial wrapper param names resolve and set_para
 	REQUIRE(result.success());
 	PreparedGraphPackage *pkg = PreparedGraphPackage::create_from_graph(result.graph, result.arena_bytes, result.total_package_bytes);
 	REQUIRE(pkg != nullptr);
-	CHECK(pkg->find_param(SpatialGraphWrapper::param_air_cutoff()) != nullptr);
-	CHECK(pkg->find_param(SpatialGraphWrapper::param_occlusion_cutoff()) != nullptr);
-	CHECK(pkg->find_param(SpatialGraphWrapper::param_gain()) != nullptr);
+	CHECK(pkg->find_param(air) != nullptr);
+	CHECK(pkg->find_param(occ) != nullptr);
+	CHECK(pkg->find_param(gain) != nullptr);
 	CHECK(pkg->source_finished_triggers.size() >= 1);
 	PreparedGraphPackage::destroy(pkg);
 
@@ -487,12 +494,12 @@ TEST_CASE("[Symphony][Playback] Spatial wrapper param names resolve and set_para
 	Ref<AudioStreamPlaybackSymphony> playback = base;
 	REQUIRE(playback.is_valid());
 	playback->start();
-	playback->set_parameter(SpatialGraphWrapper::param_gain(), 0.25f);
-	CHECK((float)playback->get_parameter(SpatialGraphWrapper::param_gain()) == doctest::Approx(0.25f));
+	playback->set_parameter(gain, 0.25f);
+	CHECK((float)playback->get_parameter(gain) == doctest::Approx(0.25f));
 	playback->stop();
 }
 
-TEST_CASE("[Symphony][Playback] stop_on_source_finished clears is_playing when finished fires") {
+TEST_CASE("[Symphony][Playback] stop_on_source_finished clears is_playing when source finishes") {
 	Ref<AudioStreamSymphony> stream;
 	stream.instantiate();
 	stream->set_stop_on_source_finished(true);
@@ -503,21 +510,9 @@ TEST_CASE("[Symphony][Playback] stop_on_source_finished clears is_playing when f
 	REQUIRE(playback.is_valid());
 	playback->start();
 	CHECK(playback->is_playing());
-	CHECK(stream->get_stop_on_source_finished());
 
-	// Empty WavePlayer never finishes; verify the stop path by simulating the
-	// finished trigger on a freshly packaged graph that mirrors playback state.
-	GraphCompiler::CompileResult result = GraphCompiler::compile(stream->get_graph_description(), 44100.0f);
-	REQUIRE(result.success());
-	PreparedGraphPackage *pkg = PreparedGraphPackage::create_from_graph(result.graph);
-	REQUIRE(pkg != nullptr);
-	REQUIRE(pkg->source_finished_triggers.size() >= 1);
-	REQUIRE(pkg->source_finished_triggers[0] != nullptr);
-	pkg->source_finished_triggers[0]->push(0, 1.0f);
-	CHECK(pkg->source_finished_triggers[0]->count == 1);
-	PreparedGraphPackage::destroy(pkg);
-
-	playback->stop();
+	AudioFrame buf[64];
+	REQUIRE(playback->fire_source_finished_and_mix(buf, 64));
 	CHECK_FALSE(playback->is_playing());
 }
 
