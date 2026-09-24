@@ -1,0 +1,7 @@
+config_version=5
+
+[application]
+config/name="uidtest"
+
+[editor_plugins]
+enabled=PackedStringArray("res://addons/probe/plugin.cfg")

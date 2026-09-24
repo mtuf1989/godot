@@ -1214,6 +1214,9 @@ void OS_MacOS_Headless::run() {
 	@autoreleasepool {
 		ret = Main::start();
 	}
+	if (ret != EXIT_SUCCESS) {
+		set_exit_code(EXIT_FAILURE);
+	}
 
 	if (ret == EXIT_SUCCESS && main_loop) {
 		@autoreleasepool {
@@ -1277,6 +1280,9 @@ void OS_MacOS_Embedded::run() {
 	int ret;
 	@autoreleasepool {
 		ret = Main::start();
+	}
+	if (ret != EXIT_SUCCESS) {
+		set_exit_code(EXIT_FAILURE);
 	}
 
 	DisplayServerMacOSEmbedded *ds = Object::cast_to<DisplayServerMacOSEmbedded>(DisplayServer::get_singleton());

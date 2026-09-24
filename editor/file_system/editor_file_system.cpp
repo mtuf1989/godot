@@ -938,6 +938,8 @@ bool EditorFileSystem::_update_scan_actions() {
 					Ref<FileAccess> f = FileAccess::open(new_file_path + ".uid", FileAccess::WRITE);
 					if (f.is_valid()) {
 						ia.new_file->uid = ResourceUID::get_singleton()->create_id_for_path(new_file_path);
+						// Register the new ID, as update_files() does, so uid:// paths resolve without an editor restart.
+						ResourceUID::get_singleton()->add_id(ia.new_file->uid, new_file_path);
 						f->store_line(ResourceUID::get_singleton()->id_to_text(ia.new_file->uid));
 					}
 				}
