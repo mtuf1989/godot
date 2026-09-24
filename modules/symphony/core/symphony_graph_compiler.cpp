@@ -6,6 +6,7 @@
 #include "symphony_graph_package_retirement.h"
 #include "symphony_realtime_scope.h"
 
+#include <cmath>
 #include <limits>
 
 [[nodiscard]] static size_t pin_buffer_size(SymphonyPinType p_type) {
@@ -39,18 +40,135 @@
 	return cost;
 }
 
-GraphCompiler::CompileResult GraphCompiler::compile(const GraphDescription &p_desc, float p_mix_rate) {
+static const char *_pin_type_name(SymphonyPinType p_type) {
+	switch (p_type) {
+		case SymphonyPinType::AUDIO:
+			return "AUDIO";
+		case SymphonyPinType::FLOAT:
+			return "FLOAT";
+		case SymphonyPinType::INT:
+			return "INT";
+		case SymphonyPinType::BOOL:
+			return "BOOL";
+		case SymphonyPinType::TRIGGER:
+			return "TRIGGER";
+	}
+	return "UNKNOWN";
+}
+
+static void _push_diagnostic(GraphCompiler::CompileResult &r_result, const String &p_path, const String &p_message, int32_t p_node_id, int32_t p_connection_index) {
+	GraphCompiler::CompileDiagnostic diagnostic;
+	diagnostic.resource_path = p_path;
+	diagnostic.message = p_message;
+	diagnostic.node_id = p_node_id;
+	diagnostic.connection_index = p_connection_index;
+	r_result.diagnostics.push_back(diagnostic);
+	if (p_path.is_empty()) {
+		r_result.errors.push_back(p_message);
+	} else {
+		r_result.errors.push_back(vformat("%s: %s", p_path, p_message));
+	}
+}
+
+// Reject malformed graphs before smoothing, anti-alias, or pin indexing.
+static bool _validate_graph_structure(const GraphDescription &p_desc, float p_mix_rate, const String &p_path, const OperatorRegistry *p_registry, GraphCompiler::CompileResult &r_result) {
+	if (!std::isfinite(p_mix_rate) || p_mix_rate <= 0.0f || p_mix_rate > 384000.0f) {
+		_push_diagnostic(r_result, p_path, vformat("Graph mix rate %f is not a finite positive sample rate.", p_mix_rate), -1, -1);
+	}
+	if (!std::isfinite(p_desc.smooth_time_ms) || p_desc.smooth_time_ms < 0.0f || p_desc.smooth_time_ms > 10000.0f) {
+		_push_diagnostic(r_result, p_path, vformat("Graph smooth_time_ms %f is outside 0..10000.", p_desc.smooth_time_ms), -1, -1);
+	}
+	if (p_desc.nodes.is_empty()) {
+		_push_diagnostic(r_result, p_path, "Graph has no nodes.", -1, -1);
+		return false;
+	}
+
+	HashMap<int32_t, int32_t> id_to_index;
+	Vector<const OperatorDescriptor *> node_descs;
+	node_descs.resize(p_desc.nodes.size());
+	for (int32_t i = 0; i < p_desc.nodes.size(); i++) {
+		node_descs.write[i] = nullptr;
+		const NodeDesc &nd = p_desc.nodes[i];
+		if (nd.id < 0) {
+			_push_diagnostic(r_result, p_path, vformat("Node index %d has invalid id %d.", i, nd.id), nd.id, -1);
+			continue;
+		}
+		if (id_to_index.has(nd.id)) {
+			_push_diagnostic(r_result, p_path, vformat("Duplicate node ID: %d", nd.id), nd.id, -1);
+			continue;
+		}
+		id_to_index.insert(nd.id, i);
+		if (nd.type_name == StringName()) {
+			_push_diagnostic(r_result, p_path, vformat("Node %d has an empty operator type.", nd.id), nd.id, -1);
+			continue;
+		}
+		const OperatorDescriptor *desc = p_registry->find(nd.type_name);
+		if (!desc) {
+			_push_diagnostic(r_result, p_path, vformat("Unknown operator type: '%s' (node %d)", String(nd.type_name), nd.id), nd.id, -1);
+			continue;
+		}
+		node_descs.write[i] = desc;
+	}
+
+	HashMap<uint64_t, int32_t> input_owners;
+	for (int32_t c = 0; c < p_desc.connections.size(); c++) {
+		const ConnectionDesc &conn = p_desc.connections[c];
+		if (!id_to_index.has(conn.from_node)) {
+			_push_diagnostic(r_result, p_path, vformat("Connection %d: source node %d not found.", c, conn.from_node), conn.from_node, c);
+			continue;
+		}
+		if (!id_to_index.has(conn.to_node)) {
+			_push_diagnostic(r_result, p_path, vformat("Connection %d: destination node %d not found.", c, conn.to_node), conn.to_node, c);
+			continue;
+		}
+		const int32_t from_index = id_to_index[conn.from_node];
+		const int32_t to_index = id_to_index[conn.to_node];
+		const OperatorDescriptor *from_desc = node_descs[from_index];
+		const OperatorDescriptor *to_desc = node_descs[to_index];
+		if (!from_desc || !to_desc) {
+			continue;
+		}
+		if (conn.from_pin < 0 || conn.from_pin >= from_desc->outputs.size()) {
+			_push_diagnostic(r_result, p_path, vformat("Connection %d: output pin %d out of range on node %d.", c, conn.from_pin, conn.from_node), conn.from_node, c);
+			continue;
+		}
+		if (conn.to_pin < 0 || conn.to_pin >= to_desc->inputs.size()) {
+			_push_diagnostic(r_result, p_path, vformat("Connection %d: input pin %d out of range on node %d.", c, conn.to_pin, conn.to_node), conn.to_node, c);
+			continue;
+		}
+		const SymphonyPinType out_type = from_desc->outputs[conn.from_pin].type;
+		const SymphonyPinType in_type = to_desc->inputs[conn.to_pin].type;
+		const bool type_ok = (out_type == in_type) || (out_type == SymphonyPinType::FLOAT && in_type == SymphonyPinType::AUDIO);
+		if (!type_ok) {
+			_push_diagnostic(r_result, p_path, vformat("Connection %d: type mismatch (%s != %s).", c, _pin_type_name(out_type), _pin_type_name(in_type)), conn.to_node, c);
+			continue;
+		}
+		const uint64_t input_key = ((uint64_t)(uint32_t)conn.to_node << 32) | (uint32_t)conn.to_pin;
+		if (input_owners.has(input_key)) {
+			_push_diagnostic(r_result, p_path, vformat("Connection %d: node %d input pin %d already has connection %d. Use Mix or MathAdd to combine signals.", c, conn.to_node, conn.to_pin, input_owners[input_key]), conn.to_node, c);
+			continue;
+		}
+		input_owners.insert(input_key, c);
+	}
+	return r_result.errors.is_empty();
+}
+
+GraphCompiler::CompileResult GraphCompiler::compile(const GraphDescription &p_desc, float p_mix_rate, const String &p_resource_path) {
 	symphony_rt_note(SymphonyRTViolation::Compile, "GraphCompiler::compile");
 	CompileResult result;
 	const OperatorRegistry *registry = OperatorRegistry::get_singleton();
 
 	if (!registry) {
-		result.errors.push_back("OperatorRegistry not initialized.");
+		_push_diagnostic(result, p_resource_path, "OperatorRegistry not initialized.", -1, -1);
 		return result;
 	}
 
 	// Free retired packages before estimating/reserving (plan §2 / M3).
 	GraphPackageRetirement::drain();
+
+	if (!_validate_graph_structure(p_desc, p_mix_rate, p_resource_path, registry, result)) {
+		return result;
+	}
 
 	// --- Pre-pass A: Parameter smoothing injection ---
 	// If enabled, insert a ParameterSmoother node on every FLOAT→FLOAT connection
@@ -110,7 +228,7 @@ GraphCompiler::CompileResult GraphCompiler::compile(const GraphDescription &p_de
 			if (!from_desc) {
 				continue;
 			}
-			if (conn.from_pin >= from_desc->outputs.size()) {
+			if (conn.from_pin < 0 || conn.from_pin >= from_desc->outputs.size()) {
 				continue;
 			}
 			if (from_desc->outputs[conn.from_pin].type != SymphonyPinType::FLOAT) {
@@ -132,7 +250,7 @@ GraphCompiler::CompileResult GraphCompiler::compile(const GraphDescription &p_de
 			if (!to_desc) {
 				continue;
 			}
-			if (conn.to_pin >= to_desc->inputs.size()) {
+			if (conn.to_pin < 0 || conn.to_pin >= to_desc->inputs.size()) {
 				continue;
 			}
 			if (to_desc->inputs[conn.to_pin].type != SymphonyPinType::FLOAT) {
@@ -223,7 +341,7 @@ GraphCompiler::CompileResult GraphCompiler::compile(const GraphDescription &p_de
 			if (!from_nd) continue;
 			const OperatorDescriptor *from_desc = registry->find(from_nd->type_name);
 			if (!from_desc) continue;
-			if (conn.from_pin >= from_desc->outputs.size()) continue;
+			if (conn.from_pin < 0 || conn.from_pin >= from_desc->outputs.size()) continue;
 			if (from_desc->outputs[conn.from_pin].type != SymphonyPinType::AUDIO) continue;
 
 			// Inject a synthetic BiquadFilter node.

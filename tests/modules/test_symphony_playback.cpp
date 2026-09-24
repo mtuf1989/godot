@@ -25,8 +25,10 @@ TEST_FORCE_LINK(test_symphony_playback)
 #include "core/object/class_db.h"
 #include "core/os/memory.h"
 #include "scene/resources/audio/audio_stream_wav.h"
+#include "servers/audio/audio_server.h"
 #include "tests/test_utils.h"
 
+#include <cmath>
 #include <cstring>
 
 namespace TestSymphonyPlayback {
@@ -514,6 +516,131 @@ TEST_CASE("[Symphony][Playback] stop_on_source_finished clears is_playing when s
 	AudioFrame buf[64];
 	REQUIRE(playback->fire_source_finished_and_mix(buf, 64));
 	CHECK_FALSE(playback->is_playing());
+	CHECK(playback->is_registered_with_voice_manager());
+
+	SymphonyVoiceManager *mgr = SymphonyVoiceManager::get_singleton();
+	REQUIRE(mgr != nullptr);
+	if (AudioServer::get_singleton()) {
+		CHECK(mgr->is_mix_callback_registered());
+	}
+	mgr->enforce_voice_limits();
+	CHECK(playback->is_registered_with_voice_manager());
+	mgr->enforce_voice_limits();
+	mgr->process_deferred_lod();
+	CHECK_FALSE(playback->is_registered_with_voice_manager());
+}
+
+static GraphDescription _make_sine_graph() {
+	GraphDescription desc;
+	desc.smooth_parameters = false;
+	desc.anti_alias_staircase = false;
+	NodeDesc osc;
+	osc.id = 1;
+	osc.type_name = "Oscillator";
+	osc.params.insert("frequency", 440.0f);
+	osc.params.insert("waveform", 0.0f);
+	desc.nodes.push_back(osc);
+	NodeDesc out;
+	out.id = 2;
+	out.type_name = "GraphOutput";
+	desc.nodes.push_back(out);
+	ConnectionDesc conn;
+	conn.from_node = 1;
+	conn.from_pin = 0;
+	conn.to_node = 2;
+	conn.to_pin = 0;
+	desc.connections.push_back(conn);
+	return desc;
+}
+
+static float _measure_hz(const Vector<AudioFrame> &p_frames, int p_start, float p_rate) {
+	int crossings = 0;
+	const int last = p_frames.size() - 1;
+	for (int i = p_start + 1; i <= last; i++) {
+		const float previous = p_frames[i - 1].left;
+		const float sample = p_frames[i].left;
+		if ((previous <= 0.0f && sample > 0.0f) || (previous >= 0.0f && sample < 0.0f)) {
+			crossings++;
+		}
+	}
+	const int measured = last - p_start;
+	if (measured <= 0 || p_rate <= 0.0f) {
+		return 0.0f;
+	}
+	return (float)crossings * 0.5f * p_rate / (float)measured;
+}
+
+TEST_CASE("[Symphony][Playback][Audio] Resampling keeps 440 Hz across graph rates and pitch") {
+	AudioServer *server = AudioServer::get_singleton();
+	REQUIRE(server != nullptr);
+	const float output_rate = server->get_mix_rate();
+	REQUIRE(output_rate > 0.0f);
+	const float graph_rates[3] = { 44100.0f, 48000.0f, 96000.0f };
+	const float pitches[2] = { 1.0f, 2.0f };
+	const float expected[2] = { 440.0f, 880.0f };
+	const float tolerance[2] = { 1.0f, 2.0f };
+
+	for (float graph_rate : graph_rates) {
+		for (int pitch_index = 0; pitch_index < 2; pitch_index++) {
+			Ref<AudioStreamSymphony> stream;
+			stream.instantiate();
+			stream->set_mix_rate(graph_rate);
+			stream->set_graph_description(_make_sine_graph());
+			Ref<AudioStreamPlayback> base = stream->instantiate_playback();
+			Ref<AudioStreamPlaybackSymphony> playback = base;
+			REQUIRE(playback.is_valid());
+			playback->start();
+
+			const int total = (int)output_rate * 2;
+			Vector<AudioFrame> captured;
+			captured.resize(total);
+			int filled = 0;
+			AudioFrame chunk[512];
+			while (filled < total) {
+				const int got = playback->mix(chunk, pitches[pitch_index], 512);
+				if (got <= 0) {
+					break;
+				}
+				for (int i = 0; i < got && filled < total; i++) {
+					captured.write[filled++] = chunk[i];
+				}
+			}
+			CHECK(filled == total);
+			const int skip = MIN(filled / 4, (int)output_rate / 4);
+			const float hz = _measure_hz(captured, skip, output_rate);
+			CHECK(std::abs(hz - expected[pitch_index]) <= tolerance[pitch_index]);
+
+			const double position_before = playback->get_playback_position();
+			CHECK(position_before > 0.5);
+			playback->mix(chunk, pitches[pitch_index], 512);
+			CHECK(playback->get_playback_position() > position_before);
+			playback->seek(1.25);
+			CHECK(playback->has_unsupported_seek());
+			playback->stop();
+		}
+	}
+}
+
+TEST_CASE("[Symphony][Playback] Duration limit ends a one-shot") {
+	Ref<AudioStreamSymphony> stream;
+	stream.instantiate();
+	stream->set_mix_rate(44100.0f);
+	stream->set_duration_limit_seconds(0.05);
+	stream->set_graph_description(_make_sine_graph());
+	Ref<AudioStreamPlayback> base = stream->instantiate_playback();
+	Ref<AudioStreamPlaybackSymphony> playback = base;
+	REQUIRE(playback.is_valid());
+	playback->start();
+	AudioFrame chunk[256];
+	int guard = 0;
+	while (playback->is_playing() && guard < 100) {
+		playback->mix(chunk, 1.0f, 256);
+		guard++;
+	}
+	CHECK_FALSE(playback->is_playing());
+	CHECK(playback->get_playback_position() >= 0.05);
+	CHECK(playback->get_playback_position() < 0.2);
+	playback->stop();
 }
 
 } // namespace TestSymphonyPlayback

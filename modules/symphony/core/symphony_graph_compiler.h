@@ -4,15 +4,25 @@
 #include "symphony_compiled_graph.h"
 #include "symphony_operator_registry.h"
 #include "core/string/ustring.h"
+#include "core/variant/dictionary.h"
 
 // Compiles a GraphDescription into a CompiledGraph ready for audio-thread execution.
 // All work happens on the main thread. The output CompiledGraph is then atomically
 // published to the audio thread.
 class GraphCompiler {
 public:
+	struct CompileDiagnostic {
+		String resource_path;
+		String message;
+		int32_t node_id = -1;
+		int32_t connection_index = -1;
+		bool warning = false;
+	};
+
 	struct CompileResult {
 		CompiledGraph *graph = nullptr; // Owned by caller. nullptr on failure.
 		Vector<String> errors;
+		Vector<CompileDiagnostic> diagnostics;
 
 		// Exact package accounting (populated on success and on size-calculation failure).
 		size_t arena_bytes = 0; // Arena capacity that will be / was allocated
@@ -28,5 +38,6 @@ public:
 
 	// Compile a graph description into an executable CompiledGraph.
 	// p_mix_rate: the audio sample rate (needed by operators for rate-dependent calculations).
-	static CompileResult compile(const GraphDescription &p_desc, float p_mix_rate);
+	// p_resource_path: included in structured diagnostics. Empty for anonymous graphs.
+	static CompileResult compile(const GraphDescription &p_desc, float p_mix_rate, const String &p_resource_path = String());
 };

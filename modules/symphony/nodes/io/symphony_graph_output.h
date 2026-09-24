@@ -3,6 +3,7 @@
 #include "../../core/symphony_operator.h"
 #include "../../core/symphony_operator_registry.h"
 #include "../../core/symphony_arena_allocator.h"
+#include "../../core/symphony_trigger.h"
 #include "scene/resources/audio/audio_stream.h"
 
 // Final output node: copies mono input to stereo AudioFrame buffer (L = R = mono).
@@ -11,6 +12,7 @@
 class SymphonyGraphOutput : public SymphonyOperator {
 private:
 	const float *SYMPHONY_RESTRICT input = nullptr;
+	const TriggerBuffer *finish = nullptr;
 	AudioFrame *output_frames = nullptr;
 	int32_t output_offset = 0;
 
@@ -19,7 +21,10 @@ public:
 
 	virtual void bind_pins(void **p_input_ptrs, void **p_output_ptrs) override {
 		input = (const float *)p_input_ptrs[0];
+		finish = (const TriggerBuffer *)p_input_ptrs[1];
 	}
+
+	[[nodiscard]] const TriggerBuffer *get_finish_trigger() const { return finish; }
 
 	void set_output(AudioFrame *p_frames, int32_t p_offset) {
 		output_frames = p_frames;
@@ -43,6 +48,7 @@ public:
 		desc.type_name = "GraphOutput";
 		desc.category = "I/O";
 		desc.inputs.push_back({ "input", SymphonyPinType::AUDIO, true });
+		desc.inputs.push_back({ "finish", SymphonyPinType::TRIGGER, false });
 		desc.params.push_back({ "pin_type", 0.0f, 0.0f, 4.0f, 1.0f }); // 0=AUDIO,1=FLOAT,2=INT,3=BOOL,4=TRIGGER
 		desc.params.push_back({ "sort_order", 0.0f, -1000.0f, 1000.0f, 1.0f });
 		desc.params.push_back({ "display_name", 0.0f, 0.0f, 0.0f, 0.0f }); // String stored via node params

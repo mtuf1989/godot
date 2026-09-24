@@ -7,6 +7,7 @@
 #include "../core/symphony_realtime_scope.h"
 #include "core/object/class_db.h"
 #include "core/os/thread.h"
+#include "servers/audio/audio_server.h"
 
 #include <cmath>
 
@@ -37,6 +38,7 @@ void AudioStreamPlaybackSymphony::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_voice_cpu_microseconds"), &AudioStreamPlaybackSymphony::get_voice_cpu_microseconds);
 	ClassDB::bind_method(D_METHOD("get_budget_percent"), &AudioStreamPlaybackSymphony::get_budget_percent);
 	ClassDB::bind_method(D_METHOD("get_last_rms"), &AudioStreamPlaybackSymphony::get_last_rms);
+	ClassDB::bind_method(D_METHOD("has_unsupported_seek"), &AudioStreamPlaybackSymphony::has_unsupported_seek);
 }
 
 void AudioStreamPlaybackSymphony::_install_package(PreparedGraphPackage *p_package) {
@@ -89,8 +91,9 @@ AudioStreamPlaybackSymphony::AdmitResult AudioStreamPlaybackSymphony::_try_admit
 		return AdmitResult::Denied;
 	}
 	float incoming_cost = p_incoming ? p_incoming->estimated_cost_units : 0.0f;
-	const int frames = last_frame_count > 0 ? last_frame_count : 512;
-	float estimated_add = mgr->estimate_cpu_fraction_for_cost(incoming_cost, mix_rate_cached, frames);
+	const int frames = last_output_frames > 0 ? last_output_frames : 512;
+	const float budget_rate = output_rate_cached > 0.0f ? output_rate_cached : mix_rate_cached;
+	float estimated_add = mgr->estimate_cpu_fraction_for_cost(incoming_cost, budget_rate, frames);
 	if (cpu_fraction + estimated_add >= mgr->get_warning_threshold()) {
 		return AdmitResult::Denied;
 	}
@@ -165,6 +168,14 @@ void AudioStreamPlaybackSymphony::_cache_stream_metadata() {
 	mix_rate_cached = stream->get_mix_rate();
 	cached_priority = stream->get_voice_priority();
 	cached_max_lod = MAX(0, stream->get_lod_count() - 1);
+	cached_duration_limit = stream->get_duration_limit_seconds();
+	output_rate_cached = mix_rate_cached;
+	if (AudioServer::get_singleton()) {
+		const float server_rate = AudioServer::get_singleton()->get_mix_rate();
+		if (server_rate > 0.0f) {
+			output_rate_cached = server_rate;
+		}
+	}
 }
 
 void AudioStreamPlaybackSymphony::request_lod_tier(int32_t p_lod_tier) {
@@ -189,8 +200,79 @@ void AudioStreamPlaybackSymphony::process_manager_requests() {
 	}
 }
 
+void AudioStreamPlaybackSymphony::_register_with_manager() {
+	if (registered_with_manager) {
+		return;
+	}
+	SymphonyVoiceManager *mgr = SymphonyVoiceManager::get_singleton();
+	if (mgr && mgr->register_voice(this)) {
+		registered_with_manager = true;
+	}
+}
+
+void AudioStreamPlaybackSymphony::_arm_release_grace() {
+	bool expected = false;
+	if (!release_pending.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+		return;
+	}
+	release_grace.store(RELEASE_GRACE_CALLBACKS, std::memory_order_release);
+	if (!registered_with_manager && Thread::is_main_thread()) {
+		_finalize_stop();
+		release_pending.store(false, std::memory_order_release);
+	}
+}
+
+void AudioStreamPlaybackSymphony::_report_unsupported_seek() {
+	unsupported_seek.store(true, std::memory_order_release);
+	ERR_PRINT("Symphony procedural playback does not support seeking. Start the voice at the selected beat or bar instead.");
+}
+
+bool AudioStreamPlaybackSymphony::_source_or_graph_finished() const {
+	if (!current_package) {
+		return false;
+	}
+	if (stream.is_valid() && stream->get_stop_on_source_finished()) {
+		for (int t = 0; t < current_package->source_finished_triggers.size(); t++) {
+			const TriggerBuffer *buf = current_package->source_finished_triggers[t];
+			if (buf != nullptr && buf->count > 0) {
+				return true;
+			}
+		}
+	}
+	for (int t = 0; t < current_package->finish_triggers.size(); t++) {
+		const TriggerBuffer *buf = current_package->finish_triggers[t];
+		if (buf != nullptr && buf->count > 0) {
+			return true;
+		}
+	}
+	return false;
+}
+
+bool AudioStreamPlaybackSymphony::tick_release_grace() {
+	if (!release_pending.load(std::memory_order_acquire)) {
+		return false;
+	}
+	int32_t left = release_grace.load(std::memory_order_relaxed);
+	if (left > 0) {
+		left = release_grace.fetch_sub(1, std::memory_order_acq_rel) - 1;
+	}
+	if (left <= 0) {
+		release_ready.store(true, std::memory_order_release);
+		return true;
+	}
+	return false;
+}
+
 void AudioStreamPlaybackSymphony::start(double p_from_pos) {
+	if (p_from_pos != 0.0) {
+		_report_unsupported_seek();
+	}
 	active.store(true, std::memory_order_release);
+	release_pending.store(false, std::memory_order_release);
+	release_ready.store(false, std::memory_order_release);
+	release_grace.store(0, std::memory_order_release);
+	position_us.store(0, std::memory_order_release);
+	stop_pending.store(false, std::memory_order_release);
 	_cache_stream_metadata();
 	PreparedGraphPackage *pending = pending_package.exchange(nullptr, std::memory_order_acquire);
 	if (pending) {
@@ -212,18 +294,29 @@ void AudioStreamPlaybackSymphony::start(double p_from_pos) {
 		}
 	}
 
-#ifndef TOOLS_ENABLED
-	SymphonyVoiceManager *mgr = SymphonyVoiceManager::get_singleton();
-	if (mgr) {
-		mgr->register_voice(this);
-		registered_with_manager = true;
+	begin_resample();
+	if (active.load(std::memory_order_acquire)) {
+		_register_with_manager();
+	} else if (Thread::is_main_thread()) {
+		_finalize_stop();
 	}
-#endif
 }
 
 void AudioStreamPlaybackSymphony::stop() {
 	active.store(false, std::memory_order_release);
+	release_pending.store(false, std::memory_order_release);
+	release_ready.store(false, std::memory_order_release);
+	release_grace.store(0, std::memory_order_release);
+	stop_pending.store(true, std::memory_order_relaxed);
 
+	if (!Thread::is_main_thread()) {
+		_arm_release_grace();
+		return;
+	}
+
+	// Keep this object alive across unregister. Dropping the manager's ref can
+	// be the last reference when a player has already released the playback.
+	Ref<AudioStreamPlaybackSymphony> self_hold(this);
 	if (registered_with_manager) {
 		SymphonyVoiceManager *mgr = SymphonyVoiceManager::get_singleton();
 		if (mgr) {
@@ -231,8 +324,7 @@ void AudioStreamPlaybackSymphony::stop() {
 		}
 		registered_with_manager = false;
 	}
-
-	stop_pending.store(true, std::memory_order_relaxed);
+	_finalize_stop();
 }
 
 bool AudioStreamPlaybackSymphony::is_playing() const {
@@ -244,22 +336,23 @@ int AudioStreamPlaybackSymphony::get_loop_count() const {
 }
 
 double AudioStreamPlaybackSymphony::get_playback_position() const {
-	return 0.0;
+	return (double)position_us.load(std::memory_order_acquire) / 1000000.0;
 }
 
 void AudioStreamPlaybackSymphony::seek(double p_time) {
+	if (p_time != 0.0) {
+		_report_unsupported_seek();
+	}
 }
 
-int AudioStreamPlaybackSymphony::mix(AudioFrame *p_buffer, float p_rate_scale, int p_frames) {
-	SymphonyRealtimeScope rt_scope;
-	if (!active.load(std::memory_order_acquire)) {
-		if (stop_pending.load(std::memory_order_relaxed)) {
-			_finalize_stop();
-		}
+float AudioStreamPlaybackSymphony::get_stream_sampling_rate() {
+	return mix_rate_cached > 0.0f ? mix_rate_cached : 44100.0f;
+}
+
+int AudioStreamPlaybackSymphony::_mix_internal(AudioFrame *p_buffer, int p_frames) {
+	if (!active.load(std::memory_order_acquire) || p_frames <= 0) {
 		return 0;
 	}
-
-	uint64_t t_start = symphony_time_usec();
 
 	PreparedGraphPackage *pending = pending_package.exchange(nullptr, std::memory_order_acquire);
 	if (pending) {
@@ -368,43 +461,77 @@ int AudioStreamPlaybackSymphony::mix(AudioFrame *p_buffer, float p_rate_scale, i
 
 		frames_processed += chunk;
 
-		// Wrapped one-shots: WavePlayer finished → stop outer playback so voice cleanup runs.
-		if (stream.is_valid() && stream->get_stop_on_source_finished() && current_package) {
-			bool source_finished = false;
-			for (int t = 0; t < current_package->source_finished_triggers.size(); t++) {
-				const TriggerBuffer *buf = current_package->source_finished_triggers[t];
-				if (buf != nullptr && buf->count > 0) {
-					source_finished = true;
-					break;
-				}
+		if (_source_or_graph_finished()) {
+			for (int i = frames_processed; i < p_frames; i++) {
+				p_buffer[i] = AudioFrame(0, 0);
 			}
-			if (source_finished) {
-				for (int i = frames_processed; i < p_frames; i++) {
-					p_buffer[i] = AudioFrame(0, 0);
-				}
-				active.store(false, std::memory_order_release);
-				stop_pending.store(true, std::memory_order_relaxed);
-				frames_processed = p_frames;
-				break;
-			}
+			active.store(false, std::memory_order_release);
+			stop_pending.store(true, std::memory_order_relaxed);
+			break;
 		}
 	}
 
-	uint64_t t_end = symphony_time_usec();
-	last_mix_time_us = (float)(t_end - t_start);
-	last_frame_count = frames_processed;
+	return frames_processed;
+}
 
+int AudioStreamPlaybackSymphony::mix(AudioFrame *p_buffer, float p_rate_scale, int p_frames) {
+	SymphonyRealtimeScope rt_scope;
+	if (!active.load(std::memory_order_acquire) || p_frames <= 0) {
+		return 0;
+	}
+
+	const uint64_t t_start = symphony_time_usec();
+	int mixed = 0;
+	float out_rate = output_rate_cached > 0.0f ? output_rate_cached : mix_rate_cached;
+	float speed = p_rate_scale;
+	if (AudioServer::get_singleton()) {
+		mixed = AudioStreamPlaybackResampled::mix(p_buffer, p_rate_scale, p_frames);
+		const float server_rate = AudioServer::get_singleton()->get_mix_rate();
+		if (server_rate > 0.0f) {
+			out_rate = server_rate;
+			output_rate_cached = server_rate;
+		}
+		speed *= AudioServer::get_singleton()->get_playback_speed_scale();
+	} else {
+		// Native unit tests mix without an audio device. Generate at the graph rate;
+		// device-rate resampling runs when AudioServer is alive.
+		out_rate = mix_rate_cached > 0.0f ? mix_rate_cached : 44100.0f;
+		output_rate_cached = out_rate;
+		mixed = _mix_internal(p_buffer, p_frames);
+	}
+	last_mix_time_us = (float)(symphony_time_usec() - t_start);
+	last_output_frames = p_frames;
+	last_frame_count = p_frames;
+
+	if (out_rate <= 0.0f) {
+		out_rate = 44100.0f;
+	}
+	if (mixed > 0 && speed > 0.0f) {
+		const double add_us = ((double)mixed / (double)out_rate) * (double)speed * 1000000.0;
+		if (add_us > 0.0) {
+			position_us.fetch_add((uint64_t)add_us, std::memory_order_acq_rel);
+		}
+	}
+	if (cached_duration_limit > 0.0 && (double)position_us.load(std::memory_order_acquire) / 1000000.0 >= cached_duration_limit) {
+		active.store(false, std::memory_order_release);
+		stop_pending.store(true, std::memory_order_relaxed);
+	}
+
+	const int rms_frames = mixed > 0 ? mixed : 0;
 	float sum_sq = 0.0f;
-	for (int i = 0; i < frames_processed; i++) {
+	for (int i = 0; i < rms_frames; i++) {
 		sum_sq += p_buffer[i].left * p_buffer[i].left + p_buffer[i].right * p_buffer[i].right;
 	}
-	float rms_candidate = frames_processed > 0 ? sqrtf(sum_sq / (2.0f * (float)frames_processed)) : 0.0f;
+	float rms_candidate = rms_frames > 0 ? sqrtf(sum_sq / (2.0f * (float)rms_frames)) : 0.0f;
 	if (unlikely(std::isnan(rms_candidate) || std::isinf(rms_candidate))) {
 		rms_candidate = 0.0f;
 	}
 	last_rms = rms_candidate;
 
-	return frames_processed;
+	if (!active.load(std::memory_order_acquire)) {
+		_arm_release_grace();
+	}
+	return mixed > 0 ? mixed : 0;
 }
 
 void AudioStreamPlaybackSymphony::swap_graph(CompiledGraph *p_graph) {
@@ -490,10 +617,14 @@ float AudioStreamPlaybackSymphony::get_voice_cpu_microseconds() const {
 }
 
 float AudioStreamPlaybackSymphony::get_budget_percent() const {
-	if (last_frame_count == 0 || mix_rate_cached == 0.0f) {
+	const float rate = output_rate_cached > 0.0f ? output_rate_cached : mix_rate_cached;
+	if (last_output_frames <= 0 || rate <= 0.0f) {
 		return 0.0f;
 	}
-	float deadline_us = (float)last_frame_count / mix_rate_cached * 1e6f;
+	const float deadline_us = (float)last_output_frames / rate * 1e6f;
+	if (deadline_us <= 0.0f) {
+		return 0.0f;
+	}
 	return (last_mix_time_us / deadline_us) * 100.0f;
 }
 
@@ -527,6 +658,7 @@ bool AudioStreamPlaybackSymphony::fire_source_finished_and_mix(AudioFrame *p_buf
 	}
 	active.store(false, std::memory_order_release);
 	stop_pending.store(true, std::memory_order_relaxed);
+	_arm_release_grace();
 	return true;
 }
 
@@ -549,11 +681,17 @@ void AudioStreamPlaybackSymphony::_finalize_stop() {
 }
 
 AudioStreamPlaybackSymphony::~AudioStreamPlaybackSymphony() {
-	if (active.load(std::memory_order_acquire) && registered_with_manager) {
+	if (registered_with_manager) {
 		SymphonyVoiceManager *mgr = SymphonyVoiceManager::get_singleton();
 		if (mgr) {
-			mgr->unregister_voice(this);
+			mgr->abandon_voice_for_destructor(this);
 		}
+		registered_with_manager = false;
+	}
+	if (!Thread::is_main_thread()) {
+		_finalize_stop();
+		_release_crossfade_token();
+		return;
 	}
 	_release_crossfade_token();
 	if (outgoing_package) {

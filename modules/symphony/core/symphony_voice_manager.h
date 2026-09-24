@@ -1,13 +1,14 @@
 #pragma once
 
 #include "core/object/object.h"
+#include "servers/audio/audio_server.h"
 #include "core/object/class_db.h"
+#include "core/os/mutex.h"
 #include "core/templates/safe_list.h"
 #include "core/variant/dictionary.h"
+#include "../stream/audio_stream_playback_symphony.h"
 #include <atomic>
 #include <cstdint>
-
-class AudioStreamPlaybackSymphony;
 
 // Singleton that tracks all active Symphony voices and provides global metrics.
 // Lock-free design:
@@ -21,7 +22,11 @@ class SymphonyVoiceManager : public Object {
 	static SymphonyVoiceManager *singleton;
 
 	// Lock-free voice list: main thread inserts/erases, audio thread iterates.
+	// voice_lifetime_mutex serializes that list with graph destruction so a mix
+	// callback cannot dereference a playback the main thread is releasing.
 	SafeList<AudioStreamPlaybackSymphony *> active_voices;
+	Vector<Ref<AudioStreamPlaybackSymphony>> retained_voices;
+	Mutex voice_lifetime_mutex;
 
 	int32_t max_voices = 0; // 0 = unlimited
 	float warning_threshold = 0.70f;
@@ -48,9 +53,12 @@ class SymphonyVoiceManager : public Object {
 	std::atomic<uint64_t> metric_fallback_transitions{ 0 };
 
 	bool update_callback_registered = false;
+	bool mix_callback_registered = false;
+	AudioServer *mix_callback_server = nullptr;
 
 	static void _mix_callback(void *p_userdata);
 	static void _update_callback(void *p_userdata);
+	void _ensure_mix_callback();
 
 protected:
 	static void _bind_methods();
@@ -58,8 +66,12 @@ protected:
 public:
 	static SymphonyVoiceManager *get_singleton() { return singleton; }
 
-	void register_voice(AudioStreamPlaybackSymphony *p_voice);
+	// Returns true when the voice is tracked. Editor UI sessions do not track voices.
+	bool register_voice(AudioStreamPlaybackSymphony *p_voice);
 	void unregister_voice(AudioStreamPlaybackSymphony *p_voice);
+	// Playback destructor fallback: drop the list entry without touching refcount.
+	void abandon_voice_for_destructor(AudioStreamPlaybackSymphony *p_voice);
+	[[nodiscard]] bool is_mix_callback_registered() const { return mix_callback_registered; }
 
 	// Lock-free getters — read atomic metrics snapshot, no mutex.
 	[[nodiscard]] int32_t get_active_voice_count() const;

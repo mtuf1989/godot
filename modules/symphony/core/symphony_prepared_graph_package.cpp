@@ -55,6 +55,9 @@ PreparedGraphPackage *PreparedGraphPackage::create_from_graph(CompiledGraph *p_g
 		}
 		if (auto *gout = dynamic_cast<SymphonyGraphOutput *>(op)) {
 			pkg->graph_output = gout;
+			if (const TriggerBuffer *finish = gout->get_finish_trigger()) {
+				pkg->finish_triggers.push_back(finish);
+			}
 		}
 		if (auto *wp = dynamic_cast<SymphonyWavePlayer *>(op)) {
 			TriggerBuffer *finished = wp->get_finished_output();

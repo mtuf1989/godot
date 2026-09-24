@@ -5,6 +5,7 @@
 #include "symphony_memory_budget.h"
 #include "symphony_graph_package_retirement.h"
 #include "symphony_realtime_scope.h"
+#include "core/config/engine.h"
 #include "core/object/class_db.h"
 #include "core/object/object.h"
 #include "core/variant/dictionary.h"
@@ -43,30 +44,58 @@ void SymphonyVoiceManager::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "critical_threshold"), "set_critical_threshold", "get_critical_threshold");
 }
 
+static bool _symphony_editor_ui_session() {
+	Engine *engine = Engine::get_singleton();
+	return engine && engine->is_editor_hint();
+}
+
 SymphonyVoiceManager::SymphonyVoiceManager() {
 	singleton = this;
-#ifndef TOOLS_ENABLED
-	if (AudioServer::get_singleton()) {
-		AudioServer::get_singleton()->add_mix_callback(_mix_callback, this);
-	}
-#endif
 	if (AudioServer::get_singleton()) {
 		AudioServer::get_singleton()->add_update_callback(_update_callback, this);
 		update_callback_registered = true;
+		// Editor-launched games are still TOOLS_ENABLED binaries, but editor_hint is false.
+		// Budget management has to run there as well as in exports. The editor UI itself does not.
+		_ensure_mix_callback();
 	}
 }
 
-SymphonyVoiceManager::~SymphonyVoiceManager() {
-#ifndef TOOLS_ENABLED
-	if (AudioServer::get_singleton()) {
-		AudioServer::get_singleton()->remove_mix_callback(_mix_callback, this);
+void SymphonyVoiceManager::_ensure_mix_callback() {
+	if (_symphony_editor_ui_session()) {
+		return;
 	}
-#endif
+	AudioServer *server = AudioServer::get_singleton();
+	if (!server) {
+		return;
+	}
+	if (mix_callback_registered && mix_callback_server == server) {
+		return;
+	}
+	server->add_mix_callback(_mix_callback, this);
+	mix_callback_registered = true;
+	mix_callback_server = server;
+}
+
+SymphonyVoiceManager::~SymphonyVoiceManager() {
+	if (mix_callback_registered && mix_callback_server && AudioServer::get_singleton() == mix_callback_server) {
+		mix_callback_server->remove_mix_callback(_mix_callback, this);
+		mix_callback_registered = false;
+		mix_callback_server = nullptr;
+	}
 	if (update_callback_registered && AudioServer::get_singleton()) {
 		AudioServer::get_singleton()->remove_update_callback(_update_callback, this);
 		update_callback_registered = false;
 	}
 	singleton = nullptr;
+	{
+		MutexLock lock(voice_lifetime_mutex);
+		for (Ref<AudioStreamPlaybackSymphony> &voice : retained_voices) {
+			if (voice.is_valid()) {
+				voice->registered_with_manager = false;
+			}
+		}
+	}
+	retained_voices.clear();
 }
 
 void SymphonyVoiceManager::_mix_callback(void *p_userdata) {
@@ -80,13 +109,49 @@ void SymphonyVoiceManager::_update_callback(void *p_userdata) {
 	mgr->process_deferred_lod();
 }
 
-void SymphonyVoiceManager::register_voice(AudioStreamPlaybackSymphony *p_voice) {
+bool SymphonyVoiceManager::register_voice(AudioStreamPlaybackSymphony *p_voice) {
+	if (!p_voice || _symphony_editor_ui_session()) {
+		return false;
+	}
+	_ensure_mix_callback();
+	MutexLock lock(voice_lifetime_mutex);
+	for (const Ref<AudioStreamPlaybackSymphony> &held : retained_voices) {
+		if (held.ptr() == p_voice) {
+			return true;
+		}
+	}
 	symphony_rt_note(SymphonyRTViolation::ContainerMutation, "SymphonyVoiceManager::register_voice");
 	active_voices.insert(p_voice);
+	retained_voices.push_back(Ref<AudioStreamPlaybackSymphony>(p_voice));
+	return true;
 }
 
 void SymphonyVoiceManager::unregister_voice(AudioStreamPlaybackSymphony *p_voice) {
-	symphony_rt_note(SymphonyRTViolation::ContainerMutation, "SymphonyVoiceManager::unregister_voice");
+	if (!p_voice) {
+		return;
+	}
+	Ref<AudioStreamPlaybackSymphony> dropped;
+	{
+		MutexLock lock(voice_lifetime_mutex);
+		symphony_rt_note(SymphonyRTViolation::ContainerMutation, "SymphonyVoiceManager::unregister_voice");
+		active_voices.erase(p_voice);
+		p_voice->registered_with_manager = false;
+		for (int32_t i = 0; i < retained_voices.size(); i++) {
+			if (retained_voices[i].ptr() == p_voice) {
+				dropped = retained_voices[i];
+				retained_voices.remove_at(i);
+				break;
+			}
+		}
+	}
+	dropped.unref();
+}
+
+void SymphonyVoiceManager::abandon_voice_for_destructor(AudioStreamPlaybackSymphony *p_voice) {
+	if (!p_voice) {
+		return;
+	}
+	MutexLock lock(voice_lifetime_mutex);
 	active_voices.erase(p_voice);
 }
 
@@ -95,11 +160,34 @@ void SymphonyVoiceManager::process_deferred_lod() {
 	// At most one LOD compilation per update to avoid allocation bursts (plan §5).
 	symphony_rt_note(SymphonyRTViolation::ObjectDB, "SymphonyVoiceManager::process_deferred_lod");
 	symphony_rt_note(SymphonyRTViolation::ContainerMutation, "SymphonyVoiceManager::process_deferred_lod");
-	bool lod_compiled = false;
 
-	for (auto it = active_voices.begin(); it != active_voices.end(); ++it) {
-		AudioStreamPlaybackSymphony *v = *it;
-		if (!v) {
+	Vector<AudioStreamPlaybackSymphony *> ready_to_release;
+	Vector<AudioStreamPlaybackSymphony *> live;
+	{
+		MutexLock lock(voice_lifetime_mutex);
+		for (auto it = active_voices.begin(); it != active_voices.end(); ++it) {
+			AudioStreamPlaybackSymphony *v = *it;
+			if (!v) {
+				continue;
+			}
+			if (v->is_release_ready()) {
+				ready_to_release.push_back(v);
+			} else {
+				live.push_back(v);
+			}
+		}
+	}
+	for (AudioStreamPlaybackSymphony *v : ready_to_release) {
+		Ref<AudioStreamPlaybackSymphony> hold(v);
+		unregister_voice(v);
+		if (hold.is_valid()) {
+			hold->_finalize_stop();
+		}
+	}
+
+	bool lod_compiled = false;
+	for (AudioStreamPlaybackSymphony *v : live) {
+		if (!v || !v->is_registered_with_voice_manager()) {
 			continue;
 		}
 		if (v->manager_stop_request.load(std::memory_order_relaxed)) {
@@ -282,6 +370,7 @@ void SymphonyVoiceManager::observe_cost_sample(float p_cost_units, float p_mix_u
 void SymphonyVoiceManager::enforce_voice_limits() {
 	// Audio thread only: fixed stack snapshots + per-voice atomics. No ObjectDB,
 	// heap containers, Resource access, or graph compilation (plan §6).
+	MutexLock lock(voice_lifetime_mutex);
 
 	struct VoiceSnapshot {
 		AudioStreamPlaybackSymphony *voice = nullptr;
@@ -307,7 +396,7 @@ void SymphonyVoiceManager::enforce_voice_limits() {
 			break;
 		}
 		AudioStreamPlaybackSymphony *v = *it;
-		if (!v) {
+		if (!v || v->tick_release_grace()) {
 			continue;
 		}
 

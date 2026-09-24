@@ -1,5 +1,6 @@
 #include "spatial_graph_wrapper.h"
 #include "core/math/math_funcs.h"
+#include "servers/audio/audio_server.h"
 
 bool SpatialGraphWrapper::is_wrappable_wav(const Ref<AudioStream> &p_stream) {
 	if (p_stream.is_null()) {
@@ -51,7 +52,14 @@ Ref<AudioStreamSymphony> SpatialGraphWrapper::create_spatial_stream(const Ref<Au
 
 	Ref<AudioStreamSymphony> stream;
 	stream.instantiate();
-	stream->set_mix_rate(44100.0f); // Will be overridden by AudioServer mix rate at playback.
+	float source_rate = (float)wav->get_mix_rate();
+	if (!(source_rate > 0.0f) && AudioServer::get_singleton()) {
+		source_rate = AudioServer::get_singleton()->get_mix_rate();
+	}
+	if (!(source_rate > 0.0f)) {
+		source_rate = 44100.0f;
+	}
+	stream->set_mix_rate(source_rate);
 	stream->set_stop_on_source_finished(!p_loop);
 
 	// Build the graph description:

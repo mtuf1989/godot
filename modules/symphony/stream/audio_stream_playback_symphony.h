@@ -11,8 +11,8 @@
 
 #include <atomic>
 
-class AudioStreamPlaybackSymphony : public AudioStreamPlayback {
-	GDCLASS(AudioStreamPlaybackSymphony, AudioStreamPlayback)
+class AudioStreamPlaybackSymphony : public AudioStreamPlaybackResampled {
+	GDCLASS(AudioStreamPlaybackSymphony, AudioStreamPlaybackResampled)
 	friend class AudioStreamSymphony;
 	friend class SymphonyVoiceManager;
 
@@ -54,7 +54,17 @@ private:
 	float last_mix_time_us = 0.0f;
 	float last_rms = 0.0f;
 	int32_t last_frame_count = 0;
+	int32_t last_output_frames = 0;
 	float mix_rate_cached = 44100.0f;
+	float output_rate_cached = 44100.0f;
+	// Monotonic authored time in microseconds: rendered output frames × effective speed.
+	std::atomic<uint64_t> position_us{ 0 };
+	double cached_duration_limit = 0.0;
+	std::atomic<bool> unsupported_seek{ false };
+	std::atomic<bool> release_pending{ false };
+	std::atomic<int32_t> release_grace{ 0 };
+	std::atomic<bool> release_ready{ false };
+	static constexpr int32_t RELEASE_GRACE_CALLBACKS = 2;
 
 	// Cached Resource-derived fields for audio-thread reads (plan §6).
 	int cached_priority = 50;
@@ -66,6 +76,10 @@ private:
 
 	void _install_package(PreparedGraphPackage *p_package);
 	void _finalize_stop();
+	void _register_with_manager();
+	void _arm_release_grace();
+	void _report_unsupported_seek();
+	[[nodiscard]] bool _source_or_graph_finished() const;
 	void _release_crossfade_token();
 	void _abort_transition_packages();
 	enum class AdmitResult : uint8_t { Denied, AdmittedNoToken, AdmittedWithToken };
@@ -77,6 +91,8 @@ private:
 
 protected:
 	static void _bind_methods();
+	virtual int _mix_internal(AudioFrame *p_buffer, int p_frames) override;
+	virtual float get_stream_sampling_rate() override;
 
 public:
 	virtual void start(double p_from_pos = 0.0) override;
@@ -116,6 +132,13 @@ public:
 
 	// Test/debug: push WavePlayer finished on the live package and mix once.
 	bool fire_source_finished_and_mix(AudioFrame *p_buffer, int p_frames);
+
+	// Audio thread: count down the post-completion grace. Returns true once the
+	// voice must no longer be dereferenced by the manager callback.
+	bool tick_release_grace();
+	[[nodiscard]] bool is_release_ready() const { return release_ready.load(std::memory_order_acquire); }
+	[[nodiscard]] bool is_registered_with_voice_manager() const { return registered_with_manager; }
+	[[nodiscard]] bool has_unsupported_seek() const { return unsupported_seek.load(std::memory_order_acquire); }
 
 	~AudioStreamPlaybackSymphony();
 };

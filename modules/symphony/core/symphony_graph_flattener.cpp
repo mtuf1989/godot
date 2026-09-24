@@ -46,7 +46,13 @@ GraphFlattener::FlattenResult GraphFlattener::flatten(const GraphDescription &p_
 	if (!p_owner_path.is_empty()) {
 		ctx.visited_paths.insert(p_owner_path);
 	}
-	return _flatten_recursive(p_desc, p_owner_path, ctx);
+	// The graph being compiled owns quality settings for every inlined subgraph.
+	// Nested resources keep their own nodes, but not their smoothing or anti-alias flags.
+	GraphFlattener::FlattenResult result = _flatten_recursive(p_desc, p_owner_path, ctx);
+	result.graph.smooth_parameters = p_desc.smooth_parameters;
+	result.graph.smooth_time_ms = p_desc.smooth_time_ms;
+	result.graph.anti_alias_staircase = p_desc.anti_alias_staircase;
+	return result;
 }
 
 static GraphFlattener::FlattenResult _flatten_recursive(const GraphDescription &p_desc, const String &p_owner_path, FlattenContext &ctx) {

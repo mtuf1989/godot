@@ -12,12 +12,15 @@
 void AudioStreamSymphony::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_mix_rate", "rate"), &AudioStreamSymphony::set_mix_rate);
 	ClassDB::bind_method(D_METHOD("get_mix_rate"), &AudioStreamSymphony::get_mix_rate);
+	ClassDB::bind_method(D_METHOD("set_duration_limit_seconds", "seconds"), &AudioStreamSymphony::set_duration_limit_seconds);
+	ClassDB::bind_method(D_METHOD("get_duration_limit_seconds"), &AudioStreamSymphony::get_duration_limit_seconds);
 	ClassDB::bind_method(D_METHOD("set_voice_priority", "priority"), &AudioStreamSymphony::set_voice_priority);
 	ClassDB::bind_method(D_METHOD("get_voice_priority"), &AudioStreamSymphony::get_voice_priority);
 	ClassDB::bind_method(D_METHOD("load_test_graph"), &AudioStreamSymphony::load_test_graph);
 	ClassDB::bind_method(D_METHOD("load_test_graph_30"), &AudioStreamSymphony::load_test_graph_30);
 	ClassDB::bind_method(D_METHOD("load_test_graph_50"), &AudioStreamSymphony::load_test_graph_50);
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "mix_rate", PROPERTY_HINT_RANGE, "22050,96000,1"), "set_mix_rate", "get_mix_rate");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "duration_limit_seconds", PROPERTY_HINT_RANGE, "0,3600,0.001,or_greater"), "set_duration_limit_seconds", "get_duration_limit_seconds");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "voice_priority", PROPERTY_HINT_RANGE, "0,100,1"), "set_voice_priority", "get_voice_priority");
 
 	// LOD system
@@ -437,6 +440,10 @@ void AudioStreamSymphony::set_mix_rate(float p_mix_rate) {
 	mix_rate = p_mix_rate;
 }
 
+void AudioStreamSymphony::set_duration_limit_seconds(double p_seconds) {
+	duration_limit_seconds = p_seconds > 0.0 ? p_seconds : 0.0;
+}
+
 float AudioStreamSymphony::get_mix_rate() const {
 	return mix_rate;
 }
@@ -500,7 +507,7 @@ CompiledGraph *AudioStreamSymphony::compile_graph() const {
 		return nullptr;
 	}
 
-	GraphCompiler::CompileResult result = GraphCompiler::compile(flat.graph, mix_rate);
+	GraphCompiler::CompileResult result = GraphCompiler::compile(flat.graph, mix_rate, owner_path);
 	if (!result.success()) {
 		for (const String &err : result.errors) {
 			ERR_PRINT(vformat("Symphony compile error: %s", err));
@@ -858,9 +865,12 @@ Ref<AudioStreamPlayback> AudioStreamSymphony::instantiate_playback() {
 
 
 double AudioStreamSymphony::get_length() const {
+	if (duration_limit_seconds > 0.0) {
+		return duration_limit_seconds;
+	}
 	// Return a small non-zero length so the editor's audio preview generator
 	// does not fall back to 60 seconds (2.6M frames × 90 resources = OOM/crash).
-	// AudioStreamSymphony is procedural — there's no meaningful waveform to preview.
+	// Continuous procedural graphs have no authored end.
 	return 0.5;
 }
 
@@ -910,7 +920,7 @@ CompiledGraph *AudioStreamSymphony::compile_lod_graph(int p_lod_tier) const {
 		}
 		return nullptr;
 	}
-	GraphCompiler::CompileResult result = GraphCompiler::compile(flat.graph, mix_rate);
+	GraphCompiler::CompileResult result = GraphCompiler::compile(flat.graph, mix_rate, owner_path);
 	if (!result.success()) {
 		for (const String &err : result.errors) {
 			ERR_PRINT(vformat("Symphony LOD compile error (tier %d): %s", p_lod_tier, err));
@@ -1027,7 +1037,7 @@ Dictionary AudioStreamSymphony::estimate_tier_memory(int p_tier) const {
 	bool any_over = false;
 
 	for (int i = 0; i < 4; i++) {
-		GraphCompiler::CompileResult result = GraphCompiler::compile(flat.graph, rates[i]);
+		GraphCompiler::CompileResult result = GraphCompiler::compile(flat.graph, rates[i], owner_path);
 		if (result.success() && result.graph) {
 			out[keys[i]] = (int64_t)result.total_package_bytes;
 			if (result.total_package_bytes > per_graph) {
@@ -1045,17 +1055,59 @@ Dictionary AudioStreamSymphony::estimate_tier_memory(int p_tier) const {
 	return out;
 }
 
+static Dictionary _diagnostic_dictionary(const String &p_path, const String &p_message, int32_t p_node_id, int32_t p_connection_index) {
+	Dictionary diagnostic;
+	diagnostic["message"] = p_message;
+	diagnostic["resource_path"] = p_path;
+	diagnostic["node_id"] = p_node_id;
+	diagnostic["connection_index"] = p_connection_index;
+	return diagnostic;
+}
+
 Dictionary AudioStreamSymphony::validate_tier_compile(int p_tier) const {
 	Dictionary out;
-	CompiledGraph *graph = (p_tier <= 0) ? compile_graph() : compile_lod_graph(p_tier);
-	out["ok"] = graph != nullptr;
-	if (graph) {
-		out["arena_bytes"] = (int64_t)graph->budgeted_bytes;
-		out["cost_units"] = graph->estimated_cost_units;
-		memdelete(graph);
-	} else {
+	Array errors;
+	Array warnings;
+	const GraphDescription &desc = (p_tier <= 0) ? graph_desc : (has_lod_variant(p_tier) ? lod_graphs[p_tier - 1] : graph_desc);
+	const String owner_path = get_path();
+	GraphFlattener::FlattenResult flat = GraphFlattener::flatten(desc, owner_path);
+	if (!flat.success()) {
+		for (const String &err : flat.errors) {
+			errors.push_back(_diagnostic_dictionary(owner_path, err, -1, -1));
+		}
+		out["ok"] = false;
+		out["errors"] = errors;
+		out["warnings"] = warnings;
 		out["arena_bytes"] = 0;
 		out["cost_units"] = 0.0f;
+		return out;
+	}
+
+	GraphCompiler::CompileResult result = GraphCompiler::compile(flat.graph, mix_rate, owner_path);
+	if (result.diagnostics.is_empty()) {
+		for (const String &err : result.errors) {
+			errors.push_back(_diagnostic_dictionary(owner_path, err, -1, -1));
+		}
+	} else {
+		for (const GraphCompiler::CompileDiagnostic &diagnostic : result.diagnostics) {
+			Dictionary entry = _diagnostic_dictionary(diagnostic.resource_path, diagnostic.message, diagnostic.node_id, diagnostic.connection_index);
+			if (diagnostic.warning) {
+				warnings.push_back(entry);
+			} else {
+				errors.push_back(entry);
+			}
+		}
+	}
+	out["ok"] = result.success();
+	out["errors"] = errors;
+	out["warnings"] = warnings;
+	if (result.graph) {
+		out["arena_bytes"] = (int64_t)result.graph->budgeted_bytes;
+		out["cost_units"] = result.graph->estimated_cost_units;
+		memdelete(result.graph);
+	} else {
+		out["arena_bytes"] = (int64_t)result.arena_bytes;
+		out["cost_units"] = result.estimated_cost_units;
 	}
 	return out;
 }

@@ -12,6 +12,8 @@ class AudioStreamSymphony : public AudioStream {
 private:
 	friend class AudioStreamPlaybackSymphony;
 	float mix_rate = 44100.0f;
+	// 0 keeps the graph running. A positive value ends playback after that many seconds of rendered time.
+	double duration_limit_seconds = 0.0;
 	int voice_priority = 50; // 0-100, higher = harder to steal
 	GraphDescription graph_desc; // LOD 0 (full quality)
 	// When true, AudioStreamPlaybackSymphony clears is_playing after WavePlayer fires finished.
@@ -42,6 +44,9 @@ protected:
 public:
 	void set_mix_rate(float p_mix_rate);
 	float get_mix_rate() const;
+
+	void set_duration_limit_seconds(double p_seconds);
+	[[nodiscard]] double get_duration_limit_seconds() const { return duration_limit_seconds; }
 
 	void set_voice_priority(int p_priority);
 	int get_voice_priority() const;

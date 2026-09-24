@@ -43,9 +43,14 @@ static constexpr int32_t SYMPHONY_MICRO_BLOCK_SIZE = 64;
 
 // Compiler hint: p_num_frames is always <= SYMPHONY_MICRO_BLOCK_SIZE.
 // Helps auto-vectorization by communicating a fixed upper bound.
-#if defined(__clang__) || defined(__GNUC__)
+// __builtin_assume is Clang-only. GCC and MinGW define __GNUC__ but reject that builtin,
+// so the feature check falls back to a no-op there. MSVC takes the fallback as well.
+#if defined(__has_builtin)
+#if __has_builtin(__builtin_assume)
 #define SYMPHONY_ASSUME_FRAMES(n) __builtin_assume((n) > 0 && (n) <= SYMPHONY_MICRO_BLOCK_SIZE)
-#else
+#endif
+#endif
+#ifndef SYMPHONY_ASSUME_FRAMES
 #define SYMPHONY_ASSUME_FRAMES(n) ((void)0)
 #endif
 

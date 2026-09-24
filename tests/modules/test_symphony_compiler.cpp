@@ -9,6 +9,8 @@ TEST_FORCE_LINK(test_symphony_compiler)
 
 #include "modules/symphony/core/symphony_graph_compiler.h"
 #include "modules/symphony/core/symphony_graph_description.h"
+#include "modules/symphony/core/symphony_graph_flattener.h"
+#include "modules/symphony/stream/audio_stream_symphony.h"
 #include "modules/symphony/core/symphony_memory_budget.h"
 #include "modules/symphony/core/shared_pcm_cache.h"
 #include "modules/symphony/core/symphony_operator_registry.h"
@@ -371,6 +373,84 @@ TEST_CASE("[Symphony][Compiler] SharedPCM charges unique entries once") {
 	CHECK(budget->get_shared_pcm_bytes() == shared_before + expected);
 	cache->release(key);
 	CHECK(budget->get_shared_pcm_bytes() == shared_before);
+}
+
+static GraphDescription _make_constant_output_graph() {
+	GraphDescription desc;
+	desc.smooth_parameters = false;
+	NodeDesc constant;
+	constant.id = 1;
+	constant.type_name = "Constant";
+	constant.params.insert("value", 0.25f);
+	desc.nodes.push_back(constant);
+	NodeDesc out;
+	out.id = 2;
+	out.type_name = "GraphOutput";
+	desc.nodes.push_back(out);
+	ConnectionDesc conn;
+	conn.from_node = 1;
+	conn.from_pin = 0;
+	conn.to_node = 2;
+	conn.to_pin = 0;
+	desc.connections.push_back(conn);
+	return desc;
+}
+
+TEST_CASE("[Symphony][Compiler] Negative pin is rejected before indexing") {
+	GraphDescription desc = _make_constant_output_graph();
+	desc.connections.write[0].from_pin = -1;
+
+	GraphCompiler::CompileResult result = GraphCompiler::compile(desc, 44100.0f, "res://bad_pin.tres");
+	CHECK_FALSE(result.success());
+	REQUIRE(result.diagnostics.size() >= 1);
+	CHECK(result.diagnostics[0].connection_index == 0);
+	CHECK(result.diagnostics[0].resource_path == "res://bad_pin.tres");
+
+	Ref<AudioStreamSymphony> stream;
+	stream.instantiate();
+	stream->set_graph_description(desc);
+	Dictionary validated = stream->validate_tier_compile(0);
+	CHECK_FALSE(bool(validated["ok"]));
+	Array errors = validated["errors"];
+	CHECK(errors.size() >= 1);
+	Dictionary entry = errors[0];
+	CHECK(int(entry["connection_index"]) == 0);
+	CHECK(validated.has("warnings"));
+	CHECK(validated.has("arena_bytes"));
+	CHECK(validated.has("cost_units"));
+}
+
+TEST_CASE("[Symphony][Compiler] Duplicate input connections are rejected") {
+	GraphDescription desc = _make_constant_output_graph();
+	desc.connections.push_back(desc.connections[0]);
+	GraphCompiler::CompileResult result = GraphCompiler::compile(desc, 44100.0f, "res://duplicate.tres");
+	CHECK_FALSE(result.success());
+	bool saw_duplicate = false;
+	for (const GraphCompiler::CompileDiagnostic &diagnostic : result.diagnostics) {
+		if (diagnostic.connection_index == 1) {
+			saw_duplicate = true;
+		}
+	}
+	CHECK(saw_duplicate);
+}
+
+TEST_CASE("[Symphony][Compiler] Flattening keeps top-level quality settings") {
+	GraphDescription desc = _make_constant_output_graph();
+	desc.smooth_parameters = false;
+	desc.smooth_time_ms = 12.5f;
+	desc.anti_alias_staircase = true;
+	GraphFlattener::FlattenResult flat = GraphFlattener::flatten(desc, "res://quality.tres");
+	CHECK(flat.success());
+	CHECK_FALSE(flat.graph.smooth_parameters);
+	CHECK(flat.graph.smooth_time_ms == doctest::Approx(12.5f));
+	CHECK(flat.graph.anti_alias_staircase);
+
+	Ref<AudioStreamSymphony> stream;
+	stream.instantiate();
+	stream->set_graph_description(desc);
+	Dictionary validated = stream->validate_tier_compile(0);
+	CHECK(bool(validated["ok"]));
+	CHECK((float)validated["cost_units"] > 0.0f);
 }
 
 } // namespace TestSymphonyCompiler
