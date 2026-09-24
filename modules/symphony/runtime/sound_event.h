@@ -43,6 +43,8 @@ private:
 	// RTPC bindings — serialized as Array of Dictionaries for .tres compatibility.
 	// Each dict: {parameter_name, target, curve, min_value, max_value, graph_input_name}
 	TypedArray<Dictionary> rtpc_bindings;
+	// 0 = legacy numeric targets. 2 = native SoundEvent.RTPCTarget values.
+	int rtpc_schema_version = 0;
 
 protected:
 	static void _bind_methods();
@@ -124,8 +126,10 @@ public:
 	bool get_virtualize_when_inaudible() const { return virtualize_when_inaudible; }
 
 	// RTPC bindings
-	void set_rtpc_bindings(const TypedArray<Dictionary> &p_bindings) { rtpc_bindings = p_bindings; }
+	void set_rtpc_bindings(const TypedArray<Dictionary> &p_bindings);
 	TypedArray<Dictionary> get_rtpc_bindings() const { return rtpc_bindings; }
+	void set_rtpc_schema_version(int p_version) { rtpc_schema_version = p_version; }
+	int get_rtpc_schema_version() const { return rtpc_schema_version; }
 
 	// Convenience: get binding count
 	int get_rtpc_binding_count() const { return rtpc_bindings.size(); }

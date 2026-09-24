@@ -63,7 +63,9 @@ public:
 	// When p_has_position is true (3D path), the propagation delay for one-shots is
 	// computed from the distance between p_source_position and the VoicePool listener,
 	// set on the acquired slot (deferred start), and returned as "delay_s".
-	Dictionary play_event(const Ref<SoundEvent> &p_event, const Vector3 &p_source_position = Vector3(), bool p_has_position = false);
+	// p_victim_slot >= 0 reclaims that slot instead of acquiring or auto-stealing.
+	// Cooldown and voice counts change only after the reclaim succeeds.
+	Dictionary play_event(const Ref<SoundEvent> &p_event, const Vector3 &p_source_position = Vector3(), bool p_has_position = false, int p_victim_slot = -1);
 
 	SymphonyEventDispatcher();
 	~SymphonyEventDispatcher();
@@ -72,6 +74,7 @@ private:
 	// Select a steal victim. same_event: only slots for p_event_id.
 	// Otherwise only slots with priority <= p_incoming_priority.
 	int _select_steal_victim(uint64_t p_event_id, int p_incoming_priority, SoundEvent::StealMode p_mode, bool p_same_event_only, StringName &r_reason) const;
+	int _reclaim_player_victim(const Ref<SoundEvent> &p_event, int p_victim_slot, PlayResult &r_result, StringName &r_steal_reason);
 };
 
 VARIANT_ENUM_CAST(SymphonyEventDispatcher::PlayResult);

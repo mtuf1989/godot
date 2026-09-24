@@ -37,6 +37,11 @@ void SymphonyVoicePool::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_virtual_voice_count"), &SymphonyVoicePool::get_virtual_voice_count);
 	ClassDB::bind_method(D_METHOD("get_stolen_this_frame"), &SymphonyVoicePool::get_stolen_this_frame);
 	ClassDB::bind_method(D_METHOD("get_budget_percent"), &SymphonyVoicePool::get_budget_percent);
+	ClassDB::bind_method(D_METHOD("get_occupancy_percent"), &SymphonyVoicePool::get_occupancy_percent);
+	ClassDB::bind_method(D_METHOD("set_measured_budget_percent", "percent"), &SymphonyVoicePool::set_measured_budget_percent);
+	ClassDB::bind_method(D_METHOD("make_voice_handle", "slot"), &SymphonyVoicePool::make_voice_handle);
+	ClassDB::bind_method(D_METHOD("resolve_voice_handle", "handle"), &SymphonyVoicePool::resolve_voice_handle);
+	ClassDB::bind_method(D_METHOD("get_slot_priority", "slot"), &SymphonyVoicePool::get_slot_priority);
 	ClassDB::bind_method(D_METHOD("get_pool_size"), &SymphonyVoicePool::get_pool_size);
 	ClassDB::bind_method(D_METHOD("get_slot_state", "index"), &SymphonyVoicePool::get_slot_state);
 	ClassDB::bind_method(D_METHOD("acquire_slot", "priority"), &SymphonyVoicePool::acquire_slot);
@@ -100,6 +105,10 @@ void SymphonyVoicePool::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_slot_lod_thresholds", "slot", "threshold_1", "threshold_2"), &SymphonyVoicePool::set_slot_lod_thresholds);
 	ClassDB::bind_method(D_METHOD("get_slot_current_lod", "slot"), &SymphonyVoicePool::get_slot_current_lod);
 	ClassDB::bind_method(D_METHOD("get_slot_target_lod", "slot"), &SymphonyVoicePool::get_slot_target_lod);
+	ClassDB::bind_method(D_METHOD("get_slot_effective_lod", "slot"), &SymphonyVoicePool::get_slot_effective_lod);
+	ClassDB::bind_method(D_METHOD("set_slot_budget_lod", "slot", "lod_tier"), &SymphonyVoicePool::set_slot_budget_lod);
+	ClassDB::bind_method(D_METHOD("note_lod_installed", "slot", "lod_tier"), &SymphonyVoicePool::note_lod_installed);
+	ClassDB::bind_method(D_METHOD("is_slot_lod_forced", "slot"), &SymphonyVoicePool::is_slot_lod_forced);
 
 	BIND_ENUM_CONSTANT(EVENT_PLAYED);
 	BIND_ENUM_CONSTANT(EVENT_STOLEN);
@@ -114,7 +123,16 @@ void SymphonyVoicePool::_bind_methods() {
 	ADD_SIGNAL(MethodInfo("voice_devirtualized", PropertyInfo(Variant::INT, "slot_index")));
 }
 
+static void _bump_generation(SymphonyVoicePool::VoiceSlot &slot) {
+	uint32_t next = (slot.generation + 1u) & 0x7fffffffu;
+	if (next == 0u) {
+		next = 1u;
+	}
+	slot.generation = next;
+}
+
 static void _activate_slot(SymphonyVoicePool::VoiceSlot &slot, int p_priority) {
+	_bump_generation(slot);
 	slot.state = SymphonyVoicePool::VOICE_TO_PLAY;
 	slot.priority = p_priority;
 	slot.importance = (float)p_priority;
@@ -252,6 +270,50 @@ int SymphonyVoicePool::get_stolen_this_frame() const {
 float SymphonyVoicePool::get_budget_percent() const {
 	VoiceMetrics m = metrics.load(std::memory_order_relaxed);
 	return m.budget_percent;
+}
+
+float SymphonyVoicePool::get_occupancy_percent() const {
+	VoiceMetrics m = metrics.load(std::memory_order_relaxed);
+	return m.occupancy_percent;
+}
+
+void SymphonyVoicePool::set_measured_budget_percent(float p_percent) {
+	VoiceMetrics m = metrics.load(std::memory_order_relaxed);
+	m.budget_percent = p_percent;
+	metrics.store(m, std::memory_order_relaxed);
+}
+
+int64_t SymphonyVoicePool::make_voice_handle(int p_slot) const {
+	ERR_FAIL_INDEX_V(p_slot, pool_size, (int64_t)-1);
+	uint32_t generation = slots[p_slot].generation & 0x7fffffffu;
+	if (generation == 0u) {
+		return -1;
+	}
+	return ((int64_t)generation << 32) | (uint32_t)p_slot;
+}
+
+int SymphonyVoicePool::resolve_voice_handle(int64_t p_handle) const {
+	if (p_handle <= 0) {
+		return -1;
+	}
+	uint32_t slot_index = (uint32_t)(p_handle & 0xffffffffu);
+	uint32_t generation = (uint32_t)(((uint64_t)p_handle >> 32) & 0x7fffffffu);
+	if ((int)slot_index >= pool_size || generation == 0u) {
+		return -1;
+	}
+	const VoiceSlot &slot = slots[slot_index];
+	if ((slot.generation & 0x7fffffffu) != generation) {
+		return -1;
+	}
+	if (slot.state == VOICE_FREE || slot.state == VOICE_STOPPED) {
+		return -1;
+	}
+	return (int)slot_index;
+}
+
+int SymphonyVoicePool::get_slot_priority(int p_slot) const {
+	ERR_FAIL_INDEX_V(p_slot, pool_size, 0);
+	return slots[p_slot].priority;
 }
 
 void SymphonyVoicePool::set_local_parameter(int p_slot, const StringName &p_name, float p_value) {
@@ -597,7 +659,6 @@ void SymphonyVoicePool::force_lod(int p_slot, int p_lod_tier) {
 		return;
 	}
 	slots[p_slot].target_lod = CLAMP(p_lod_tier, 0, 2);
-	slots[p_slot].current_lod = slots[p_slot].target_lod;
 	slots[p_slot].lod_forced = true;
 }
 
@@ -633,7 +694,7 @@ void SymphonyVoicePool::update_lod_targets() {
 			continue; // Respect forced LOD
 		}
 		if (slots[i].max_distance <= 0.0f) {
-			slots[i].target_lod = 0;
+			slots[i].distance_lod = 0;
 			continue;
 		}
 
@@ -665,8 +726,34 @@ void SymphonyVoicePool::update_lod_targets() {
 			}
 		}
 
-		slots[i].target_lod = new_target;
+		slots[i].distance_lod = new_target;
 	}
+}
+
+int SymphonyVoicePool::get_slot_effective_lod(int p_slot) const {
+	if (p_slot < 0 || p_slot >= pool_size) {
+		return 0;
+	}
+	const VoiceSlot &slot = slots[p_slot];
+	if (slot.lod_forced) {
+		return slot.target_lod;
+	}
+	return MAX(slot.distance_lod, slot.budget_lod);
+}
+
+void SymphonyVoicePool::set_slot_budget_lod(int p_slot, int p_lod_tier) {
+	ERR_FAIL_INDEX(p_slot, pool_size);
+	slots[p_slot].budget_lod = CLAMP(p_lod_tier, 0, 2);
+}
+
+void SymphonyVoicePool::note_lod_installed(int p_slot, int p_lod_tier) {
+	ERR_FAIL_INDEX(p_slot, pool_size);
+	slots[p_slot].current_lod = CLAMP(p_lod_tier, 0, 2);
+}
+
+bool SymphonyVoicePool::is_slot_lod_forced(int p_slot) const {
+	ERR_FAIL_INDEX_V(p_slot, pool_size, false);
+	return slots[p_slot].lod_forced;
 }
 
 void SymphonyVoicePool::set_slot_lod_thresholds(int p_slot, float p_threshold_1, float p_threshold_2) {
@@ -819,11 +906,13 @@ void SymphonyVoicePool::process_frame() {
 	// Update LOD targets based on distance
 	update_lod_targets();
 
+	VoiceMetrics previous = metrics.load(std::memory_order_relaxed);
 	VoiceMetrics m;
 	m.active = active;
 	m.virtual_count = virtual_count;
 	m.stolen_this_frame = stolen_this_frame;
-	m.budget_percent = (pool_size > 0) ? ((float)active / (float)pool_size) * 100.0f : 0.0f;
+	m.occupancy_percent = (pool_size > 0) ? ((float)active / (float)pool_size) * 100.0f : 0.0f;
+	m.budget_percent = previous.budget_percent;
 	metrics.store(m, std::memory_order_relaxed);
 
 	stolen_this_frame = 0;

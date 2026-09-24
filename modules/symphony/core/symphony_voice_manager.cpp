@@ -447,13 +447,17 @@ void SymphonyVoiceManager::enforce_voice_limits() {
 			}
 
 			int32_t new_lod = snapshots[best_idx].current_lod + 1;
-			snapshots[best_idx].voice->request_lod_tier(new_lod);
+			snapshots[best_idx].voice->set_budget_lod_floor(new_lod);
 			snapshots[best_idx].current_lod = new_lod;
 			snapshots[best_idx].transitioning = true;
 			lod_queued++;
 
 			remaining_budget_lod -= snapshots[best_idx].budget * 0.4f;
 			snapshots[best_idx].budget *= 0.6f;
+		}
+	} else {
+		for (int32_t i = 0; i < voice_count; i++) {
+			snapshots[i].voice->set_budget_lod_floor(0);
 		}
 	}
 

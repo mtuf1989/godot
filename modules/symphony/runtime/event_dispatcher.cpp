@@ -18,7 +18,7 @@ SymphonyEventDispatcher::~SymphonyEventDispatcher() {
 }
 
 void SymphonyEventDispatcher::_bind_methods() {
-	ClassDB::bind_method(D_METHOD("play_event", "event", "source_position", "has_position"), &SymphonyEventDispatcher::play_event, DEFVAL(Vector3()), DEFVAL(false));
+	ClassDB::bind_method(D_METHOD("play_event", "event", "source_position", "has_position", "victim_slot"), &SymphonyEventDispatcher::play_event, DEFVAL(Vector3()), DEFVAL(false), DEFVAL(-1));
 	ClassDB::bind_method(D_METHOD("on_voice_started", "event_id"), &SymphonyEventDispatcher::on_voice_started);
 	ClassDB::bind_method(D_METHOD("on_voice_stopped", "event_id"), &SymphonyEventDispatcher::on_voice_stopped);
 
@@ -125,6 +125,54 @@ int SymphonyEventDispatcher::_select_steal_victim(uint64_t p_event_id, int p_inc
 		}
 	}
 	return best_idx;
+}
+
+int SymphonyEventDispatcher::_reclaim_player_victim(const Ref<SoundEvent> &p_event, int p_victim_slot, PlayResult &r_result, StringName &r_steal_reason) {
+	SymphonyVoicePool *pool = SymphonyVoicePool::get_singleton();
+	ERR_FAIL_NULL_V(pool, -1);
+	if (p_victim_slot < 0 || p_victim_slot >= pool->get_pool_size()) {
+		r_result = RESULT_REJECTED_VOICE_LIMIT;
+		r_steal_reason = StringName("player_pool");
+		return -1;
+	}
+	SymphonyVoicePool::VoiceSlot *victim = pool->get_slot(p_victim_slot);
+	if (!victim || (victim->state != SymphonyVoicePool::VOICE_PLAYING && victim->state != SymphonyVoicePool::VOICE_TO_PLAY && victim->state != SymphonyVoicePool::VOICE_VIRTUAL && victim->state != SymphonyVoicePool::VOICE_VIRTUALIZING && victim->state != SymphonyVoicePool::VOICE_DEVIRTUALIZING)) {
+		r_result = RESULT_REJECTED_VOICE_LIMIT;
+		r_steal_reason = StringName("player_pool");
+		return -1;
+	}
+
+	uint64_t event_id = p_event->get_instance_id();
+	uint64_t now = OS::get_singleton()->get_ticks_usec();
+	float cooldown_ms = p_event->get_cooldown_ms();
+	if (cooldown_ms > 0.0f && cooldown_map.has(event_id)) {
+		uint64_t elapsed_us = now - cooldown_map[event_id];
+		if (elapsed_us < (uint64_t)(cooldown_ms * 1000.0f)) {
+			r_result = RESULT_REJECTED_COOLDOWN;
+			r_steal_reason = StringName("cooldown");
+			return -1;
+		}
+	}
+
+	uint64_t victim_event = victim->event_id;
+	if (victim_event != 0) {
+		on_voice_stopped(victim_event);
+	}
+	r_steal_reason = StringName("player_pool");
+	pool->reclaim_slot(p_victim_slot, p_event->get_priority(), r_steal_reason);
+	cooldown_map[event_id] = now;
+	on_voice_started(event_id);
+
+	SymphonyVoicePool::VoiceSlot *vs = pool->get_slot(p_victim_slot);
+	if (vs) {
+		vs->event_id = event_id;
+		vs->priority = p_event->get_priority();
+		vs->importance = (float)p_event->get_priority() * p_event->get_importance_weight();
+		vs->importance_weight = p_event->get_importance_weight();
+		vs->category = (int)p_event->get_category();
+	}
+	r_result = RESULT_STOLEN;
+	return p_victim_slot;
 }
 
 int SymphonyEventDispatcher::dispatch(const Ref<SoundEvent> &p_event, PlayResult &r_result, StringName &r_steal_reason) {
@@ -268,7 +316,7 @@ void SymphonyEventDispatcher::on_voice_stopped(uint64_t p_event_id) {
 	}
 }
 
-Dictionary SymphonyEventDispatcher::play_event(const Ref<SoundEvent> &p_event, const Vector3 &p_source_position, bool p_has_position) {
+Dictionary SymphonyEventDispatcher::play_event(const Ref<SoundEvent> &p_event, const Vector3 &p_source_position, bool p_has_position, int p_victim_slot) {
 	Dictionary result;
 	PlayResult pr = RESULT_REJECTED_NO_STREAMS;
 	StringName steal_reason;
@@ -286,7 +334,11 @@ Dictionary SymphonyEventDispatcher::play_event(const Ref<SoundEvent> &p_event, c
 			pr = RESULT_REJECTED_NO_STREAMS;
 			stream_index = -1;
 		} else {
-			slot = dispatch(p_event, pr, steal_reason);
+			if (p_victim_slot >= 0) {
+				slot = _reclaim_player_victim(p_event, p_victim_slot, pr, steal_reason);
+			} else {
+				slot = dispatch(p_event, pr, steal_reason);
+			}
 			if (slot >= 0) {
 				Vector2 vol_range = p_event->get_volume_range();
 				if (vol_range.x != vol_range.y) {

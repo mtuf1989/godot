@@ -4,6 +4,7 @@
 #include "core/string/string_name.h"
 #include "core/templates/hash_map.h"
 #include "core/variant/variant.h"
+#include "core/variant/dictionary.h"
 
 #include <cstdint>
 
@@ -15,6 +16,17 @@ struct PinDescriptor {
 	StringName name;
 	SymphonyPinType type = SymphonyPinType::AUDIO;
 	bool required = true; // If true, compiler errors when unconnected (inputs only)
+	bool dynamic = false; // Pin count comes from the referenced resource or a parameter.
+};
+
+enum class ParamValueType : uint8_t {
+	FLOAT = 0,
+	INT,
+	BOOL,
+	STRING,
+	ENUM,
+	FLOAT_ARRAY,
+	RESOURCE_PATH,
 };
 
 // Describes an editable parameter on an operator type.
@@ -24,6 +36,9 @@ struct ParamDescriptor {
 	float min_value = -10000.0f;
 	float max_value = 10000.0f;
 	float step = 0.01f;
+	ParamValueType value_type = ParamValueType::FLOAT;
+	String unit;
+	Vector<String> enum_values;
 };
 
 // Function signature for creating an operator instance via placement new in the arena.
@@ -55,6 +70,7 @@ struct OperatorDescriptor {
 	size_t extra_arena_bytes = 0; // Additional arena bytes needed by create_fn (e.g., lookup tables)
 	ExtraArenaBytesFunc extra_arena_bytes_fn = nullptr; // Per-instance override; if set, takes priority over extra_arena_bytes
 	OperatorCreateFunc create_fn = nullptr;
+	bool dynamic_pins = false; // SubGraph and similar: pins are not known until flatten.
 	bool nonlinear = false; // If true, this operator generates harmonics (saturators, waveshapers).
 	                        // Used by the graph compiler's anti-alias staircase pass (P1b).
 	SilenceBehavior silence_behavior = SilenceBehavior::STATEFUL_TAIL;
@@ -82,4 +98,8 @@ public:
 	void register_alias(const StringName &p_old_name, const StringName &p_current_name);
 	const OperatorDescriptor *find(const StringName &p_type_name) const;
 	void get_registered_types(Vector<StringName> &r_types) const;
+	// Fills value types, units, enums, and parameters that graphs already store
+	// but the original descriptors omitted (trigger_name, ModalBank arrays).
+	void annotate_authoring_schema();
+	Dictionary get_operator_schema() const;
 };

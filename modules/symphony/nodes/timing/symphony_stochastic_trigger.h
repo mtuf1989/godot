@@ -4,6 +4,7 @@
 #include "../../core/symphony_operator_registry.h"
 #include "../../core/symphony_arena_allocator.h"
 #include "../../core/symphony_trigger.h"
+#include "../../core/symphony_render_seed.h"
 
 // Poisson-like random trigger emitter. Fires trigger impulses at a rate
 // controlled by density (events/sec). Essential for rain, fire crackle, insects.
@@ -85,10 +86,16 @@ public:
 	static SymphonyOperator *create(ArenaAllocator &p_arena, const HashMap<StringName, Variant> &p_params, float p_mix_rate) {
 		float density = p_params.has("density") ? (float)p_params["density"] : 5.0f;
 		uint32_t seed = p_params.has("seed") ? (uint32_t)(float)p_params["seed"] : 0;
-		// If seed is 0, use a pseudo-random seed from the arena offset (unique per voice)
+		// Seed 0 is explicit only when an offline render seed is installed.
+		// Otherwise keep a per-voice value derived from the arena address.
 		if (seed == 0) {
-			seed = (uint32_t)(uintptr_t)&p_arena ^ 0xDEADBEEF;
-			seed = seed * 1664525u + 1013904223u; // LCG step for variety
+			uint32_t render_seed = SymphonyRenderSeed::get();
+			if (render_seed != 0u) {
+				seed = render_seed;
+			} else {
+				seed = (uint32_t)(uintptr_t)&p_arena ^ 0xDEADBEEF;
+				seed = seed * 1664525u + 1013904223u;
+			}
 		}
 		void *mem = p_arena.alloc(sizeof(SymphonyStochasticTrigger), alignof(SymphonyStochasticTrigger));
 		return new (mem) SymphonyStochasticTrigger(p_mix_rate, density, seed);

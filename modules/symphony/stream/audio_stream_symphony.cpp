@@ -21,6 +21,12 @@ void AudioStreamSymphony::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("load_test_graph_50"), &AudioStreamSymphony::load_test_graph_50);
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "mix_rate", PROPERTY_HINT_RANGE, "22050,96000,1"), "set_mix_rate", "get_mix_rate");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "duration_limit_seconds", PROPERTY_HINT_RANGE, "0,3600,0.001,or_greater"), "set_duration_limit_seconds", "get_duration_limit_seconds");
+	ClassDB::bind_method(D_METHOD("set_schema_version", "version"), &AudioStreamSymphony::set_schema_version);
+	ClassDB::bind_method(D_METHOD("get_schema_version"), &AudioStreamSymphony::get_schema_version);
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "schema_version"), "set_schema_version", "get_schema_version");
+	ClassDB::bind_static_method("AudioStreamSymphony", D_METHOD("get_operator_schema"), &AudioStreamSymphony::get_operator_schema);
+	ClassDB::bind_method(D_METHOD("validate_authoring"), &AudioStreamSymphony::validate_authoring);
+	ClassDB::bind_method(D_METHOD("render_offline", "duration_seconds", "seed", "initial_parameters", "triggers", "wav_path"), &AudioStreamSymphony::render_offline, DEFVAL(Dictionary()), DEFVAL(Array()), DEFVAL(String()));
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "voice_priority", PROPERTY_HINT_RANGE, "0,100,1"), "set_voice_priority", "get_voice_priority");
 
 	// LOD system

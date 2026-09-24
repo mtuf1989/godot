@@ -14,6 +14,8 @@ private:
 	float mix_rate = 44100.0f;
 	// 0 keeps the graph running. A positive value ends playback after that many seconds of rendered time.
 	double duration_limit_seconds = 0.0;
+	// 0 = legacy graph resources (migration diagnostics). 2 = strict authoring schema.
+	int schema_version = 0;
 	int voice_priority = 50; // 0-100, higher = harder to steal
 	GraphDescription graph_desc; // LOD 0 (full quality)
 	// When true, AudioStreamPlaybackSymphony clears is_playing after WavePlayer fires finished.
@@ -47,6 +49,13 @@ public:
 
 	void set_duration_limit_seconds(double p_seconds);
 	[[nodiscard]] double get_duration_limit_seconds() const { return duration_limit_seconds; }
+
+	void set_schema_version(int p_version) { schema_version = MAX(0, p_version); }
+	[[nodiscard]] int get_schema_version() const { return schema_version; }
+
+	static Dictionary get_operator_schema();
+	Dictionary validate_authoring() const;
+	Dictionary render_offline(double p_duration_seconds, int64_t p_seed, const Dictionary &p_initial_parameters, const Array &p_triggers, const String &p_wav_path);
 
 	void set_voice_priority(int p_priority);
 	int get_voice_priority() const;

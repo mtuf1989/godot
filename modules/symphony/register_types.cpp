@@ -160,6 +160,7 @@ void initialize_symphony_module(ModuleInitializationLevel p_level) {
 		SymphonyGraphInputAudio::register_operator();
 		SymphonyTriggerInput::register_operator();
 		SymphonySubGraph::register_operator();
+		OperatorRegistry::get_singleton()->annotate_authoring_schema();
 
 		// Register Godot classes
 		GDREGISTER_CLASS(AudioStreamSymphony);

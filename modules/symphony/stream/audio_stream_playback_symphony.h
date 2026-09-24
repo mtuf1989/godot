@@ -71,7 +71,8 @@ private:
 	int cached_max_lod = 0;
 
 	// Manager → main-thread requests (audio writes atomics only).
-	std::atomic<int32_t> requested_lod_tier{ -1 }; // -1 = none
+	std::atomic<int32_t> requested_lod_tier{ -1 };
+	std::atomic<int32_t> budget_lod_floor{ 0 };
 	std::atomic<bool> manager_stop_request{ false };
 
 	void _install_package(PreparedGraphPackage *p_package);
@@ -114,6 +115,8 @@ public:
 
 	// Audio-thread-safe request writers (SymphonyVoiceManager).
 	void request_lod_tier(int32_t p_lod_tier);
+	void set_budget_lod_floor(int32_t p_lod_tier);
+	[[nodiscard]] int get_budget_lod_floor() const { return budget_lod_floor.load(std::memory_order_acquire); }
 	void request_manager_stop();
 	// Main thread: apply pending manager requests for this voice.
 	void process_manager_requests();

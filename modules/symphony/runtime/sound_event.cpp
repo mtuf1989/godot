@@ -72,6 +72,8 @@ void SoundEvent::_bind_methods() {
 
 	ClassDB::bind_method(D_METHOD("set_rtpc_bindings", "bindings"), &SoundEvent::set_rtpc_bindings);
 	ClassDB::bind_method(D_METHOD("get_rtpc_bindings"), &SoundEvent::get_rtpc_bindings);
+	ClassDB::bind_method(D_METHOD("set_rtpc_schema_version", "version"), &SoundEvent::set_rtpc_schema_version);
+	ClassDB::bind_method(D_METHOD("get_rtpc_schema_version"), &SoundEvent::get_rtpc_schema_version);
 	ClassDB::bind_method(D_METHOD("get_rtpc_binding_count"), &SoundEvent::get_rtpc_binding_count);
 
 	ClassDB::bind_static_method("SoundEvent", D_METHOD("compute_final_volume_db", "random_offset_db", "rtpc_volume_db"), &SoundEvent::compute_final_volume_db);
@@ -109,6 +111,7 @@ void SoundEvent::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "source_radius", PROPERTY_HINT_RANGE, "0,100,0.1,suffix:m"), "set_source_radius", "get_source_radius");
 
 	ADD_GROUP("RTPC", "");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "rtpc_schema_version"), "set_rtpc_schema_version", "get_rtpc_schema_version");
 	ADD_PROPERTY(PropertyInfo(Variant::ARRAY, "rtpc_bindings", PROPERTY_HINT_TYPE_STRING, String::num(Variant::DICTIONARY) + ":"), "set_rtpc_bindings", "get_rtpc_bindings");
 
 	BIND_ENUM_CONSTANT(VARIATION_RANDOM);
@@ -137,4 +140,38 @@ void SoundEvent::_bind_methods() {
 	BIND_ENUM_CONSTANT(RTPC_VOLUME);
 	BIND_ENUM_CONSTANT(RTPC_GRAPH_INPUT);
 	BIND_ENUM_CONSTANT(RTPC_PLAYBACK_SPEED);
+}
+
+void SoundEvent::set_rtpc_bindings(const TypedArray<Dictionary> &p_bindings) {
+	if (rtpc_schema_version >= 2) {
+		rtpc_bindings = p_bindings;
+		return;
+	}
+	TypedArray<Dictionary> migrated;
+	bool ambiguous = false;
+	for (int i = 0; i < p_bindings.size(); i++) {
+		Dictionary binding = p_bindings[i];
+		int target = binding.get("target", (int)RTPC_PITCH);
+		String graph_name = binding.get("graph_input_name", "");
+		if (target == 4) {
+			binding["target"] = (int)RTPC_PLAYBACK_SPEED;
+		} else if (target == 3) {
+			if (!graph_name.is_empty()) {
+				binding["target"] = (int)RTPC_GRAPH_INPUT;
+			} else {
+				ambiguous = true;
+				ERR_PRINT(vformat("SoundEvent '%s': ambiguous legacy RTPC binding target 3 with an empty graph_input_name.", get_path()));
+				continue;
+			}
+		} else if (target == (int)RTPC_GRAPH_INPUT && graph_name.is_empty()) {
+			ambiguous = true;
+			ERR_PRINT(vformat("SoundEvent '%s': ambiguous legacy RTPC binding target 2 with an empty graph_input_name.", get_path()));
+			continue;
+		}
+		migrated.push_back(binding);
+	}
+	rtpc_bindings = migrated;
+	if (!ambiguous) {
+		rtpc_schema_version = 2;
+	}
 }

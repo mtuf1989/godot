@@ -19,6 +19,7 @@ TEST_FORCE_LINK(test_symphony_voice)
 #include "modules/symphony/runtime/voice_manager.h"
 #include "modules/symphony/runtime/event_dispatcher.h"
 #include "modules/symphony/runtime/sound_event.h"
+#include "modules/symphony/stream/audio_stream_symphony.h"
 #include "modules/symphony/core/symphony_voice_manager.h"
 #include "scene/resources/audio/audio_stream_wav.h"
 
@@ -223,6 +224,99 @@ TEST_CASE("[Symphony][Voice] get_debug_metrics exposes transition trigger retire
 	CHECK(metrics.has("rt_violations"));
 	CHECK((int64_t)metrics["packages_destroyed"] == (int64_t)mgr->get_packages_destroyed_count());
 	CHECK((int)metrics["rt_violations"] == (int)mgr->get_rt_violation_count());
+}
+
+TEST_CASE("[Symphony][Voice] generation handles reject stale control") {
+	SymphonyVoicePool *pool = SymphonyVoicePool::get_singleton();
+	REQUIRE(pool != nullptr);
+	int slot = pool->acquire_slot(40);
+	REQUIRE(slot >= 0);
+	int64_t handle = pool->make_voice_handle(slot);
+	CHECK(handle > 0);
+	CHECK(pool->resolve_voice_handle(handle) == slot);
+	CHECK(pool->resolve_voice_handle(slot) == -1);
+	pool->release_slot(slot, true);
+	CHECK(pool->resolve_voice_handle(handle) == -1);
+	int again = pool->acquire_slot(40);
+	REQUIRE(again >= 0);
+	int64_t next = pool->make_voice_handle(again);
+	CHECK(next != handle);
+	CHECK(pool->resolve_voice_handle(handle) == -1);
+	CHECK(pool->resolve_voice_handle(next) == again);
+	pool->release_slot(again, true);
+}
+
+TEST_CASE("[Symphony][Voice] occupancy and measured budget are separate") {
+	SymphonyVoicePool *pool = SymphonyVoicePool::get_singleton();
+	REQUIRE(pool != nullptr);
+	pool->set_measured_budget_percent(12.5f);
+	pool->process_frame();
+	CHECK(pool->get_budget_percent() == doctest::Approx(12.5f));
+	float expected = pool->get_pool_size() > 0 ? (100.0f * pool->get_active_voice_count() / pool->get_pool_size()) : 0.0f;
+	CHECK(pool->get_occupancy_percent() == doctest::Approx(expected));
+}
+
+TEST_CASE("[Symphony][Authoring] operator schema lists trigger names and modal arrays") {
+	Dictionary schema = AudioStreamSymphony::get_operator_schema();
+	CHECK((int)schema["schema_version"] == 2);
+	Array operators = schema["operators"];
+	CHECK(operators.size() >= 44);
+	bool saw_trigger = false;
+	bool saw_modal = false;
+	bool saw_finish = false;
+	bool noise_brown = false;
+	String previous;
+	for (int i = 0; i < operators.size(); i++) {
+		Dictionary op = operators[i];
+		String type = op["type"];
+		if (!previous.is_empty()) {
+			CHECK(previous.nocasecmp_to(type) <= 0);
+		}
+		previous = type;
+		Array params = op["params"];
+		if (type == "TriggerInput") {
+			for (int p = 0; p < params.size(); p++) {
+				Dictionary param = params[p];
+				if (String(param["name"]) == "trigger_name") {
+					saw_trigger = true;
+				}
+			}
+		}
+		if (type == "ModalBank") {
+			for (int p = 0; p < params.size(); p++) {
+				Dictionary param = params[p];
+				if (String(param["name"]) == "frequencies") {
+					saw_modal = true;
+				}
+			}
+		}
+		if (type == "GraphOutput") {
+			Array inputs = op["inputs"];
+			for (int p = 0; p < inputs.size(); p++) {
+				Dictionary pin = inputs[p];
+				if (String(pin["name"]) == "finish") {
+					saw_finish = true;
+				}
+			}
+		}
+		if (type == "Noise") {
+			for (int p = 0; p < params.size(); p++) {
+				Dictionary param = params[p];
+				if (String(param["name"]) == "mode") {
+					Array values = param["enum"];
+					for (int e = 0; e < values.size(); e++) {
+						if (String(values[e]) == "brown") {
+							noise_brown = true;
+						}
+					}
+				}
+			}
+		}
+	}
+	CHECK(saw_trigger);
+	CHECK(saw_modal);
+	CHECK(saw_finish);
+	CHECK_FALSE(noise_brown);
 }
 
 } // namespace TestSymphonyVoice

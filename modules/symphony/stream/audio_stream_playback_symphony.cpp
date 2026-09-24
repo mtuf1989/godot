@@ -39,6 +39,9 @@ void AudioStreamPlaybackSymphony::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_budget_percent"), &AudioStreamPlaybackSymphony::get_budget_percent);
 	ClassDB::bind_method(D_METHOD("get_last_rms"), &AudioStreamPlaybackSymphony::get_last_rms);
 	ClassDB::bind_method(D_METHOD("has_unsupported_seek"), &AudioStreamPlaybackSymphony::has_unsupported_seek);
+	ClassDB::bind_method(D_METHOD("get_budget_lod_floor"), &AudioStreamPlaybackSymphony::get_budget_lod_floor);
+	ClassDB::bind_method(D_METHOD("get_current_lod_tier"), &AudioStreamPlaybackSymphony::get_current_lod_tier);
+	ClassDB::bind_method(D_METHOD("request_lod_tier", "lod_tier"), &AudioStreamPlaybackSymphony::request_lod_tier);
 }
 
 void AudioStreamPlaybackSymphony::_install_package(PreparedGraphPackage *p_package) {
@@ -180,6 +183,10 @@ void AudioStreamPlaybackSymphony::_cache_stream_metadata() {
 
 void AudioStreamPlaybackSymphony::request_lod_tier(int32_t p_lod_tier) {
 	requested_lod_tier.store(p_lod_tier, std::memory_order_release);
+}
+
+void AudioStreamPlaybackSymphony::set_budget_lod_floor(int32_t p_lod_tier) {
+	budget_lod_floor.store(CLAMP(p_lod_tier, 0, 8), std::memory_order_release);
 }
 
 void AudioStreamPlaybackSymphony::request_manager_stop() {

@@ -85,10 +85,15 @@ public:
 		float local_param_values[MAX_LOCAL_PARAMS];
 		int local_param_count = 0;
 
-		// LOD state
-		int current_lod = 0;      // Current LOD tier (0=full, 1=simplified, 2=minimal)
-		int target_lod = 0;       // Target LOD (set by auto or force_lod)
+		// LOD state. current_lod is the tier playback has installed.
+		// distance_lod and budget_lod are requests. Forced target_lod wins;
+		// otherwise the more economical (higher) of the two requests is used.
+		int current_lod = 0;
+		int target_lod = 0;
+		int distance_lod = 0;
+		int budget_lod = 0;
 		bool lod_forced = false;  // If true, auto-LOD is disabled for this slot
+		uint32_t generation = 0; // Bumped on acquire and reclaim. 0 means never issued.
 		float lod_threshold_1 = 0.3f; // Distance ratio for LOD 0→1 transition
 		float lod_threshold_2 = 0.7f; // Distance ratio for LOD 1→2 transition
 	};
@@ -97,7 +102,8 @@ public:
 		int active = 0;
 		int virtual_count = 0;
 		int stolen_this_frame = 0;
-		float budget_percent = 0.0f;
+		float budget_percent = 0.0f; // Measured DSP load, written by the game layer.
+		float occupancy_percent = 0.0f; // Active slots / pool size.
 	};
 
 private:
@@ -155,6 +161,13 @@ public:
 	int get_virtual_voice_count() const;
 	int get_stolen_this_frame() const;
 	float get_budget_percent() const;
+	float get_occupancy_percent() const;
+	void set_measured_budget_percent(float p_percent);
+
+	// Positive 64-bit handle: generation in bits 32..62, slot in bits 0..31.
+	int64_t make_voice_handle(int p_slot) const;
+	int resolve_voice_handle(int64_t p_handle) const;
+	int get_slot_priority(int p_slot) const;
 
 	// Per-voice local parameters
 	void set_local_parameter(int p_slot, const StringName &p_name, float p_value);
@@ -218,6 +231,10 @@ public:
 	// LOD control
 	void force_lod(int p_slot, int p_lod_tier);    // Force a specific LOD tier (disables auto)
 	void release_lod_force(int p_slot);             // Re-enable auto-LOD for this slot
+	int get_slot_effective_lod(int p_slot) const;
+	void set_slot_budget_lod(int p_slot, int p_lod_tier);
+	void note_lod_installed(int p_slot, int p_lod_tier);
+	bool is_slot_lod_forced(int p_slot) const;
 	int get_slot_current_lod(int p_slot) const;
 	int get_slot_target_lod(int p_slot) const;
 	void update_lod_targets();                      // Called each frame, updates target LOD based on distance
