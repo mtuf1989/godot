@@ -573,14 +573,14 @@ void TextEditorBase::_saved_update() {
 }
 
 void TextEditorBase::_emit_request_save_new_history() {
-	Dictionary state = get_edit_state();
+	Dictionary state = get_navigation_state();
 	state["ensure_caret_visible"] = true;
 	previous_history_line = state["row"];
 	emit_signal(SNAME("_request_save_new_history"), state);
 }
 
 void TextEditorBase::_emit_request_save_previous_state() {
-	Dictionary state = get_edit_state();
+	Dictionary state = get_navigation_state();
 	state["ensure_caret_visible"] = true;
 	previous_history_line = state["row"];
 	emit_signal(SNAME("_request_save_previous_state"), state);
@@ -725,7 +725,6 @@ TextEditorBase::TextEditorBase() {
 	code_editor = memnew(CodeTextEditor);
 	code_editor->set_anchors_and_offsets_preset(Control::PRESET_FULL_RECT);
 	code_editor->set_v_size_flags(Control::SIZE_EXPAND_FILL);
-	code_editor->show_toggle_files_button();
 	code_editor->get_text_editor()->set_context_menu_enabled(false);
 	code_editor->get_text_editor()->connect(SceneStringName(gui_input), callable_mp(this, &TextEditorBase::_text_edit_gui_input));
 	code_editor->get_text_editor()->connect(SceneStringName(text_changed), callable_mp(this, &TextEditorBase::_saved_update));
@@ -846,7 +845,7 @@ void CodeEditorBase::_make_context_menu(bool p_selection, bool p_foldable, const
 	}
 }
 
-void CodeEditorBase::_code_complete_scripts(void *p_ud, const String &p_code, List<ScriptLanguage::CodeCompletionOption> *r_options, bool &r_force) {
+void CodeEditorBase::_code_complete_scripts(void *p_ud, const String &p_code, List<EditorLanguage::CompletionOption> *r_options, bool &r_force) {
 	CodeEditorBase *ste = (CodeEditorBase *)p_ud;
 	ste->_code_complete_script(p_code, r_options, r_force);
 }

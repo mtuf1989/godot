@@ -293,11 +293,15 @@ static const LauncherIcon LAUNCHER_ADAPTIVE_ICON_MONOCHROMES[ICON_DENSITIES_COUN
 	{ "res/mipmap/icon_monochrome.webp", 432 }
 };
 
-static const int EXPORT_FORMAT_APK = 0;
-static const int EXPORT_FORMAT_AAB = 1;
-
-static const char *APK_ASSETS_DIRECTORY = "src/main/assets";
+static const char *DATA_LIB_DIRECTORY = "dataLib/src/main";
+static const char *DEFAULT_ASSETS_DIRECTORY = "dataLib/src/main/assets";
 static const char *AAB_ASSETS_DIRECTORY = "assetPackInstallTime/src/main/assets";
+
+// Temp manifest locations
+static const char *AAR_DEBUG_MANIFEST = "dataLib/src/debug/AndroidManifest.xml";
+static const char *AAR_RELEASE_MANIFEST = "dataLib/src/release/AndroidManifest.xml";
+static const char *APK_AAB_DEBUG_MANIFEST = "src/debug/AndroidManifest.xml";
+static const char *APK_AAB_RELEASE_MANIFEST = "src/release/AndroidManifest.xml";
 
 #ifndef ANDROID_ENABLED
 void EditorExportPlatformAndroid::_check_for_changes_poll_thread(void *ud) {
@@ -551,7 +555,7 @@ String EditorExportPlatformAndroid::get_valid_basename(const Ref<EditorExportPre
 
 String EditorExportPlatformAndroid::get_assets_directory(const Ref<EditorExportPreset> &p_preset, int p_export_format) const {
 	String gradle_build_directory = ExportTemplateManager::get_android_build_directory(p_preset);
-	return gradle_build_directory.path_join(p_export_format == EXPORT_FORMAT_AAB ? AAB_ASSETS_DIRECTORY : APK_ASSETS_DIRECTORY);
+	return gradle_build_directory.path_join(p_export_format == EXPORT_FORMAT_AAB ? AAB_ASSETS_DIRECTORY : DEFAULT_ASSETS_DIRECTORY);
 }
 
 bool EditorExportPlatformAndroid::is_package_name_valid(const Ref<EditorExportPreset> &p_preset, const String &p_package, String *r_error) const {
@@ -910,71 +914,11 @@ void EditorExportPlatformAndroid::_notification(int p_what) {
 
 		case EditorSettings::NOTIFICATION_EDITOR_SETTINGS_CHANGED: {
 			if (EditorSettings::get_singleton()->check_changed_settings_in_group("export/android")) {
-				_create_editor_debug_keystore_if_needed();
+				AndroidSDKManager::create_editor_debug_keystore_if_needed();
 			}
 		} break;
 	}
 #endif
-}
-
-void EditorExportPlatformAndroid::_create_editor_debug_keystore_if_needed() {
-	// Check if we have a valid keytool path.
-	String keytool_path = get_keytool_path();
-	if (!FileAccess::exists(keytool_path)) {
-		return;
-	}
-
-	// Check if the current editor debug keystore exists.
-	String editor_debug_keystore = EDITOR_GET("export/android/debug_keystore");
-	if (FileAccess::exists(editor_debug_keystore)) {
-		return;
-	}
-
-	// Generate the debug keystore.
-	String keystore_path = EditorPaths::get_singleton()->get_debug_keystore_path();
-	String keystores_dir = keystore_path.get_base_dir();
-	if (!DirAccess::exists(keystores_dir)) {
-		Ref<DirAccess> dir_access = DirAccess::create(DirAccess::ACCESS_FILESYSTEM);
-		Error err = dir_access->make_dir_recursive(keystores_dir);
-		if (err != OK) {
-			WARN_PRINT(TTR("Error creating keystores directory:") + "\n" + keystores_dir);
-			return;
-		}
-	}
-
-	if (!FileAccess::exists(keystore_path)) {
-		String output;
-		List<String> args;
-		args.push_back("-genkey");
-		args.push_back("-keystore");
-		args.push_back(keystore_path);
-		args.push_back("-storepass");
-		args.push_back("android");
-		args.push_back("-alias");
-		args.push_back(DEFAULT_ANDROID_KEYSTORE_DEBUG_USER);
-		args.push_back("-keypass");
-		args.push_back(DEFAULT_ANDROID_KEYSTORE_DEBUG_PASSWORD);
-		args.push_back("-keyalg");
-		args.push_back("RSA");
-		args.push_back("-keysize");
-		args.push_back("2048");
-		args.push_back("-validity");
-		args.push_back("10000");
-		args.push_back("-dname");
-		args.push_back("cn=Godot, ou=Godot Engine, o=Stichting Godot, c=NL");
-		Error error = OS::get_singleton()->execute(keytool_path, args, &output, nullptr, true);
-		print_verbose(output);
-		if (error != OK) {
-			WARN_PRINT("Error: Unable to create debug keystore");
-			return;
-		}
-	}
-
-	// Update the editor settings.
-	EditorSettings::get_singleton()->set("export/android/debug_keystore", keystore_path);
-	EditorSettings::get_singleton()->set("export/android/debug_keystore_user", DEFAULT_ANDROID_KEYSTORE_DEBUG_USER);
-	EditorSettings::get_singleton()->set("export/android/debug_keystore_pass", DEFAULT_ANDROID_KEYSTORE_DEBUG_PASSWORD);
-	print_verbose("Updated editor debug keystore to " + keystore_path);
 }
 
 void EditorExportPlatformAndroid::_get_manifest_info(const Ref<EditorExportPreset> &p_preset, bool p_give_internet, Vector<String> &r_permissions, Vector<FeatureInfo> &r_features, Vector<MetadataInfo> &r_metadata) {
@@ -1031,7 +975,9 @@ void EditorExportPlatformAndroid::_get_manifest_info(const Ref<EditorExportPrese
 	r_metadata.append(editor_version_metadata);
 }
 
-void EditorExportPlatformAndroid::_write_tmp_manifest(const Ref<EditorExportPreset> &p_preset, bool p_give_internet, bool p_debug) {
+void EditorExportPlatformAndroid::_write_tmp_manifest(const Ref<EditorExportPreset> &p_preset, bool p_give_internet, int p_export_format, bool p_debug) {
+	_clear_tmp_manifest(p_preset);
+
 	print_verbose("Building temporary manifest...");
 	String manifest_text =
 			"<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
@@ -1072,9 +1018,16 @@ void EditorExportPlatformAndroid::_write_tmp_manifest(const Ref<EditorExportPres
 		}
 	}
 
-	manifest_text += _get_application_tag(Ref<EditorExportPlatform>(this), p_preset, _has_read_write_storage_permission(perms), p_debug, manifest_metadata);
+	manifest_text += _get_application_tag(Ref<EditorExportPlatform>(this), p_preset, p_export_format, _has_read_write_storage_permission(perms), p_debug, manifest_metadata);
 	manifest_text += "</manifest>\n";
-	String manifest_path = ExportTemplateManager::get_android_build_directory(p_preset).path_join(vformat("src/%s/AndroidManifest.xml", (p_debug ? "debug" : "release")));
+
+	const String gradle_build_directory = ExportTemplateManager::get_android_build_directory(p_preset);
+	String manifest_path;
+	if (p_export_format == EXPORT_FORMAT_AAR) {
+		manifest_path = gradle_build_directory.path_join((p_debug ? AAR_DEBUG_MANIFEST : AAR_RELEASE_MANIFEST));
+	} else {
+		manifest_path = gradle_build_directory.path_join((p_debug ? APK_AAB_DEBUG_MANIFEST : APK_AAB_RELEASE_MANIFEST));
+	}
 
 	print_verbose("Storing manifest into " + manifest_path + ": " + "\n" + manifest_text);
 	store_string_at_path(manifest_path, manifest_text);
@@ -1085,8 +1038,8 @@ bool EditorExportPlatformAndroid::_is_transparency_allowed(const Ref<EditorExpor
 }
 
 void EditorExportPlatformAndroid::_fix_themes_xml(const Ref<EditorExportPreset> &p_preset) {
-	String gradle_build_dir = ExportTemplateManager::get_android_build_directory(p_preset);
-	const String themes_xml_path = gradle_build_dir.path_join("res/values/themes.xml");
+	String data_lib_dir = ExportTemplateManager::get_android_build_directory(p_preset).path_join(DATA_LIB_DIRECTORY);
+	const String themes_xml_path = data_lib_dir.path_join("res/values/themes.xml");
 
 	if (!FileAccess::exists(themes_xml_path)) {
 		print_error("res/values/themes.xml does not exist.");
@@ -1117,7 +1070,7 @@ void EditorExportPlatformAndroid::_fix_themes_xml(const Ref<EditorExportPreset> 
 	String splash_icon_path = p_preset->get(ANDROID_SPLASH_ICON_OPTION);
 	if (!splash_icon_path.is_empty() && splash_icon_path.get_extension() == "xml") {
 		Vector<uint8_t> data = FileAccess::get_file_as_bytes(splash_icon_path);
-		store_file_at_path(gradle_build_dir.path_join("res/drawable/splash_icon_vector.xml"), data);
+		store_file_at_path(data_lib_dir.path_join("res/drawable/splash_icon_vector.xml"), data);
 		splash_theme_attributes["windowSplashScreenAnimatedIcon"] = "@drawable/splash_icon_vector";
 	}
 	String splash_branding_image_path = p_preset->get(ANDROID_SPLASH_BRANDING_IMAGE_OPTION);
@@ -1993,20 +1946,20 @@ void EditorExportPlatformAndroid::_copy_icons_to_gradle_project(const Ref<Editor
 		const Ref<Image> &p_monochrome,
 		const Ref<Image> &p_splash_icon,
 		const Ref<Image> &p_splash_branding_image) {
-	String gradle_build_dir = ExportTemplateManager::get_android_build_directory(p_preset);
+	const String data_lib_dir = ExportTemplateManager::get_android_build_directory(p_preset).path_join(DATA_LIB_DIRECTORY);
 
 	// Copy splash screen icon to the drawable directory.
 	// This is only for png/webp/svg file; XML file is handled in _fix_themes_xml().
 	if (p_splash_icon.is_valid() && !p_splash_icon->is_empty()) {
 		print_verbose("Copying splash screen icon into " + ANDROID_SPLASH_ICON_PATH);
 		Vector<uint8_t> buffer = p_splash_icon->save_webp_to_buffer();
-		store_file_at_path(gradle_build_dir.path_join(ANDROID_SPLASH_ICON_PATH), buffer);
+		store_file_at_path(data_lib_dir.path_join(ANDROID_SPLASH_ICON_PATH), buffer);
 	}
 
 	if (p_splash_branding_image.is_valid() && !p_splash_branding_image->is_empty()) {
 		print_verbose("Copying splash screen branding image into " + ANDROID_SPLASH_BRANDING_IMAGE_PATH);
 		Vector<uint8_t> buffer = p_splash_branding_image->save_webp_to_buffer();
-		store_file_at_path(gradle_build_dir.path_join(ANDROID_SPLASH_BRANDING_IMAGE_PATH), buffer);
+		store_file_at_path(data_lib_dir.path_join(ANDROID_SPLASH_BRANDING_IMAGE_PATH), buffer);
 	}
 
 	String monochrome_tag = "";
@@ -2019,7 +1972,7 @@ void EditorExportPlatformAndroid::_copy_icons_to_gradle_project(const Ref<Editor
 			print_verbose("Processing launcher icon for dimension " + itos(LAUNCHER_ICONS[i].dimensions) + " into " + LAUNCHER_ICONS[i].export_path);
 			Vector<uint8_t> data;
 			_process_launcher_icons(LAUNCHER_ICONS[i].export_path, p_main_image, LAUNCHER_ICONS[i].dimensions, data);
-			store_file_at_path(gradle_build_dir.path_join(LAUNCHER_ICONS[i].export_path), data);
+			store_file_at_path(data_lib_dir.path_join(LAUNCHER_ICONS[i].export_path), data);
 		}
 
 		if (p_foreground.is_valid() && !p_foreground->is_empty()) {
@@ -2027,7 +1980,7 @@ void EditorExportPlatformAndroid::_copy_icons_to_gradle_project(const Ref<Editor
 			Vector<uint8_t> data;
 			_process_launcher_icons(LAUNCHER_ADAPTIVE_ICON_FOREGROUNDS[i].export_path, p_foreground,
 					LAUNCHER_ADAPTIVE_ICON_FOREGROUNDS[i].dimensions, data);
-			store_file_at_path(gradle_build_dir.path_join(LAUNCHER_ADAPTIVE_ICON_FOREGROUNDS[i].export_path), data);
+			store_file_at_path(data_lib_dir.path_join(LAUNCHER_ADAPTIVE_ICON_FOREGROUNDS[i].export_path), data);
 		}
 
 		if (p_background.is_valid() && !p_background->is_empty()) {
@@ -2035,7 +1988,7 @@ void EditorExportPlatformAndroid::_copy_icons_to_gradle_project(const Ref<Editor
 			Vector<uint8_t> data;
 			_process_launcher_icons(LAUNCHER_ADAPTIVE_ICON_BACKGROUNDS[i].export_path, p_background,
 					LAUNCHER_ADAPTIVE_ICON_BACKGROUNDS[i].dimensions, data);
-			store_file_at_path(gradle_build_dir.path_join(LAUNCHER_ADAPTIVE_ICON_BACKGROUNDS[i].export_path), data);
+			store_file_at_path(data_lib_dir.path_join(LAUNCHER_ADAPTIVE_ICON_BACKGROUNDS[i].export_path), data);
 		}
 
 		if (p_monochrome.is_valid() && !p_monochrome->is_empty()) {
@@ -2043,13 +1996,13 @@ void EditorExportPlatformAndroid::_copy_icons_to_gradle_project(const Ref<Editor
 			Vector<uint8_t> data;
 			_process_launcher_icons(LAUNCHER_ADAPTIVE_ICON_MONOCHROMES[i].export_path, p_monochrome,
 					LAUNCHER_ADAPTIVE_ICON_MONOCHROMES[i].dimensions, data);
-			store_file_at_path(gradle_build_dir.path_join(LAUNCHER_ADAPTIVE_ICON_MONOCHROMES[i].export_path), data);
+			store_file_at_path(data_lib_dir.path_join(LAUNCHER_ADAPTIVE_ICON_MONOCHROMES[i].export_path), data);
 			monochrome_tag = "    <monochrome android:drawable=\"@mipmap/icon_monochrome\"/>\n";
 		}
 	}
 
 	// Finalize the icon.xml by formatting the template with the optional monochrome tag.
-	store_string_at_path(gradle_build_dir.path_join(ICON_XML_PATH), vformat(ICON_XML_TEMPLATE, monochrome_tag));
+	store_string_at_path(data_lib_dir.path_join(ICON_XML_PATH), vformat(ICON_XML_TEMPLATE, monochrome_tag));
 }
 
 Vector<EditorExportPlatformAndroid::ABI> EditorExportPlatformAndroid::get_enabled_abis(const Ref<EditorExportPreset> &p_preset) {
@@ -2104,10 +2057,21 @@ String EditorExportPlatformAndroid::get_export_option_warning(const EditorExport
 			if (bool(p_preset->get("gradle_build/compress_native_libraries")) && !gradle_build_enabled) {
 				return TTR("\"Compress Native Libraries\" is only valid when \"Use Gradle Build\" is enabled.");
 			}
+		} else if (p_name == "gradle_build/minification") {
+			bool gradle_build_enabled = p_preset->get("gradle_build/use_gradle_build");
+			if (bool(p_preset->get("gradle_build/minification")) && !gradle_build_enabled) {
+				return TTR("\"Minification\" is only valid when \"Use Gradle Build\" is enabled.");
+			}
 		} else if (p_name == "gradle_build/export_format") {
 			bool gradle_build_enabled = p_preset->get("gradle_build/use_gradle_build");
-			if (int(p_preset->get("gradle_build/export_format")) == EXPORT_FORMAT_AAB && !gradle_build_enabled) {
-				return TTR("\"Export AAB\" is only valid when \"Use Gradle Build\" is enabled.");
+			if (!gradle_build_enabled) {
+				int export_format = int(p_preset->get("gradle_build/export_format"));
+				if (export_format == EXPORT_FORMAT_AAB) {
+					return TTR("\"Export AAB\" is only valid when \"Use Gradle Build\" is enabled.");
+				}
+				if (export_format == EXPORT_FORMAT_AAR) {
+					return TTR("\"Export AAR\" is only valid when \"Use Gradle Build\" is enabled.");
+				}
 			}
 		} else if (p_name == "gradle_build/min_sdk") {
 			String min_sdk_str = p_preset->get("gradle_build/min_sdk");
@@ -2188,7 +2152,8 @@ void EditorExportPlatformAndroid::get_export_options(List<ExportOption> *r_optio
 	r_options->push_back(ExportOption(PropertyInfo(Variant::STRING, "gradle_build/gradle_build_directory", PROPERTY_HINT_PLACEHOLDER_TEXT, "res://android"), "", false, false));
 	r_options->push_back(ExportOption(PropertyInfo(Variant::STRING, "gradle_build/android_source_template", PROPERTY_HINT_GLOBAL_FILE, "*.zip"), ""));
 	r_options->push_back(ExportOption(PropertyInfo(Variant::BOOL, "gradle_build/compress_native_libraries"), false, false, true));
-	r_options->push_back(ExportOption(PropertyInfo(Variant::INT, "gradle_build/export_format", PROPERTY_HINT_ENUM, "Export APK,Export AAB"), EXPORT_FORMAT_APK, false, true));
+	r_options->push_back(ExportOption(PropertyInfo(Variant::BOOL, "gradle_build/minification"), false, false, true));
+	r_options->push_back(ExportOption(PropertyInfo(Variant::INT, "gradle_build/export_format", PROPERTY_HINT_ENUM, "Export APK,Export AAB,Export AAR"), EXPORT_FORMAT_APK, false, true));
 	// Using String instead of int to default to an empty string (no override) with placeholder for instructions (see GH-62465).
 	// This implies doing validation that the string is a proper int.
 	const String min_sdk_placeholder = _uses_vulkan(nullptr) ? vformat("%d (Vulkan default)", AndroidSDKManager::VULKAN_MIN_SDK_VERSION) : vformat("%d (default)", AndroidSDKManager::DEFAULT_MIN_SDK_VERSION);
@@ -2675,15 +2640,6 @@ Ref<Texture2D> EditorExportPlatformAndroid::get_run_icon() const {
 	return run_icon;
 }
 
-String EditorExportPlatformAndroid::get_keytool_path() {
-	String exe_ext;
-	if (OS::get_singleton()->get_name() == "Windows") {
-		exe_ext = ".exe";
-	}
-	String java_sdk_path = EDITOR_GET("export/android/java_sdk_path");
-	return java_sdk_path.path_join("bin/keytool" + exe_ext);
-}
-
 static bool has_valid_keystore_credentials(String &r_error_str, const String &p_keystore, const String &p_username, const String &p_password, const String &p_type) {
 	String output;
 	List<String> args;
@@ -2694,7 +2650,7 @@ static bool has_valid_keystore_credentials(String &r_error_str, const String &p_
 	args.push_back(p_password);
 	args.push_back("-alias");
 	args.push_back(p_username);
-	String keytool_path = EditorExportPlatformAndroid::get_keytool_path();
+	String keytool_path = AndroidSDKManager::get_keytool_path();
 	Error error = OS::get_singleton()->execute(keytool_path, args, &output, nullptr, true);
 	String keytool_error = "keytool error:";
 	bool valid = output.substr(0, keytool_error.length()) != keytool_error;
@@ -2874,7 +2830,9 @@ bool EditorExportPlatformAndroid::has_valid_export_configuration(const Ref<Edito
 
 	// Validate the rest of the export configuration.
 
-	if (p_debug) {
+	// Validate the debug keystore setup.
+	bool has_valid_debug_keystore = true;
+	{
 		String dk = _get_keystore_path(p_preset, true);
 		String dk_user = p_preset->get_or_env("keystore/debug_user", ENV_ANDROID_KEYSTORE_DEBUG_USER);
 		String dk_password = p_preset->get_or_env("keystore/debug_password", ENV_ANDROID_KEYSTORE_DEBUG_PASS);
@@ -2884,15 +2842,22 @@ bool EditorExportPlatformAndroid::has_valid_export_configuration(const Ref<Edito
 			err += TTR("Either Debug Keystore, Debug User AND Debug Password settings must be configured OR none of them.") + "\n";
 		}
 
-		// Use OR to make the export UI able to show this error.
-		if (!dk.is_empty() && !FileAccess::exists(dk)) {
+		if (dk.is_empty()) {
+			// Check the editor setting.
 			dk = EDITOR_GET("export/android/debug_keystore");
-			if (!FileAccess::exists(dk)) {
-				valid = false;
+			if (dk.is_empty() || !FileAccess::exists(dk)) {
+				has_valid_debug_keystore = false;
 				err += TTR("Debug keystore not configured in the Editor Settings nor in the preset.") + "\n";
 			}
+		} else if (!FileAccess::exists(dk)) {
+			has_valid_debug_keystore = false;
+			err += TTR("Debug keystore incorrectly configured in the export preset.") + "\n";
 		}
-	} else {
+	}
+
+	// Validate the release keystore setup.
+	bool has_valid_release_keystore = true;
+	{
 		String rk = _get_keystore_path(p_preset, false);
 		String rk_user = p_preset->get_or_env("keystore/release_user", ENV_ANDROID_KEYSTORE_RELEASE_USER);
 		String rk_password = p_preset->get_or_env("keystore/release_password", ENV_ANDROID_KEYSTORE_RELEASE_PASS);
@@ -2902,10 +2867,17 @@ bool EditorExportPlatformAndroid::has_valid_export_configuration(const Ref<Edito
 			err += TTR("Either Release Keystore, Release User AND Release Password settings must be configured OR none of them.") + "\n";
 		}
 
-		if (!rk.is_empty() && !FileAccess::exists(rk)) {
-			valid = false;
+		if (rk.is_empty()) {
+			has_valid_release_keystore = false;
+		} else if (!FileAccess::exists(rk)) {
+			has_valid_release_keystore = false;
 			err += TTR("Release keystore incorrectly configured in the export preset.") + "\n";
 		}
+	}
+
+	// If both keystores are not configured, then it's an error.
+	if (!has_valid_debug_keystore && !has_valid_release_keystore) {
+		valid = false;
 	}
 
 #ifndef ANDROID_ENABLED
@@ -3019,14 +2991,22 @@ bool EditorExportPlatformAndroid::has_valid_project_configuration(const Ref<Edit
 	return valid;
 }
 
+String EditorExportPlatformAndroid::_get_export_format_extension(int p_export_format) {
+	switch (p_export_format) {
+		case EXPORT_FORMAT_AAR:
+			return "aar";
+		case EXPORT_FORMAT_AAB:
+			return "aab";
+		case EXPORT_FORMAT_APK:
+		default:
+			return "apk";
+	}
+}
+
 List<String> EditorExportPlatformAndroid::get_binary_extensions(const Ref<EditorExportPreset> &p_preset) const {
 	List<String> list;
 	int export_format = int(p_preset->get("gradle_build/export_format"));
-	if (export_format == EXPORT_FORMAT_AAB) {
-		list.push_back("aab");
-	} else {
-		list.push_back("apk");
-	}
+	list.push_back(_get_export_format_extension(export_format));
 	return list;
 }
 
@@ -3108,8 +3088,8 @@ void EditorExportPlatformAndroid::get_command_line_flags(const Ref<EditorExportP
 
 Error EditorExportPlatformAndroid::sign_apk(const Ref<EditorExportPreset> &p_preset, bool p_debug, const String &export_path, EditorProgress &ep) {
 	int export_format = int(p_preset->get("gradle_build/export_format"));
-	if (export_format == EXPORT_FORMAT_AAB) {
-		add_message(EXPORT_MESSAGE_ERROR, TTR("Code Signing"), TTR("AAB signing is not supported"));
+	if (export_format != EXPORT_FORMAT_APK) {
+		add_message(EXPORT_MESSAGE_ERROR, TTR("Code Signing"), TTR("Only APK signing is supported"));
 		return FAILED;
 	}
 
@@ -3260,19 +3240,48 @@ Error EditorExportPlatformAndroid::sign_apk(const Ref<EditorExportPreset> &p_pre
 	return OK;
 }
 
+void EditorExportPlatformAndroid::_clear_tmp_manifest(const Ref<EditorExportPreset> &p_preset) {
+	Ref<DirAccess> da_res = DirAccess::create(DirAccess::ACCESS_RESOURCES);
+	String gradle_build_directory = ExportTemplateManager::get_android_build_directory(p_preset);
+
+	// Clear the temporary AAR manifests.
+	String aar_debug_manifest_path = gradle_build_directory.path_join(AAR_DEBUG_MANIFEST);
+	if (da_res->file_exists(aar_debug_manifest_path)) {
+		print_verbose("Clearing temporary aar debug manifest...");
+		da_res->remove(aar_debug_manifest_path);
+	}
+	String aar_release_manifest_path = gradle_build_directory.path_join(AAR_RELEASE_MANIFEST);
+	if (da_res->file_exists(aar_release_manifest_path)) {
+		print_verbose("Clearing temporary aar release manifest...");
+		da_res->remove(aar_release_manifest_path);
+	}
+
+	// Clear the temporary APK / AAB manifests.
+	String apk_aab_debug_manifest_path = gradle_build_directory.path_join(APK_AAB_DEBUG_MANIFEST);
+	if (da_res->file_exists(apk_aab_debug_manifest_path)) {
+		print_verbose("Clearing temporary apk / aab debug manifest...");
+		da_res->remove(apk_aab_debug_manifest_path);
+	}
+	String apk_aab_release_manifest_path = gradle_build_directory.path_join(APK_AAB_RELEASE_MANIFEST);
+	if (da_res->file_exists(apk_aab_release_manifest_path)) {
+		print_verbose("Clearing temporary apk / aab release manifest...");
+		da_res->remove(apk_aab_release_manifest_path);
+	}
+}
+
 void EditorExportPlatformAndroid::_clear_assets_directory(const Ref<EditorExportPreset> &p_preset) {
 	Ref<DirAccess> da_res = DirAccess::create(DirAccess::ACCESS_RESOURCES);
 	String gradle_build_directory = ExportTemplateManager::get_android_build_directory(p_preset);
 
-	// Clear the APK assets directory
-	String apk_assets_directory = gradle_build_directory.path_join(APK_ASSETS_DIRECTORY);
-	if (da_res->dir_exists(apk_assets_directory)) {
-		print_verbose("Clearing APK assets directory...");
-		Ref<DirAccess> da_assets = DirAccess::open(apk_assets_directory);
+	// Clear the default assets directory
+	String default_assets_directory = gradle_build_directory.path_join(DEFAULT_ASSETS_DIRECTORY);
+	if (da_res->dir_exists(default_assets_directory)) {
+		print_verbose("Clearing default assets directory...");
+		Ref<DirAccess> da_assets = DirAccess::open(default_assets_directory);
 		ERR_FAIL_COND(da_assets.is_null());
 
 		da_assets->erase_contents_recursive();
-		da_res->remove(apk_assets_directory);
+		da_res->remove(default_assets_directory);
 	}
 
 	// Clear the AAB assets directory
@@ -3470,6 +3479,20 @@ static String _copy_keystore_to_temp(const String &p_keystore_path, const String
 #endif
 
 Error EditorExportPlatformAndroid::export_project_helper(const Ref<EditorExportPreset> &p_preset, bool p_debug, const String &p_path, int export_format, bool should_sign, BitField<EditorExportPlatform::DebugFlags> p_flags) {
+	if (export_format == EXPORT_FORMAT_AAR) {
+		// AAR are not signed.
+		if (should_sign) {
+			WARN_PRINT("Signing AAR is not supported.");
+			should_sign = false;
+		}
+
+		// Only release AAR are supported.
+		if (p_debug) {
+			WARN_PRINT("Exporting a debug AAR is not supported.");
+			p_debug = false;
+		}
+	}
+
 	ExportNotifier notifier(*this, p_preset, p_debug, p_path, p_flags);
 
 	const String base_dir = p_path.get_base_dir();
@@ -3512,17 +3535,19 @@ Error EditorExportPlatformAndroid::export_project_helper(const Ref<EditorExportP
 	// Write command line flags into the command_line_flags variable.
 	get_command_line_flags(p_preset, p_path, p_flags, command_line_flags);
 
-	if (export_format == EXPORT_FORMAT_AAB) {
-		if (!p_path.ends_with(".aab")) {
-			add_message(EXPORT_MESSAGE_ERROR, TTR("Export"), TTR("Invalid filename! Android App Bundle requires the *.aab extension."));
-			return ERR_UNCONFIGURED;
-		}
+	if (export_format == EXPORT_FORMAT_AAB && !p_path.ends_with(".aab")) {
+		add_message(EXPORT_MESSAGE_ERROR, TTR("Export"), TTR("Invalid filename! Android App Bundle requires the *.aab extension."));
+		return ERR_UNCONFIGURED;
 	}
 	if (export_format == EXPORT_FORMAT_APK && !p_path.ends_with(".apk")) {
 		add_message(EXPORT_MESSAGE_ERROR, TTR("Export"), TTR("Invalid filename! Android APK requires the *.apk extension."));
 		return ERR_UNCONFIGURED;
 	}
-	if (export_format > EXPORT_FORMAT_AAB || export_format < EXPORT_FORMAT_APK) {
+	if (export_format == EXPORT_FORMAT_AAR && !p_path.ends_with(".aar")) {
+		add_message(EXPORT_MESSAGE_ERROR, TTR("Export"), TTR("Invalid filename! Android Archive requires the *.aar extension."));
+		return ERR_UNCONFIGURED;
+	}
+	if (export_format > EXPORT_FORMAT_AAR || export_format < EXPORT_FORMAT_APK) {
 		add_message(EXPORT_MESSAGE_ERROR, TTR("Export"), TTR("Unsupported export format!"));
 		return ERR_UNCONFIGURED;
 	}
@@ -3568,14 +3593,15 @@ Error EditorExportPlatformAndroid::export_project_helper(const Ref<EditorExportP
 
 		// TODO: should we use "package/name" or "application/config/name"?
 		String project_name = get_project_name(p_preset, p_preset->get("package/name"));
-		err = _create_project_name_strings_files(p_preset, project_name, gradle_build_directory, get_project_setting(p_preset, "application/config/name_localized")); //project name localization.
+		const String data_lib_directory = gradle_build_directory.path_join(DATA_LIB_DIRECTORY);
+		err = _create_project_name_strings_files(p_preset, project_name, data_lib_directory, get_project_setting(p_preset, "application/config/name_localized")); //project name localization.
 		if (err != OK) {
 			add_message(EXPORT_MESSAGE_ERROR, TTR("Export"), TTR("Unable to overwrite res/*.xml files with project name."));
 		}
 		// Copies the project icon files into the appropriate Gradle project directory.
 		_copy_icons_to_gradle_project(p_preset, main_image, foreground, background, monochrome, splash_icon, splash_branding_image);
 		// Write an AndroidManifest.xml file into the Gradle project directory.
-		_write_tmp_manifest(p_preset, p_give_internet, p_debug);
+		_write_tmp_manifest(p_preset, p_give_internet, export_format, p_debug);
 		// Modify res/values/themes.xml file.
 		_fix_themes_xml(p_preset);
 
@@ -3666,6 +3692,7 @@ Error EditorExportPlatformAndroid::export_project_helper(const Ref<EditorExportP
 		String sign_flag = bool_to_string(should_sign);
 		String zipalign_flag = "true";
 		String compress_native_libraries_flag = bool_to_string(p_preset->get("gradle_build/compress_native_libraries"));
+		String minification_flag = bool_to_string(!p_debug && bool(p_preset->get("gradle_build/minification")));
 
 		Vector<String> android_libraries;
 		Vector<String> android_dependencies;
@@ -3679,6 +3706,12 @@ Error EditorExportPlatformAndroid::export_project_helper(const Ref<EditorExportP
 #endif // DISABLE_DEPRECATED
 
 		bool has_dotnet_project = false;
+		String android_libraries_output_dir = base_dir.path_join("aar_deps");
+		if (android_libraries_output_dir.is_relative_path()) {
+			android_libraries_output_dir = OS::get_singleton()->get_resource_dir().path_join(android_libraries_output_dir);
+		}
+		android_libraries_output_dir = ProjectSettings::get_singleton()->globalize_path(android_libraries_output_dir).simplify_path();
+
 		Vector<Ref<EditorExportPlugin>> export_plugins = EditorExport::get_singleton()->get_export_plugins();
 		for (int i = 0; i < export_plugins.size(); i++) {
 			if (export_plugins[i]->supports_platform(Ref<EditorExportPlatform>(this))) {
@@ -3687,6 +3720,21 @@ Error EditorExportPlatformAndroid::export_project_helper(const Ref<EditorExportP
 					const String resolved_android_library_path = _resolve_export_plugin_android_library_path(export_plugin_android_libraries[k]);
 					if (!resolved_android_library_path.is_empty()) {
 						android_libraries.push_back(resolved_android_library_path);
+
+						if (export_format == EXPORT_FORMAT_AAR) {
+							if (DirAccess::exists(android_libraries_output_dir) || DirAccess::make_dir_recursive_absolute(android_libraries_output_dir) == OK) {
+								// Copy the android libraries to the export path.
+								String filename = resolved_android_library_path.get_file();
+								String destination_path = android_libraries_output_dir.path_join(filename);
+								if (DirAccess::copy_absolute(resolved_android_library_path, destination_path) == OK) {
+									print_verbose("Copied " + resolved_android_library_path + " to " + destination_path);
+								} else {
+									ERR_PRINT("Unable to copy " + resolved_android_library_path + " to " + destination_path);
+								}
+							} else {
+								ERR_PRINT("Unable to create android libraries output directory: " + android_libraries_output_dir);
+							}
+						}
 					}
 				}
 
@@ -3722,6 +3770,9 @@ Error EditorExportPlatformAndroid::export_project_helper(const Ref<EditorExportP
 		} else if (export_format == EXPORT_FORMAT_APK) {
 			String apk_build_command = vformat("assemble%s%s", edition, build_type);
 			cmdline.push_back(apk_build_command);
+		} else if (export_format == EXPORT_FORMAT_AAR) {
+			String aar_build_command = ":fusedDepsLib:assemble";
+			cmdline.push_back(aar_build_command);
 		}
 
 		String addons_directory = ProjectSettings::get_singleton()->globalize_path("res://addons");
@@ -3743,6 +3794,7 @@ Error EditorExportPlatformAndroid::export_project_helper(const Ref<EditorExportP
 		cmdline.push_back("-Pperform_zipalign=" + zipalign_flag); // argument to specify whether the build should be zipaligned.
 		cmdline.push_back("-Pperform_signing=" + sign_flag); // argument to specify whether the build should be signed.
 		cmdline.push_back("-Pcompress_native_libraries=" + compress_native_libraries_flag); // argument to specify whether the build should compress native libraries.
+		cmdline.push_back("-Penable_minification=" + minification_flag); // argument to specify whether the build should enable R8 minification/obfuscation.
 
 		// NOTE: The release keystore is not included in the verbose logging
 		// to avoid accidentally leaking sensitive information when sharing verbose logs for troubleshooting.
@@ -3827,7 +3879,7 @@ Error EditorExportPlatformAndroid::export_project_helper(const Ref<EditorExportP
 
 		copy_args.push_back("-Pexport_build_type=" + build_type.to_lower());
 
-		String export_format_arg = export_format == EXPORT_FORMAT_AAB ? "aab" : "apk";
+		String export_format_arg = _get_export_format_extension(export_format);
 		copy_args.push_back("-Pexport_format=" + export_format_arg);
 
 		String export_filename = p_path.get_file();
@@ -3876,6 +3928,7 @@ Error EditorExportPlatformAndroid::export_project_helper(const Ref<EditorExportP
 		}
 		return OK;
 	}
+	////////////////////////////////////////////////
 	// This is the start of the Legacy build system
 	print_verbose("Starting legacy build system...");
 	if (p_debug) {
@@ -4266,10 +4319,10 @@ void EditorExportPlatformAndroid::initialize() {
 		Ref<Image> img = memnew(Image);
 		const bool upsample = !Math::is_equal_approx(Math::round(EDSCALE), EDSCALE);
 
-		ImageLoaderSVG::create_image_from_string(img, _android_logo_svg, EDSCALE, upsample, false);
+		ImageLoaderSVG::create_image_from_string(img, _android_logo_svg, EDSCALE, upsample, HashMap<Color, Color>());
 		logo = ImageTexture::create_from_image(img);
 
-		ImageLoaderSVG::create_image_from_string(img, _android_run_icon_svg, EDSCALE, upsample, false);
+		ImageLoaderSVG::create_image_from_string(img, _android_run_icon_svg, EDSCALE, upsample, HashMap<Color, Color>());
 		run_icon = ImageTexture::create_from_image(img);
 
 #ifndef DISABLE_DEPRECATED
@@ -4277,7 +4330,7 @@ void EditorExportPlatformAndroid::initialize() {
 #endif // DISABLE_DEPRECATED
 #ifndef ANDROID_ENABLED
 		devices_changed.set();
-		_create_editor_debug_keystore_if_needed();
+		AndroidSDKManager::create_editor_debug_keystore_if_needed();
 		_update_preset_status();
 		use_scrcpy = EditorSettings::get_singleton()->get_project_metadata("android", "use_scrcpy", false);
 #else // ANDROID_ENABLED

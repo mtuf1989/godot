@@ -41,6 +41,7 @@ STATIC_ASSERT_INCOMPLETE_TYPE(class, RenderingServer);
 #include "core/object/class_db.h"
 #include "core/templates/pair.h"
 #include "core/templates/sort_array.h"
+#include "scene/audio/audio_stream_player.h"
 #include "scene/gui/control.h"
 #include "scene/gui/label.h"
 #include "scene/gui/popup.h"
@@ -935,8 +936,11 @@ void Viewport::_process_picking() {
 				if (physics_object_picking_sort) {
 					struct ComparatorCollisionObjects {
 						bool operator()(const PS2DT::ShapeResult &p_a, const PS2DT::ShapeResult &p_b) const {
-							CollisionObject2D *a = Object::cast_to<CollisionObject2D>(p_a.collider);
-							CollisionObject2D *b = Object::cast_to<CollisionObject2D>(p_b.collider);
+							if (!p_a.collider_id.is_valid() || !p_b.collider_id.is_valid()) {
+								return false;
+							}
+							CollisionObject2D *a = ObjectDB::get_instance<CollisionObject2D>(p_a.collider_id);
+							CollisionObject2D *b = ObjectDB::get_instance<CollisionObject2D>(p_b.collider_id);
 							if (!a || !b) {
 								return false;
 							}
@@ -955,8 +959,8 @@ void Viewport::_process_picking() {
 					if (is_input_handled()) {
 						break;
 					}
-					if (res[i].collider_id.is_valid() && res[i].collider) {
-						CollisionObject2D *co = Object::cast_to<CollisionObject2D>(res[i].collider);
+					if (res[i].collider_id.is_valid()) {
+						CollisionObject2D *co = ObjectDB::get_instance<CollisionObject2D>(res[i].collider_id);
 						if (co && co->can_process()) {
 							bool send_event = true;
 							if (is_mouse) {
@@ -1043,7 +1047,7 @@ void Viewport::_process_picking() {
 
 					bool col = space->intersect_ray(ray_params, result);
 					ObjectID new_collider;
-					CollisionObject3D *co = col ? Object::cast_to<CollisionObject3D>(result.collider) : nullptr;
+					CollisionObject3D *co = col && result.collider_id.is_valid() ? ObjectDB::get_instance<CollisionObject3D>(result.collider_id) : nullptr;
 					if (co && co->can_process()) {
 						new_collider = result.collider_id;
 						if (!capture_object) {
@@ -1994,7 +1998,8 @@ void Viewport::_gui_input_event(Ref<InputEvent> p_event) {
 							// Grabbing unhovered focus can cause issues when mouse is dragged
 							// with another button held down.
 							if (gui.mouse_over_hierarchy.has(control->get_instance_id())) {
-								// Hide the focus when it comes from a click.
+								// Don't play a sound when the focus comes from a click.
+								// Also, hide the focus when it comes from a click.
 								control->grab_focus(true);
 							}
 							break;
@@ -2310,8 +2315,13 @@ void Viewport::_gui_input_event(Ref<InputEvent> p_event) {
 
 		if (p_event->is_action_pressed(SNAME("ui_cancel"))) {
 			// Cancel tooltip timer or hide tooltip when pressing Escape (this is standard behavior in most applications).
+			Control *tooltip_control = gui.tooltip_control;
 			_gui_cancel_tooltip();
 			if (gui.tooltip_popup) {
+				// Some platforms send a mouse motion event when the tooltip is destroyed under the cursor.
+				// Remember the tooltip control, so that the tooltip timer is not immediately restarted
+				// by a mouse event triggered upon the tooltip closing.
+				gui.tooltip_control = tooltip_control;
 				// If a tooltip was hidden, prevent other actions associated with `ui_cancel` from occurring.
 				// For instance, this prevents the node from being deselected when pressing Escape
 				// to hide a documentation tooltip in the inspector.
@@ -2433,6 +2443,7 @@ void Viewport::_gui_input_event(Ref<InputEvent> p_event) {
 			}
 
 			if (next) {
+				play_theme_sound(next->get_theme_sound(SNAME("focus_sound")));
 				next->grab_focus();
 				set_input_as_handled();
 			} else if (show_focus && gui.hide_focus && gui.key_focus) {
@@ -2597,6 +2608,15 @@ void Viewport::_gui_remove_control(Control *p_control) {
 	if (gui.tooltip_control == p_control) {
 		gui.tooltip_control = nullptr;
 	}
+}
+
+void Viewport::play_theme_sound(const Ref<AudioStream> &p_stream) {
+	ERR_MAIN_THREAD_GUARD;
+	if (p_stream.is_null() || !get_tree()) {
+		return;
+	}
+
+	get_tree()->play_theme_sound(p_stream);
 }
 
 void Viewport::canvas_item_top_level_changed() {
@@ -4454,7 +4474,7 @@ bool Viewport::get_canvas_cull_mask_bit(uint32_t p_layer) const {
 	return (canvas_cull_mask & (1 << p_layer));
 }
 
-#ifdef TOOLS_ENABLED
+#ifdef DEBUG_ENABLED
 bool Viewport::is_visible_subviewport() const {
 	if (!is_sub_viewport()) {
 		return true;
@@ -4462,7 +4482,7 @@ bool Viewport::is_visible_subviewport() const {
 	SubViewportContainer *container = Object::cast_to<SubViewportContainer>(get_parent());
 	return container && container->is_visible_in_tree();
 }
-#endif // TOOLS_ENABLED
+#endif // DEBUG_ENABLED
 
 void Viewport::_update_audio_listener_2d() {
 	if (AudioServer::get_singleton()) {

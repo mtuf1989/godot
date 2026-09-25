@@ -220,6 +220,7 @@ private:
 	Button *tool_button[TOOL_MAX];
 	Button *tool_option_button[TOOL_OPT_MAX];
 
+	MenuButton *snap_menu = nullptr;
 	MenuButton *transform_menu = nullptr;
 	PopupMenu *gizmos_menu = nullptr;
 	MenuButton *view_layout_menu = nullptr;
@@ -567,7 +568,6 @@ class Node3DEditorPlugin : public EditorPlugin {
 public:
 	Node3DEditor *get_spatial_editor() { return spatial_editor; }
 	virtual String get_plugin_name() const override { return "3D"; }
-	bool has_main_screen() const override { return true; }
 	virtual void make_visible(bool p_visible) override;
 	virtual void edit(Object *p_object) override;
 	virtual bool handles(Object *p_object) const override;

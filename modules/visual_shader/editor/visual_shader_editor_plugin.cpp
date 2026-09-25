@@ -3302,13 +3302,6 @@ void VisualShaderEditor::_edit_group_ports_pressed(int p_group_input_node_id, Bu
 	group_ports_dialog->popup();
 }
 
-void VisualShaderEditor::update_toggle_files_button() {
-	ERR_FAIL_NULL(toggle_files_list);
-	bool forward = toggle_files_list->is_visible() == is_layout_rtl();
-	toggle_files_button->set_button_icon(get_editor_theme_icon(forward ? SNAME("Forward") : SNAME("Back")));
-	toggle_files_button->set_tooltip_text(vformat("%s (%s)", TTR("Toggle Files Panel"), ED_GET_SHORTCUT("script_editor/toggle_files_panel")->get_as_text()));
-}
-
 void VisualShaderEditor::_draw_color_over_button(Object *p_obj, Color p_color) {
 	Button *button = Object::cast_to<Button>(p_obj);
 	if (!button) {
@@ -6168,12 +6161,10 @@ void VisualShaderEditor::_notification(int p_what) {
 			} else {
 				theme_dirty = true;
 			}
-			update_toggle_files_button();
 			_update_options_menu();
 		} break;
 
 		case NOTIFICATION_VISIBILITY_CHANGED: {
-			update_toggle_files_button();
 			if (theme_dirty && is_visible_in_tree()) {
 				theme_dirty = false;
 				_update_graph();
@@ -7317,7 +7308,7 @@ void VisualShaderEditor::_update_preview() {
 		String error_pp;
 		List<ShaderPreprocessor::FilePosition> err_positions;
 		ShaderPreprocessor preprocessor;
-		Error err = preprocessor.preprocess(code, path, preprocessed_code, &error_pp, &err_positions);
+		Error err = preprocessor.preprocess_for_editor(code, path, preprocessed_code, &error_pp, &err_positions);
 		if (err != OK) {
 			ERR_FAIL_COND(err_positions.is_empty());
 
@@ -7401,16 +7392,6 @@ void VisualShaderEditor::_show_shader_preview() {
 
 		_param_unselected();
 	}
-}
-
-void VisualShaderEditor::set_toggle_list_control(Control *p_toggle_list_control) {
-	toggle_files_list = p_toggle_list_control;
-}
-
-void VisualShaderEditor::_toggle_files_pressed() {
-	ERR_FAIL_NULL(toggle_files_list);
-	toggle_files_list->set_visible(!toggle_files_list->is_visible());
-	update_toggle_files_button();
 }
 
 void VisualShaderEditor::_bind_methods() {
@@ -7681,16 +7662,6 @@ VisualShaderEditor::VisualShaderEditor() {
 	exit_group_button->set_visible(false);
 	toolbar_hflow->add_child(exit_group_button);
 	exit_group_button->connect(SceneStringName(pressed), callable_mp(this, &VisualShaderEditor::_exit_group));
-
-	VSeparator *separator = memnew(VSeparator);
-	toolbar_hflow->add_child(separator);
-	toolbar_hflow->move_child(separator, 0);
-
-	toggle_files_button = memnew(Button);
-	toggle_files_button->set_theme_type_variation(SceneStringName(FlatButton));
-	toggle_files_button->connect(SceneStringName(pressed), callable_mp(this, &VisualShaderEditor::_toggle_files_pressed));
-	toolbar_hflow->add_child(toggle_files_button);
-	toolbar_hflow->move_child(toggle_files_button, 0);
 
 	///////////////////////////////////////
 	// CODE PREVIEW
@@ -8317,7 +8288,7 @@ VisualShaderEditor::VisualShaderEditor() {
 	// CONSTANTS
 
 	for (int i = 0; i < MAX_FLOAT_CONST_DEFS; i++) {
-		add_options.push_back(AddOption(float_constant_defs[i].name, "Scalar/Constants", "VisualShaderNodeFloatConstant", TTRGET(float_constant_defs[i].desc_key), { float_constant_defs[i].value }, VisualShaderNode::PORT_TYPE_SCALAR));
+		add_options.push_back(AddOption(float_constant_defs[i].name, "Scalar/Constants", "VisualShaderNodeFloatConstant", TTR(float_constant_defs[i].desc_key), { float_constant_defs[i].value }, VisualShaderNode::PORT_TYPE_SCALAR));
 	}
 	// FUNCTIONS
 

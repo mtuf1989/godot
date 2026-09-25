@@ -178,6 +178,7 @@ public:
 		PROJECT_PACK_AS_ZIP,
 		PROJECT_SETUP_ANDROID_BUILD,
 		PROJECT_OPEN_USER_DATA_FOLDER,
+		PROJECT_DOWNLOAD_SOURCE, // Web editor only
 		PROJECT_RELOAD_CURRENT_PROJECT,
 		PROJECT_QUIT_TO_PROJECT_MANAGER,
 
@@ -375,7 +376,7 @@ private:
 
 	PopupMenu *recent_scenes = nullptr;
 	String _recent_scene;
-	List<String> prev_closed_scenes;
+	LocalVector<String> prev_closed_scenes;
 	String defer_load_scene;
 	Node *_last_instantiated_scene = nullptr;
 

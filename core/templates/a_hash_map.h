@@ -97,15 +97,15 @@ private:
 	}
 
 	bool _lookup_idx(const TKey &p_key, uint32_t &r_element_idx, uint32_t &r_meta_idx) const {
-		if (unlikely(_elements == nullptr)) {
-			return false; // Failed lookups, no _elements.
+		if (unlikely(_size == 0)) {
+			return false; // Failed lookups, size is 0.
 		}
 		return _lookup_idx_with_hash(p_key, r_element_idx, r_meta_idx, _hash(p_key));
 	}
 
 	bool _lookup_idx_with_hash(const TKey &p_key, uint32_t &r_element_idx, uint32_t &r_meta_idx, uint32_t p_hash) const {
-		if (unlikely(_elements == nullptr)) {
-			return false; // Failed lookups, no _elements.
+		if (unlikely(_size == 0)) {
+			return false; // Failed lookups, size is 0.
 		}
 
 		uint32_t meta_idx = p_hash & _capacity_mask;
@@ -662,7 +662,7 @@ public:
 		_init_from(p_other);
 	}
 
-	AHashMap(uint32_t p_initial_capacity) {
+	explicit AHashMap(uint32_t p_initial_capacity) {
 		// Capacity can't be 0 and must be 2^n - 1.
 		_capacity_mask = MAX(4u, p_initial_capacity);
 		_capacity_mask = Math::next_power_of_2(_capacity_mask) - 1;

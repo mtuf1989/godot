@@ -136,8 +136,7 @@ def configure(env: "SConsEnvironment"):
 
     if get_min_sdk_version(env["ndk_platform"]) < get_min_target_api():
         print_warning(
-            "Minimum supported Android target api is %d. Forcing target api %d."
-            % (get_min_target_api(), get_min_target_api())
+            f"Minimum supported Android target api is {get_min_target_api()}. Forcing target api {get_min_target_api()}."
         )
         env["ndk_platform"] = "android-" + str(get_min_target_api())
 
@@ -257,7 +256,8 @@ def configure(env: "SConsEnvironment"):
     env.Append(LIBS=["OpenSLES", "EGL", "android", "log", "z", "dl"])
 
     if env["vulkan"]:
-        env.Append(CPPDEFINES=["VULKAN_ENABLED", "RD_ENABLED"])
+        env.Append(CPPDEFINES=["VULKAN_ENABLED"])
+
         if has_swappy:
             env.Append(CPPDEFINES=["SWAPPY_FRAME_PACING_ENABLED"])
             env.Append(LIBS=["swappy_static"])

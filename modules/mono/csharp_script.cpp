@@ -643,10 +643,10 @@ void CSharpLanguage::reload_assemblies() {
 	{
 		MutexLock lock(script_instances_mutex);
 
-		for (SelfList<CSharpScript> *elem = script_list.first(); elem; elem = elem->next()) {
+		for (CSharpScript &script : script_list) {
 			// Do not reload scripts with only non-collectible instances to avoid disrupting event subscriptions and such.
-			bool is_reloadable = elem->self()->instances.is_empty();
-			for (Object *obj : elem->self()->instances) {
+			bool is_reloadable = script.instances.is_empty();
+			for (Object *obj : script.instances) {
 				ERR_CONTINUE(!obj->get_script_instance());
 				CSharpInstance *csi = static_cast<CSharpInstance *>(obj->get_script_instance());
 				if (GDMonoCache::managed_callbacks.GCHandleBridge_GCHandleIsTargetCollectible(csi->get_gchandle_intptr())) {
@@ -656,7 +656,7 @@ void CSharpLanguage::reload_assemblies() {
 			}
 			if (is_reloadable) {
 				// Cast to CSharpScript to avoid being erased by accident.
-				scripts.push_back(Ref<CSharpScript>(elem->self()));
+				scripts.push_back(Ref<CSharpScript>(&script));
 			}
 		}
 	}
@@ -667,22 +667,20 @@ void CSharpLanguage::reload_assemblies() {
 	{
 		MutexLock lock(ManagedCallable::instances_mutex);
 
-		for (SelfList<ManagedCallable> *elem = ManagedCallable::instances.first(); elem; elem = elem->next()) {
-			ManagedCallable *managed_callable = elem->self();
+		for (ManagedCallable &managed_callable : ManagedCallable::instances) {
+			ERR_CONTINUE(managed_callable.delegate_handle.value == nullptr);
 
-			ERR_CONTINUE(managed_callable->delegate_handle.value == nullptr);
-
-			if (!GDMonoCache::managed_callbacks.GCHandleBridge_GCHandleIsTargetCollectible(managed_callable->delegate_handle)) {
+			if (!GDMonoCache::managed_callbacks.GCHandleBridge_GCHandleIsTargetCollectible(managed_callable.delegate_handle)) {
 				continue;
 			}
 
 			Array serialized_data;
 
 			bool success = GDMonoCache::managed_callbacks.DelegateUtils_TrySerializeDelegateWithGCHandle(
-					managed_callable->delegate_handle, &serialized_data);
+					managed_callable.delegate_handle, &serialized_data);
 
 			if (success) {
-				ManagedCallable::instances_pending_reload.insert(managed_callable, serialized_data);
+				ManagedCallable::instances_pending_reload.insert(&managed_callable, serialized_data);
 			} else {
 				if (OS::get_singleton()->is_stdout_verbose()) {
 					OS::get_singleton()->print("Failed to serialize delegate.\n");
@@ -690,7 +688,7 @@ void CSharpLanguage::reload_assemblies() {
 
 				// We failed to serialize the delegate but we still have to release it;
 				// otherwise, we won't be able to unload the assembly.
-				managed_callable->release_delegate_handle();
+				managed_callable.release_delegate_handle();
 			}
 		}
 	}
@@ -1509,7 +1507,7 @@ bool CSharpInstance::get(const StringName &p_name, Variant &r_ret) const {
 	return false;
 }
 
-void CSharpInstance::get_property_list(List<PropertyInfo> *p_properties) const {
+void CSharpInstance::get_property_list(List<PropertyInfo> *r_properties) const {
 	List<PropertyInfo> props;
 	ERR_FAIL_COND(script.is_null());
 #ifdef TOOLS_ENABLED
@@ -1524,7 +1522,7 @@ void CSharpInstance::get_property_list(List<PropertyInfo> *p_properties) const {
 
 	for (PropertyInfo &prop : props) {
 		validate_property(prop);
-		p_properties->push_back(prop);
+		r_properties->push_back(prop);
 	}
 
 	// Call _get_property_list
@@ -1545,7 +1543,7 @@ void CSharpInstance::get_property_list(List<PropertyInfo> *p_properties) const {
 		} else {
 			Array array = ret;
 			for (int i = 0, size = array.size(); i < size; i++) {
-				p_properties->push_back(PropertyInfo::from_dict(array.get(i)));
+				r_properties->push_back(PropertyInfo::from_dict(array.get(i)));
 			}
 		}
 	}
@@ -1565,7 +1563,7 @@ void CSharpInstance::get_property_list(List<PropertyInfo> *p_properties) const {
 
 		for (PropertyInfo &prop : props) {
 			validate_property(prop);
-			p_properties->push_back(prop);
+			r_properties->push_back(prop);
 		}
 
 		top = top->base_script.ptr();
@@ -1642,12 +1640,12 @@ bool CSharpInstance::property_get_revert(const StringName &p_name, Variant &r_re
 	return true;
 }
 
-void CSharpInstance::get_method_list(List<MethodInfo> *p_list) const {
+void CSharpInstance::get_method_list(List<MethodInfo> *r_list) const {
 	if (!script->is_script_valid() || !script->valid) {
 		return;
 	}
 
-	script->get_script_method_list(p_list);
+	script->get_script_method_list(r_list);
 }
 
 bool CSharpInstance::has_method(const StringName &p_method) const {
@@ -2801,11 +2799,11 @@ CSharpScript::~CSharpScript() {
 	}
 }
 
-void CSharpScript::get_members(HashSet<StringName> *p_members) {
+void CSharpScript::get_members(HashSet<StringName> *r_members) {
 #ifdef DEBUG_ENABLED
-	if (p_members) {
+	if (r_members) {
 		for (const StringName &member_name : exported_members_names) {
-			p_members->insert(member_name);
+			r_members->insert(member_name);
 		}
 	}
 #endif // DEBUG_ENABLED
