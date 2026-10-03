@@ -13,6 +13,11 @@ Dictionary AgentTools::capabilities() {
 	result["engine_version"] = GODOT_VERSION_FULL_BUILD;
 	result["build"] = JSON::parse_string(AGENT_BUILD_IDENTITY);
 	Dictionary classes;
+	LocalVector<StringName> registered;
+	ClassDB::get_class_list(registered);
+	for (const StringName &name : registered) {
+		classes[name] = true;
+	}
 	for (const char *name : {"AudioStreamSymphony", "SoundEvent", "MusicStateGraph", "Node", "SceneTree", "GDScript"}) {
 		classes[name] = ClassDB::class_exists(name);
 	}

@@ -2323,7 +2323,12 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 
 	register_early_core_singletons();
 	initialize_modules(MODULE_INITIALIZATION_LEVEL_CORE);
-	register_core_extensions(); // core extensions must be registered after globals setup and before display
+	// Initialize the extension API, but load no project/platform libraries for capability-only probes.
+#ifdef MODULE_AGENT_TOOLS_ENABLED
+	register_core_extensions(!agent_capabilities);
+#else
+	register_core_extensions();
+#endif
 
 	if (!editor) {
 		ResourceUID::get_singleton()->enable_reverse_cache();

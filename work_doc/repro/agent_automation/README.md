@@ -84,3 +84,9 @@ preservation, worker-thread loading, queue overflow, text truncation, reentrancy
 and repeated handler lifecycle. Buffers allocate only when reporting is enabled;
 finalization stops both callback and direct strict-hook producers before taking
 the exit snapshot. Raw logs and JSONL files stay in the selected output directory.
+
+Capability isolation also skips GDExtension library loading (while initializing
+the extension API). A poisoned root or `.godot` extension list and autoloads must
+not be read/executed. The `classes` object lists all actual registrations, plus
+explicit false values for the small baseline probe set when absent; profile
+checks can test any native requirement without rebuilding a hardcoded class list.
