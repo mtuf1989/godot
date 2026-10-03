@@ -4,6 +4,8 @@
 
 namespace AgentTools {
 void enable_script_fault_exit();
+void enable_strict_resources();
+void rejected_property(const String &p_resource, const String &p_node, const String &p_property, const String &p_phase);
 bool poll_failure_exit();
 Error begin_report(const String &p_path);
 void drain_report();

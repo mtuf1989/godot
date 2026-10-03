@@ -8,3 +8,4 @@ Branch: `ai/native-agent-automation`. Every introduction commit includes its tas
 | T2.1 | `--agent-capabilities`, schema/protocol 1 | `repro/agent_automation/verify.py` |
 | T2.2 | `--agent-report <path>`, JSONL schema 1 | `repro/agent_automation/verify_report.py`, native AgentTools tests |
 | T2.3 | `--agent-fail-on-script-error` | `verify_report.py --faults` |
+| T2.4 | `--agent-strict-resources` | `verify_strict.py`, generated round-trip fixtures |

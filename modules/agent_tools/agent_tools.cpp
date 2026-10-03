@@ -21,7 +21,7 @@ Dictionary AgentTools::capabilities() {
 	features["capabilities"] = true;
 	features["report"] = true;
 	features["fail_on_script_error"] = true;
-	features["strict_resources"] = false;
+	features["strict_resources"] = true;
 	result["features"] = features;
 	return result;
 }

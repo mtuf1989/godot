@@ -29,6 +29,10 @@
 /**************************************************************************/
 
 #include "resource_format_text.h"
+#include "modules/modules_enabled.gen.h"
+#ifdef MODULE_AGENT_TOOLS_ENABLED
+#include "modules/agent_tools/agent_report.h"
+#endif
 
 #include "core/config/project_settings.h"
 #include "core/error/error_macros.h"
@@ -668,7 +672,15 @@ Error ResourceLoaderText::load() {
 					}
 
 					if (set_valid) {
+#ifdef MODULE_AGENT_TOOLS_ENABLED
+						bool assignment_valid = false;
+						res->set(assign, value, &assignment_valid);
+						if (!assignment_valid) {
+							AgentTools::rejected_property(path, "", assign, "resource_load");
+						}
+#else
 						res->set(assign, value);
+#endif
 					}
 				}
 				//it's assignment
@@ -822,9 +834,25 @@ Error ResourceLoaderText::load() {
 
 				if (set_valid) {
 					if (is_scene) {
+#ifdef MODULE_AGENT_TOOLS_ENABLED
+						bool assignment_valid = false;
+						packed_scene->set(assign, value, &assignment_valid);
+						if (!assignment_valid) {
+							AgentTools::rejected_property(local_path, "", assign, "resource_load");
+						}
+#else
 						packed_scene->set(assign, value);
+#endif
 					} else {
+#ifdef MODULE_AGENT_TOOLS_ENABLED
+						bool assignment_valid = false;
+						resource->set(assign, value, &assignment_valid);
+						if (!assignment_valid) {
+							AgentTools::rejected_property(local_path, "", assign, "resource_load");
+						}
+#else
 						resource->set(assign, value);
+#endif
 					}
 				}
 				//it's assignment

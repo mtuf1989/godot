@@ -29,6 +29,10 @@
 /**************************************************************************/
 
 #include "packed_scene.h"
+#include "modules/modules_enabled.gen.h"
+#ifdef MODULE_AGENT_TOOLS_ENABLED
+#include "modules/agent_tools/agent_report.h"
+#endif
 
 #include "core/config/engine.h"
 #include "core/io/file_access.h"
@@ -450,6 +454,11 @@ Node *SceneState::instantiate(GenEditState p_edit_state) const {
 							ERR_FAIL_UNSIGNED_INDEX_V(name_idx, (uint32_t)sname_count, nullptr);
 
 							node->set(snames[name_idx], props[nprops[j].value], &valid);
+#ifdef MODULE_AGENT_TOOLS_ENABLED
+							if (!valid) {
+								AgentTools::rejected_property(path, String(get_node_path(i)), snames[name_idx], "scene_instantiation");
+							}
+#endif
 							continue;
 						}
 
@@ -561,6 +570,11 @@ Node *SceneState::instantiate(GenEditState p_edit_state) const {
 
 						if (set_valid) {
 							node->set(snames[nprops[j].name], value, &valid);
+#ifdef MODULE_AGENT_TOOLS_ENABLED
+							if (!valid) {
+								AgentTools::rejected_property(path, String(get_node_path(i)), snames[nprops[j].name], "scene_instantiation");
+							}
+#endif
 						}
 						if (p_edit_state == GEN_EDIT_STATE_INSTANCE && value.get_type() != Variant::OBJECT) {
 							value = value.duplicate(true); // Duplicate arrays and dictionaries for the editor.
@@ -679,7 +693,15 @@ Node *SceneState::instantiate(GenEditState p_edit_state) const {
 			for (int i = 0; i < array.size(); i++) {
 				array.set(i, base->get_node_or_null(paths[i]));
 			}
+#ifdef MODULE_AGENT_TOOLS_ENABLED
+			bool assignment_valid = false;
+			base->set(dnp.property, array, &assignment_valid);
+			if (!assignment_valid) {
+				AgentTools::rejected_property(path, String(ret_nodes[0]->get_path_to(base)), dnp.property, "deferred_node_path");
+			}
+#else
 			base->set(dnp.property, array);
+#endif
 		} else if (dnp.value.get_type() == Variant::DICTIONARY) {
 			Dictionary paths = dnp.value;
 
@@ -703,9 +725,25 @@ Node *SceneState::instantiate(GenEditState p_edit_state) const {
 				}
 				dict[key] = value;
 			}
+#ifdef MODULE_AGENT_TOOLS_ENABLED
+			bool assignment_valid = false;
+			base->set(dnp.property, dict, &assignment_valid);
+			if (!assignment_valid) {
+				AgentTools::rejected_property(path, String(ret_nodes[0]->get_path_to(base)), dnp.property, "deferred_node_path");
+			}
+#else
 			base->set(dnp.property, dict);
+#endif
 		} else {
+#ifdef MODULE_AGENT_TOOLS_ENABLED
+			bool assignment_valid = false;
+			base->set(dnp.property, base->get_node_or_null(dnp.value), &assignment_valid);
+			if (!assignment_valid) {
+				AgentTools::rejected_property(path, String(ret_nodes[0]->get_path_to(base)), dnp.property, "deferred_node_path");
+			}
+#else
 			base->set(dnp.property, base->get_node_or_null(dnp.value));
+#endif
 		}
 	}
 

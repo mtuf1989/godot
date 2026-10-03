@@ -49,3 +49,38 @@ wrapper timeouts. Flag-free runs are unchanged.
 `run_summary.reason = script_fault` identifies policy termination and takes
 precedence over a coincident budget or project exit. Run `verify_report.py
 <binary> <output-dir> --faults` for both initialization and main-loop faults.
+
+## Strict assignment policy (T2.4)
+
+`--agent-strict-resources` checks actual `Object::set` validity at text resource
+assignments (including subresources and PackedScene-resource metadata), ordinary
+scene properties, inherited/instance overrides, and deferred NodePath setters.
+Only a confirmed rejection produces `kind = rejected_property`, with resource,
+node path when applicable, property, and phase. Serialized property lines are
+unknown at instantiation; line remains null. Missing resources intentionally
+preserved as metadata and old script-state restoration are excluded: no actual
+serialized setter rejection occurred there. Existing script assignment errors
+retain the ordinary engine diagnostic path.
+
+This does not validate all semantic property values or missing NodePath targets.
+Dynamic `_set`, metadata, and native dynamic resources use their real setters.
+Text scene loading stores node properties; validation of those properties needs
+`PackedScene.instantiate()`, which runs constructors and setters even outside the
+SceneTree. Runtime wiring still needs a smoke test. A strict rejection safely
+exits nonzero, with reason `resource_validation_failure`, even without a report.
+Flag-free loading/instantiation keeps baseline behavior.
+
+Strict reproduction command (also uses the template `gd` CLI):
+
+```sh
+python3 work_doc/repro/agent_automation/verify_strict.py bin/godot.macos.editor.arm64 /tmp/agent-strict ../game-template /tmp/godot-batch2-baseline
+```
+
+The final optional argument is a preserved flag-free baseline binary. This checks
+invalid resource/subresource/scene/inherited/export/deferred assignments, actual
+engine-saved dynamic resources and node references, load-only versus instantiate
+coverage, and a real SceneTree boot. Native tests cover missing-resource metadata
+preservation, worker-thread loading, queue overflow, text truncation, reentrancy,
+and repeated handler lifecycle. Buffers allocate only when reporting is enabled;
+finalization stops both callback and direct strict-hook producers before taking
+the exit snapshot. Raw logs and JSONL files stay in the selected output directory.

@@ -500,6 +500,7 @@ void Main::print_help(const char *p_binary) {
 	print_help_option("-h, --help", "Display this help message.\n");
 #ifdef MODULE_AGENT_TOOLS_ENABLED
 	print_help_option("--agent-fail-on-script-error", "Exit nonzero safely on an unhandled script fault; warnings and push_error remain nonfatal.\n");
+	print_help_option("--agent-strict-resources", "Fail on confirmed rejected serialized resource/scene assignments.\n");
 	print_help_option("--agent-report <path>", "Write protocol-1 JSONL diagnostics and an iteration/exit receipt to a dedicated file.\n");
 	print_help_option("--agent-capabilities", "Print native automation protocol and compiled build identity as JSON, without loading a project.\n");
 #endif
@@ -1022,6 +1023,9 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 		if (strcmp(argv[i], "--") == 0 || strcmp(argv[i], "++") == 0) {
 			break;
 		}
+		if (strcmp(argv[i], "--agent-strict-resources") == 0) {
+			AgentTools::enable_strict_resources();
+		}
 		if (strcmp(argv[i], "--agent-fail-on-script-error") == 0) {
 			AgentTools::enable_script_fault_exit();
 		}
@@ -1198,6 +1202,8 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 			goto error;
 
 #ifdef MODULE_AGENT_TOOLS_ENABLED
+		} else if (arg == "--agent-strict-resources") {
+			// Enabled by the early argument scan.
 		} else if (arg == "--agent-fail-on-script-error") {
 			// Enabled by the early argument scan.
 		} else if (arg == "--agent-report") {
