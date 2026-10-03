@@ -20,7 +20,7 @@ Dictionary AgentTools::capabilities() {
 	Dictionary features;
 	features["capabilities"] = true;
 	features["report"] = true;
-	features["fail_on_script_error"] = false;
+	features["fail_on_script_error"] = true;
 	features["strict_resources"] = false;
 	result["features"] = features;
 	return result;

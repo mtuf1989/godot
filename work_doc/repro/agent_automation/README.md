@@ -35,3 +35,17 @@ last drain. No error callback does engine allocation, file I/O, or scene mutatio
 
 Run `python3 work_doc/repro/agent_automation/verify_report.py <binary> <output-dir>`
 and native `--headless --test --test-case='*AgentTools*'`.
+
+## Script fault policy (T2.3)
+
+`--agent-fail-on-script-error` marks `ERR_HANDLER_SCRIPT` faults for safe nonzero
+exit at the next main-loop boundary (or report finalization for startup faults).
+It also works without `--agent-report`. It never quits or mutates the SceneTree
+inside an error callback. Parse/compile and VM execution faults are fatal;
+`push_warning`, `push_error`, and ordinary native API errors retain their normal
+policies. This flag does not detect infinite loops or unrelated hangs; retain
+wrapper timeouts. Flag-free runs are unchanged.
+
+`run_summary.reason = script_fault` identifies policy termination and takes
+precedence over a coincident budget or project exit. Run `verify_report.py
+<binary> <output-dir> --faults` for both initialization and main-loop faults.

@@ -48,3 +48,23 @@ assert any(e.get("worker_thread") and "worker fixture diagnostic" in e["message"
 # Native reporting must leave raw evidence available.
 assert "worker fixture diagnostic" in (output / "worker.log").read_text()
 print("T2.2 process/report checks passed; artifacts:", output)
+if "--faults" in sys.argv:
+    for name in ("fault", "main_fault"):
+        events = run("fatal_" + name, name + ".gd", ["--agent-fail-on-script-error"], expected=1, reason="script_fault")
+        assert any(e.get("kind") == "SCRIPT ERROR" for e in events[:-1])
+    run("fatal_parse", "parse.gd", ["--agent-fail-on-script-error"], expected=1, reason="script_fault")
+    events = run("handled", "handled.gd", ["--agent-fail-on-script-error"], reason="project_exit")
+    assert any(e.get("severity") == "warning" for e in events[:-1])
+    assert any("handled application error" in e.get("message", "") for e in events[:-1])
+    # Flag-free faults remain bounded only by --quit-after; no policy leaks.
+    result = subprocess.run([binary, "--headless", "--path", str(project), "--script", "fault.gd", "--quit-after", "4"], text=True, capture_output=True, timeout=15)
+    assert result.returncode == 0, result.stderr
+    # The policy also works without a report file.
+    result = subprocess.run([binary, "--headless", "--path", str(project), "--script", "fault.gd", "--agent-fail-on-script-error"], text=True, capture_output=True, timeout=15)
+    assert result.returncode == 1 and "SCRIPT ERROR" in result.stderr
+    try:
+        subprocess.run([binary, "--headless", "--path", str(project), "--script", "clean.gd", "--agent-fail-on-script-error"], capture_output=True, timeout=1)
+        raise AssertionError("unrelated hang unexpectedly terminated")
+    except subprocess.TimeoutExpired:
+        pass
+    print("T2.3 opt-in script-fault and nonfatal-policy checks passed")

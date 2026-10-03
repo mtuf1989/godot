@@ -33,6 +33,9 @@ uint64_t diagnostic_count = 0;
 BinaryMutex pending_mutex;
 FILE *report = nullptr;
 bool write_failed = false;
+bool handler_installed = false;
+std::atomic<bool> fail_on_script_error{false};
+std::atomic<bool> script_fault_pending{false};
 ErrorHandlerList handler;
 uint64_t iterations = 0;
 uint64_t requested = 0;
@@ -46,6 +49,12 @@ bool copy_text(char *p_dest, size_t p_size, const char *p_text) {
 
 void on_error(void *, const char *p_function, const char *p_file, int p_line,
 		const char *p_error, const char *p_message, bool, ErrorHandlerType p_type) {
+	if (p_type == ERR_HANDLER_SCRIPT && fail_on_script_error.load()) {
+		script_fault_pending = true;
+	}
+	if (!collecting.load()) {
+		return;
+	}
 	MutexLock lock(pending_mutex);
 	script_fault_count += p_type == ERR_HANDLER_SCRIPT;
 	if (pending_count == QUEUE_LIMIT) {
@@ -72,6 +81,24 @@ void write_event(Dictionary p_event) {
 }
 } // namespace
 
+void enable_script_fault_exit() {
+	fail_on_script_error = true;
+	if (!handler_installed) {
+		handler.errfunc = on_error;
+		add_error_handler(&handler);
+		handler_installed = true;
+	}
+}
+
+bool poll_failure_exit() {
+	if (!script_fault_pending.load()) {
+		return false;
+	}
+	OS::get_singleton()->set_exit_code(EXIT_FAILURE);
+	drain_report();
+	return true;
+}
+
 Error begin_report(const String &p_path) {
 	if (report) {
 		return ERR_ALREADY_IN_USE;
@@ -87,8 +114,11 @@ Error begin_report(const String &p_path) {
 	collecting = true;
 	lost_events = truncated_events = diagnostic_count = iterations = requested = 0;
 	budget_reached = project_exit = write_failed = false;
-	handler.errfunc = on_error;
-	add_error_handler(&handler);
+	if (!handler_installed) {
+		handler.errfunc = on_error;
+		add_error_handler(&handler);
+		handler_installed = true;
+	}
 	return OK;
 }
 
@@ -150,7 +180,14 @@ void record_iteration(bool p_project_exit, bool p_budget_reached, uint64_t p_req
 }
 
 void finish_report(bool p_startup_failure, uint64_t p_requested) {
+	poll_failure_exit();
+	if (handler_installed) {
+		remove_error_handler(&handler);
+		handler_installed = false;
+	}
 	if (!report) {
+		fail_on_script_error = false;
+		script_fault_pending = false;
 		return;
 	}
 	// Removal takes the engine's error lock and waits for in-flight callbacks.
@@ -166,7 +203,7 @@ void finish_report(bool p_startup_failure, uint64_t p_requested) {
 	summary["event"] = "run_summary";
 	summary["coverage"] = "setup_through_main_loop_finalize";
 	summary["script_fault_count"] = script_fault_count;
-	summary["reason"] = p_startup_failure || (iterations == 0 && OS::get_singleton()->get_exit_code() != 0) ? "startup_failure" :
+	summary["reason"] = script_fault_pending.load() ? "script_fault" : p_startup_failure || (iterations == 0 && OS::get_singleton()->get_exit_code() != 0) ? "startup_failure" :
 			project_exit ? "project_exit" : budget_reached ? "iteration_budget" : "no_main_loop";
 	summary["requested_iterations"] = requested > 0 ? Variant(requested) : Variant();
 	summary["observed_iterations"] = iterations;
@@ -186,5 +223,7 @@ void finish_report(bool p_startup_failure, uint64_t p_requested) {
 		OS::get_singleton()->set_exit_code(EXIT_FAILURE);
 	}
 	report = nullptr;
+	fail_on_script_error = false;
+	script_fault_pending = false;
 }
 } // namespace AgentTools

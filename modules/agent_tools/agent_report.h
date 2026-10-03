@@ -3,6 +3,8 @@
 #include "core/string/ustring.h"
 
 namespace AgentTools {
+void enable_script_fault_exit();
+bool poll_failure_exit();
 Error begin_report(const String &p_path);
 void drain_report();
 void note_suppressed_diagnostic();

@@ -499,6 +499,7 @@ void Main::print_help(const char *p_binary) {
 	print_help_title("General options");
 	print_help_option("-h, --help", "Display this help message.\n");
 #ifdef MODULE_AGENT_TOOLS_ENABLED
+	print_help_option("--agent-fail-on-script-error", "Exit nonzero safely on an unhandled script fault; warnings and push_error remain nonfatal.\n");
 	print_help_option("--agent-report <path>", "Write protocol-1 JSONL diagnostics and an iteration/exit receipt to a dedicated file.\n");
 	print_help_option("--agent-capabilities", "Print native automation protocol and compiled build identity as JSON, without loading a project.\n");
 #endif
@@ -1021,6 +1022,9 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 		if (strcmp(argv[i], "--") == 0 || strcmp(argv[i], "++") == 0) {
 			break;
 		}
+		if (strcmp(argv[i], "--agent-fail-on-script-error") == 0) {
+			AgentTools::enable_script_fault_exit();
+		}
 		if (strcmp(argv[i], "--agent-report") == 0 && i + 1 < argc && strncmp(argv[i + 1], "--", 2) != 0) {
 			if (AgentTools::begin_report(String::utf8(argv[i + 1])) != OK) {
 				OS::get_singleton()->set_exit_code(EXIT_FAILURE);
@@ -1194,6 +1198,8 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 			goto error;
 
 #ifdef MODULE_AGENT_TOOLS_ENABLED
+		} else if (arg == "--agent-fail-on-script-error") {
+			// Enabled by the early argument scan.
 		} else if (arg == "--agent-report") {
 			if (!N || N->get().begins_with("--")) {
 				OS::get_singleton()->printerr("Missing agent-report path.\n");
@@ -4994,6 +5000,11 @@ static uint64_t navigation_process_max = 0;
 // will terminate the program. In case of failure, the OS exit code needs
 // to be set explicitly here (defaults to EXIT_SUCCESS).
 bool Main::iteration() {
+#ifdef MODULE_AGENT_TOOLS_ENABLED
+	if (AgentTools::poll_failure_exit()) {
+		return true;
+	}
+#endif
 	GodotProfileZone("Main::iteration");
 	GodotProfileZoneGroupedFirst(_profile_zone, "prepare");
 	iterating++;
@@ -5231,6 +5242,7 @@ bool Main::iteration() {
 	}
 
 #ifdef MODULE_AGENT_TOOLS_ENABLED
+	exit |= AgentTools::poll_failure_exit();
 	AgentTools::record_iteration(exit, quit_after > 0 && Engine::get_singleton()->_process_frames >= quit_after, quit_after);
 #endif
 #ifdef TOOLS_ENABLED

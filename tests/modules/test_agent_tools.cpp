@@ -69,5 +69,26 @@ TEST_CASE("[AgentTools] Bounded queue reports evidence loss") {
 	CHECK(text.contains("\"evidence_complete\":false"));
 	OS::get_singleton()->set_exit_code(0);
 }
+TEST_CASE("[AgentTools] Fault policy distinguishes warnings and application errors") {
+	const String path = TestUtils::get_temp_path("agent-fault-policy.jsonl");
+	REQUIRE(AgentTools::begin_report(path) == OK);
+	AgentTools::enable_script_fault_exit();
+	ERR_PRINT_OFF;
+	WARN_PRINT("nonfatal warning");
+	ERR_PRINT("nonfatal handled application error");
+	CHECK_FALSE(AgentTools::poll_failure_exit());
+	_err_print_error("fixture", "res://fault.gd", 4, "Unhandled fixture fault", false, ERR_HANDLER_SCRIPT);
+	CHECK(AgentTools::poll_failure_exit());
+	ERR_PRINT_ON;
+	AgentTools::finish_report();
+	Ref<FileAccess> file = FileAccess::open(path, FileAccess::READ);
+	REQUIRE(file.is_valid());
+	CHECK(file->get_as_text().contains("\"reason\":\"script_fault\""));
+	OS::get_singleton()->set_exit_code(0);
+	REQUIRE(AgentTools::begin_report(path) == OK);
+	CHECK_FALSE(AgentTools::poll_failure_exit());
+	AgentTools::finish_report();
+}
+
 }
 #endif
