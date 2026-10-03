@@ -30,6 +30,13 @@
 
 #include "main.h"
 
+#include "modules/modules_enabled.gen.h"
+#ifdef MODULE_AGENT_TOOLS_ENABLED
+#include "modules/agent_tools/agent_tools.h"
+#include "core/io/json.h"
+static bool agent_capabilities = false;
+#endif
+
 #include "core/config/engine.h"
 #include "core/config/project_settings.h"
 #include "core/core_globals.h"
@@ -145,7 +152,6 @@
 #include "main/steam_tracker.h"
 #endif
 
-#include "modules/modules_enabled.gen.h" // For mono.
 
 #if defined(MODULE_MONO_ENABLED) && defined(TOOLS_ENABLED)
 #include "modules/mono/editor/bindings_generator.h"
@@ -491,6 +497,9 @@ void Main::print_help(const char *p_binary) {
 
 	print_help_title("General options");
 	print_help_option("-h, --help", "Display this help message.\n");
+#ifdef MODULE_AGENT_TOOLS_ENABLED
+	print_help_option("--agent-capabilities", "Print native automation protocol and compiled build identity as JSON, without loading a project.\n");
+#endif
 	print_help_option("--version", "Display the version string.\n");
 	print_help_option("-v, --verbose", "Use verbose stdout mode.\n");
 	print_help_option("--quiet", "Quiet mode, silences stdout messages. Errors are still displayed.\n");
@@ -1162,6 +1171,20 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 			exit_err = ERR_HELP; // Hack to force an early exit in `main()` with a success code.
 			goto error;
 
+#ifdef MODULE_AGENT_TOOLS_ENABLED
+		} else if (arg == "--agent-capabilities") {
+			agent_capabilities = true;
+			display_driver = "headless";
+			audio_driver = "Dummy";
+			Engine::get_singleton()->_print_header = false;
+#ifdef TOOLS_ENABLED
+			cmdline_tool = true;
+#endif
+#else
+		} else if (arg == "--agent-capabilities" || arg == "--agent-report" || arg == "--agent-fail-on-script-error" || arg == "--agent-strict-resources") {
+			OS::get_singleton()->printerr("Native automation requires the agent_tools module.\n");
+			goto error;
+#endif
 		} else if (arg == "--version") {
 			print_line(get_full_version_string());
 			exit_err = ERR_HELP; // Hack to force an early exit in `main()` with a success code.
@@ -2068,7 +2091,11 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 #endif // defined(DEBUG_ENABLED) || defined (TOOLS_ENABLED)
 
 	OS::get_singleton()->_in_editor = editor;
-	if (globals->setup(project_path, main_pack, false, editor) == OK) {
+	if (
+#ifdef MODULE_AGENT_TOOLS_ENABLED
+			!agent_capabilities &&
+#endif
+			globals->setup(project_path, main_pack, false, editor) == OK) {
 #ifdef TOOLS_ENABLED
 		found_project = true;
 #endif
@@ -2076,6 +2103,9 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 #ifdef TOOLS_ENABLED
 		editor = false;
 #else
+#ifdef MODULE_AGENT_TOOLS_ENABLED
+		if (!agent_capabilities) {
+#endif
 		String error_msg = "Error: Couldn't load project data at path \"" + (project_path == "." ? OS::get_singleton()->get_cwd() : project_path) + "\". Is the .pck file missing?\n\n";
 #if !defined(OVERRIDE_PATH_ENABLED) && !defined(TOOLS_ENABLED)
 		String exec_path = OS::get_singleton()->get_executable_path();
@@ -2096,6 +2126,9 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 		OS::get_singleton()->alert(error_msg);
 
 		goto error;
+#ifdef MODULE_AGENT_TOOLS_ENABLED
+		}
+#endif
 #endif
 	}
 
@@ -2297,7 +2330,11 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 	// and even if file logging is disabled in the Project Settings.
 	// `--log-file` can be used with any path (including absolute paths outside the project folder),
 	// so check for filesystem access if it's used.
-	if (FileAccess::get_create_func(!log_file.is_empty() ? FileAccess::ACCESS_FILESYSTEM : FileAccess::ACCESS_USERDATA) &&
+	if (
+#ifdef MODULE_AGENT_TOOLS_ENABLED
+			!agent_capabilities &&
+#endif
+			FileAccess::get_create_func(!log_file.is_empty() ? FileAccess::ACCESS_FILESYSTEM : FileAccess::ACCESS_USERDATA) &&
 			(!log_file.is_empty() || (!project_manager && !editor && GLOBAL_GET("debug/file_logging/enable_file_logging")))) {
 		// Don't create logs for the project manager as they would be written to
 		// the current working directory, which is inconvenient.
@@ -2314,7 +2351,11 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 		OS::get_singleton()->add_logger(memnew(RotatedFileLogger(base_path, max_files)));
 	}
 
-	if (main_args.is_empty() && String(GLOBAL_GET("application/run/main_scene")) == "") {
+	if (
+#ifdef MODULE_AGENT_TOOLS_ENABLED
+			!agent_capabilities &&
+#endif
+			main_args.is_empty() && String(GLOBAL_GET("application/run/main_scene")) == "") {
 #ifdef TOOLS_ENABLED
 		if (!editor && !project_manager) {
 #endif
@@ -4013,6 +4054,12 @@ int Main::start() {
 	OS::get_singleton()->benchmark_begin_measure("Startup", "Main::Start");
 
 	ERR_FAIL_COND_V(!_start_success, EXIT_FAILURE);
+#ifdef MODULE_AGENT_TOOLS_ENABLED
+	if (agent_capabilities) {
+		print_line(JSON::stringify(AgentTools::capabilities()));
+		return EXIT_SUCCESS;
+	}
+#endif
 
 	bool has_icon = false;
 	String positional_arg;
