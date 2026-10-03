@@ -8,3 +8,30 @@ target, enabled modules, and selected SCons options. Dirty builds are developmen
 builds, not reproducible release pins; Batch 3 adds artifact manifests/checksums.
 
 Run `python3 work_doc/repro/agent_automation/verify.py bin/godot.macos.editor.arm64`.
+
+## Report contract (T2.2)
+
+`--agent-report <filesystem-path>` writes JSONL schema 1. Relative paths resolve
+against the invocation working directory before `--path` processing; use an
+absolute path in automation. One `diagnostic` per observed engine error callback,
+then one terminal `run_summary`. Ordinary logs remain untouched. Diagnostics keep
+`source_location`, and separate `project_location` (`res://`/`user://`) from
+`engine_location` (relative native source). Absolute/embedded locations are not
+guessed into project or engine locations. Unknown lines/locations are JSON null.
+
+Coverage is setup through main-loop finalize, ending before engine teardown
+(where ordinary Godot disables error-handler printing). A killed/crashed process
+can lack the final summary; consumers must fail that run. Iterations count calls
+that reach the end of the main loop, not render frames or physics ticks. A
+project-requested exit takes precedence when it coincides with the budget.
+`script_fault_count` records faults even when report-only mode leaves execution
+unchanged. Startup failures and runs without a loop report zero iterations.
+
+The callback queue holds 256 bounded diagnostics. Overflow, text truncation,
+or reentrant raw-fallback errors increment loss counters and invalidate
+`evidence_complete`; the process exits nonzero. Report open/write/close failures
+also exit nonzero. Handlers are removed under the engine error lock before the
+last drain. No error callback does engine allocation, file I/O, or scene mutation.
+
+Run `python3 work_doc/repro/agent_automation/verify_report.py <binary> <output-dir>`
+and native `--headless --test --test-case='*AgentTools*'`.

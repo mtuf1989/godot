@@ -6,3 +6,4 @@ Branch: `ai/native-agent-automation`. Every introduction commit includes its tas
 | Task | Native interface | Evidence |
 |---|---|---|
 | T2.1 | `--agent-capabilities`, schema/protocol 1 | `repro/agent_automation/verify.py` |
+| T2.2 | `--agent-report <path>`, JSONL schema 1 | `repro/agent_automation/verify_report.py`, native AgentTools tests |

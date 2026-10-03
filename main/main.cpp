@@ -33,6 +33,7 @@
 #include "modules/modules_enabled.gen.h"
 #ifdef MODULE_AGENT_TOOLS_ENABLED
 #include "modules/agent_tools/agent_tools.h"
+#include "modules/agent_tools/agent_report.h"
 #include "core/io/json.h"
 static bool agent_capabilities = false;
 #endif
@@ -498,6 +499,7 @@ void Main::print_help(const char *p_binary) {
 	print_help_title("General options");
 	print_help_option("-h, --help", "Display this help message.\n");
 #ifdef MODULE_AGENT_TOOLS_ENABLED
+	print_help_option("--agent-report <path>", "Write protocol-1 JSONL diagnostics and an iteration/exit receipt to a dedicated file.\n");
 	print_help_option("--agent-capabilities", "Print native automation protocol and compiled build identity as JSON, without loading a project.\n");
 #endif
 	print_help_option("--version", "Display the version string.\n");
@@ -1014,6 +1016,26 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 
 	register_core_types();
 	register_core_driver_types();
+#ifdef MODULE_AGENT_TOOLS_ENABLED
+	for (int i = 0; i < argc; i++) {
+		if (strcmp(argv[i], "--") == 0 || strcmp(argv[i], "++") == 0) {
+			break;
+		}
+		if (strcmp(argv[i], "--agent-report") == 0 && i + 1 < argc && strncmp(argv[i + 1], "--", 2) != 0) {
+			if (AgentTools::begin_report(String::utf8(argv[i + 1])) != OK) {
+				OS::get_singleton()->set_exit_code(EXIT_FAILURE);
+				AgentTools::finish_report(true);
+				unregister_core_driver_types();
+				memdelete(engine);
+				unregister_core_types();
+				OS::get_singleton()->finalize_core();
+				Thread::release_main_thread();
+				return ERR_CANT_OPEN;
+			}
+			i++;
+		}
+	}
+#endif
 
 	MAIN_PRINT("Main: Initialize Globals");
 
@@ -1172,6 +1194,12 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 			goto error;
 
 #ifdef MODULE_AGENT_TOOLS_ENABLED
+		} else if (arg == "--agent-report") {
+			if (!N || N->get().begins_with("--")) {
+				OS::get_singleton()->printerr("Missing agent-report path.\n");
+				goto error;
+			}
+			N = N->next();
 		} else if (arg == "--agent-capabilities") {
 			agent_capabilities = true;
 			display_driver = "headless";
@@ -3007,6 +3035,10 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 	return OK;
 
 error:
+#ifdef MODULE_AGENT_TOOLS_ENABLED
+	OS::get_singleton()->set_exit_code(exit_err == ERR_HELP ? EXIT_SUCCESS : EXIT_FAILURE);
+	AgentTools::finish_report(exit_err != ERR_HELP, quit_after);
+#endif
 
 	text_driver = "";
 	display_driver = "";
@@ -5198,6 +5230,9 @@ bool Main::iteration() {
 		movie_writer->add_frame();
 	}
 
+#ifdef MODULE_AGENT_TOOLS_ENABLED
+	AgentTools::record_iteration(exit, quit_after > 0 && Engine::get_singleton()->_process_frames >= quit_after, quit_after);
+#endif
 #ifdef TOOLS_ENABLED
 	bool quit_after_timeout = false;
 #endif
@@ -5269,6 +5304,9 @@ void Main::cleanup(bool p_force) {
 		ERR_FAIL_COND(!_start_success);
 	}
 
+#ifdef MODULE_AGENT_TOOLS_ENABLED
+	AgentTools::finish_report(false, quit_after);
+#endif
 	// Printing in the usual way can become problematic during/after cleanup.
 	CoreGlobals::print_ready = false;
 

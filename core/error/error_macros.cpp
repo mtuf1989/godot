@@ -29,6 +29,10 @@
 /**************************************************************************/
 
 #include "error_macros.h"
+#include "modules/modules_enabled.gen.h"
+#ifdef MODULE_AGENT_TOOLS_ENABLED
+#include "modules/agent_tools/agent_report.h"
+#endif
 
 #include "core/core_globals.h"
 #include "core/io/logger.h"
@@ -114,6 +118,9 @@ void _err_print_error(const char *p_function, const char *p_file, int p_line, co
 	}
 
 	if (is_printing_error) {
+#ifdef MODULE_AGENT_TOOLS_ENABLED
+		AgentTools::note_suppressed_diagnostic();
+#endif
 		// Fallback if we're already printing an error, to prevent infinite recursion.
 		const char *err_details = (p_message && *p_message) ? p_message : p_error;
 		_err_print_fallback(p_function, p_file, p_line, err_details, p_type, true);
@@ -156,6 +163,9 @@ void _err_print_error_asap(const String &p_error, ErrorHandlerType p_type) {
 	}
 
 	if (is_printing_error) {
+#ifdef MODULE_AGENT_TOOLS_ENABLED
+		AgentTools::note_suppressed_diagnostic();
+#endif
 		// Fallback if we're already printing an error, to prevent infinite recursion.
 		_err_print_fallback(nullptr, nullptr, 0, err_details, p_type, true);
 		return;
