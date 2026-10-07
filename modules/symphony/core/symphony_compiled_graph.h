@@ -105,8 +105,12 @@ struct CompiledGraph {
 				}
 			}
 
+			// A skip above leaves activity at 0. An operator that runs is active
+			// unless its execute() detects silence and clears the flag again;
+			// stateless math operators never touch it, so without this reset a
+			// single skip would mute them (and everything downstream) for good.
+			op->activity = 1;
 			op->execute(p_num_frames);
-			// Note: operators that detect silence set activity = 0 in execute().
 
 #ifdef DEV_ENABLED
 			if (output_buffer_offsets) {

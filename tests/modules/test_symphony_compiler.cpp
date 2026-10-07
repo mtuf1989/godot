@@ -453,4 +453,62 @@ TEST_CASE("[Symphony][Compiler] Flattening keeps top-level quality settings") {
 	CHECK((float)validated["cost_units"] > 0.0f);
 }
 
+// A stateless node (Mix) skipped while its input was silent must wake up
+// when that input becomes active again, or everything downstream stays muted.
+TEST_CASE("[Symphony][Compiler] Silence skip does not latch stateless nodes") {
+	GraphDescription desc;
+	auto add_node = [&](int p_id, const char *p_type) -> NodeDesc & {
+		NodeDesc node;
+		node.id = p_id;
+		node.type_name = p_type;
+		desc.nodes.push_back(node);
+		return desc.nodes.write[desc.nodes.size() - 1];
+	};
+	auto connect = [&](int p_from, int p_from_pin, int p_to, int p_to_pin) {
+		ConnectionDesc conn;
+		conn.from_node = p_from;
+		conn.from_pin = p_from_pin;
+		conn.to_node = p_to;
+		conn.to_pin = p_to_pin;
+		desc.connections.push_back(conn);
+	};
+
+	NodeDesc &trigger = add_node(0, "TriggerInput");
+	trigger.params.insert("trigger_name", "hit");
+	trigger.params.insert("auto_trigger_on_play", 0.0f);
+	NodeDesc &osc = add_node(1, "Oscillator");
+	osc.params.insert("frequency", 440.0f);
+	osc.params.insert("waveform", 0.0f);
+	NodeDesc &adsr = add_node(2, "ADSR");
+	adsr.params.insert("attack", 0.001f);
+	adsr.params.insert("decay", 0.2f);
+	adsr.params.insert("sustain", 0.0f);
+	adsr.params.insert("release", 0.05f);
+	NodeDesc &mix = add_node(3, "Mix");
+	mix.params.insert("mix", 0.0f);
+	NodeDesc &gain = add_node(4, "Gain");
+	gain.params.insert("gain", 1.0f);
+	add_node(5, "GraphOutput");
+
+	connect(1, 0, 2, 0);
+	connect(0, 0, 2, 1);
+	connect(2, 0, 3, 0);
+	connect(3, 0, 4, 0);
+	connect(4, 0, 5, 0);
+
+	Ref<AudioStreamSymphony> stream;
+	stream.instantiate();
+	stream->set_graph_description(desc);
+
+	// Silent for the first 0.1 s (no trigger yet), then struck.
+	Array triggers;
+	Dictionary hit;
+	hit["name"] = StringName("hit");
+	hit["time"] = 0.1;
+	triggers.push_back(hit);
+	Dictionary rendered = stream->render_offline(0.4, 1, Dictionary(), triggers, String());
+	REQUIRE(bool(rendered["ok"]));
+	CHECK(float(rendered["peak"]) > 0.5f);
+}
+
 } // namespace TestSymphonyCompiler

@@ -15,6 +15,8 @@ TEST_FORCE_LINK(test_symphony_operators)
 #include "modules/symphony/nodes/delay/symphony_feedback_path.h"
 #include "modules/symphony/nodes/filters/symphony_sv_filter.h"
 #include "modules/symphony/nodes/generators/symphony_oscillator.h"
+#include "modules/symphony/nodes/filters/symphony_waveshaper.h"
+#include "modules/symphony/nodes/synthesis/symphony_modal_bank.h"
 #include "modules/symphony/nodes/timing/symphony_stochastic_trigger.h"
 #include "modules/symphony/nodes/utility/symphony_parameter_smoother.h"
 
@@ -67,66 +69,67 @@ TEST_CASE("[Symphony][Operators][Oscillator] Sine produces valid output") {
 	arena.free();
 }
 
-TEST_CASE("[Symphony][Operators][Oscillator] Saw PolyBLEP output bounded") {
+// Renders one second of a waveform and returns {peak, mean}.
+static void _render_oscillator(float p_waveform, float p_frequency, float p_pulse_width, float &r_peak, float &r_mean) {
 	ArenaAllocator arena;
 	arena.init(ARENA_SIZE);
-
 	HashMap<StringName, Variant> params;
-	params.insert("frequency", 5000.0f); // High freq to stress anti-aliasing
-	params.insert("waveform", 1.0f); // Saw
-
+	params.insert("frequency", p_frequency);
+	params.insert("waveform", p_waveform);
+	params.insert("pulse_width", p_pulse_width);
 	SymphonyOscillator *osc = (SymphonyOscillator *)SymphonyOscillator::create(arena, params, MIX_RATE);
-
 	float out_buf[SYMPHONY_MICRO_BLOCK_SIZE] = {};
 	void *inputs[] = { nullptr, nullptr };
 	void *outputs[] = { out_buf };
 	osc->bind_pins(inputs, outputs);
 
-	// Run several blocks
-	for (int b = 0; b < 100; b++) {
+	const int blocks = (int)MIX_RATE / SYMPHONY_MICRO_BLOCK_SIZE;
+	double sum = 0.0;
+	r_peak = 0.0f;
+	for (int b = 0; b < blocks; b++) {
 		osc->execute(SYMPHONY_MICRO_BLOCK_SIZE);
+		for (int i = 0; i < SYMPHONY_MICRO_BLOCK_SIZE; i++) {
+			REQUIRE(std::isfinite(out_buf[i]));
+			r_peak = MAX(r_peak, std::fabs(out_buf[i]));
+			sum += out_buf[i];
+		}
 	}
-
-	// Output should stay bounded (no NaN, no explosion)
-	for (int i = 0; i < SYMPHONY_MICRO_BLOCK_SIZE; i++) {
-		CHECK(!std::isnan(out_buf[i]));
-		CHECK(!std::isinf(out_buf[i]));
-		// Logistic band-limiting at high frequencies can overshoot ±1 briefly.
-		CHECK(out_buf[i] >= -3.1f);
-		CHECK(out_buf[i] <= 3.1f);
-	}
-
+	r_mean = (float)(sum / (double)(blocks * SYMPHONY_MICRO_BLOCK_SIZE));
 	arena.free();
 }
 
-TEST_CASE("[Symphony][Operators][Oscillator] Square PolyBLEP output bounded") {
-	ArenaAllocator arena;
-	arena.init(ARENA_SIZE);
-
-	HashMap<StringName, Variant> params;
-	params.insert("frequency", 10000.0f);
-	params.insert("waveform", 2.0f); // Square
-
-	SymphonyOscillator *osc = (SymphonyOscillator *)SymphonyOscillator::create(arena, params, MIX_RATE);
-
-	float out_buf[SYMPHONY_MICRO_BLOCK_SIZE] = {};
-	void *inputs[] = { nullptr, nullptr };
-	void *outputs[] = { out_buf };
-	osc->bind_pins(inputs, outputs);
-
-	for (int b = 0; b < 100; b++) {
-		osc->execute(SYMPHONY_MICRO_BLOCK_SIZE);
+TEST_CASE("[Symphony][Operators][Oscillator] Band-limited waveforms stay in range with no DC") {
+	const float waveforms[] = { 1.0f, 2.0f, 3.0f }; // saw, square, triangle
+	const float frequencies[] = { 55.0f, 440.0f, 3520.0f, 10000.0f };
+	for (float waveform : waveforms) {
+		for (float frequency : frequencies) {
+			float peak = 0.0f;
+			float mean = 0.0f;
+			_render_oscillator(waveform, frequency, 0.5f, peak, mean);
+			INFO("waveform ", waveform, " at ", frequency, " Hz: peak ", peak, ", mean ", mean);
+			CHECK(peak <= 1.01f);
+			CHECK(std::fabs(mean) <= 0.01f);
+		}
+		// Low notes keep full amplitude (no leak toward zero).
+		float low_peak = 0.0f;
+		float low_mean = 0.0f;
+		_render_oscillator(waveform, 55.0f, 0.5f, low_peak, low_mean);
+		CHECK(low_peak >= 0.95f);
 	}
+}
 
-	for (int i = 0; i < SYMPHONY_MICRO_BLOCK_SIZE; i++) {
-		CHECK(!std::isnan(out_buf[i]));
-		CHECK(!std::isinf(out_buf[i]));
-		// Square = difference of two saws; high-frequency logistic AA can overshoot.
-		CHECK(out_buf[i] >= -3.1f);
-		CHECK(out_buf[i] <= 3.1f);
+TEST_CASE("[Symphony][Operators][Oscillator] PWM is a zero-mean pulse") {
+	// Difference of two band-limited saws: no DC; a pulse of width w swings
+	// between -2w and 2(1-w) (narrow widths are asymmetric by design).
+	const float widths[] = { 0.1f, 0.25f, 0.5f };
+	for (float width : widths) {
+		float peak = 0.0f;
+		float mean = 0.0f;
+		_render_oscillator(4.0f, 440.0f, width, peak, mean);
+		INFO("width ", width, ": peak ", peak, ", mean ", mean);
+		CHECK(peak <= 2.0f * MAX(width, 1.0f - width) + 0.01f);
+		CHECK(std::fabs(mean) <= 0.01f);
 	}
-
-	arena.free();
 }
 
 // --- S1.4: DelayLine Tests ---
@@ -476,6 +479,105 @@ TEST_CASE("[Symphony][Operators][SVFilter] No instability at extreme parameters"
 	}
 
 	arena.free();
+}
+
+// ADAA divides antiderivative differences by input differences, so its state
+// must start consistent and near-equal inputs must not blow up. The output of
+// every preset must stay within the transfer curve's own range.
+TEST_CASE("[Symphony][Operators][Waveshaper] ADAA output stays within the curve") {
+	const float first_inputs[] = { 1e-6f, -1e-6f, 0.3f };
+	for (int preset = 0; preset < 6; preset++) {
+		for (float first : first_inputs) {
+			ArenaAllocator arena;
+			arena.init(ARENA_SIZE);
+			HashMap<StringName, Variant> params;
+			params.insert("preset", (float)preset);
+			params.insert("drive", 3.0f);
+			SymphonyOperator *op = SymphonyWaveshaper::create(arena, params, MIX_RATE);
+			REQUIRE(op != nullptr);
+
+			float in_buf[SYMPHONY_MICRO_BLOCK_SIZE];
+			float out_buf[SYMPHONY_MICRO_BLOCK_SIZE] = {};
+			void *inputs[] = { in_buf, nullptr };
+			void *outputs[] = { out_buf };
+			op->bind_pins(inputs, outputs);
+
+			uint32_t rng = 12345u;
+			float peak = 0.0f;
+			for (int b = 0; b < 200; b++) {
+				for (int i = 0; i < SYMPHONY_MICRO_BLOCK_SIZE; i++) {
+					rng = rng * 1664525u + 1013904223u;
+					float noise = ((float)(rng >> 8) / 8388608.0f) - 1.0f;
+					// Block 0 starts with a near-zero sample; later blocks mix a
+					// slow ramp (tiny steps) with noise.
+					in_buf[i] = (b == 0 && i == 0) ? first : (b % 2 ? noise : (float)i * 1e-7f);
+				}
+				op->execute(SYMPHONY_MICRO_BLOCK_SIZE);
+				for (int i = 0; i < SYMPHONY_MICRO_BLOCK_SIZE; i++) {
+					REQUIRE(std::isfinite(out_buf[i]));
+					peak = MAX(peak, std::fabs(out_buf[i]));
+				}
+			}
+			INFO("preset ", preset, ", first input ", first, ": peak ", peak);
+			CHECK(peak <= 1.01f);
+			arena.free();
+		}
+	}
+}
+
+// Strikes one mode with a unit impulse and returns the peak of its ring.
+static float _modal_strike_peak(float p_frequency, float p_t60, float p_gain) {
+	ArenaAllocator arena;
+	arena.init(ARENA_SIZE);
+	HashMap<StringName, Variant> params;
+	PackedFloat32Array freqs;
+	freqs.push_back(p_frequency);
+	PackedFloat32Array decays;
+	decays.push_back(p_t60);
+	PackedFloat32Array gains;
+	gains.push_back(p_gain);
+	params.insert("max_modes", 1.0f);
+	params.insert("num_modes", 1.0f);
+	params.insert("frequencies", freqs);
+	params.insert("decay_times", decays);
+	params.insert("gains", gains);
+	SymphonyOperator *op = SymphonyModalBank::create(arena, params, MIX_RATE);
+	REQUIRE(op != nullptr);
+
+	float in_buf[SYMPHONY_MICRO_BLOCK_SIZE] = {};
+	float out_buf[SYMPHONY_MICRO_BLOCK_SIZE] = {};
+	void *inputs[] = { in_buf };
+	void *outputs[] = { out_buf };
+	op->bind_pins(inputs, outputs);
+	float peak = 0.0f;
+	for (int b = 0; b < 40; b++) { // ~53 ms at 48 kHz
+		in_buf[0] = (b == 0) ? 1.0f : 0.0f;
+		op->execute(SYMPHONY_MICRO_BLOCK_SIZE);
+		for (int i = 0; i < SYMPHONY_MICRO_BLOCK_SIZE; i++) {
+			peak = MAX(peak, std::fabs(out_buf[i]));
+		}
+	}
+	arena.free();
+	return peak;
+}
+
+// Modal synthesis: a unit strike rings each mode at its `gain`, independent of
+// its frequency and decay time (and therefore of sample rate).
+TEST_CASE("[Symphony][Operators][ModalBank] Strike amplitude equals mode gain") {
+	const float frequencies[] = { 110.0f, 440.0f, 1760.0f, 7040.0f };
+	const float decays[] = { 0.1f, 0.5f, 2.4f };
+	for (float frequency : frequencies) {
+		for (float t60 : decays) {
+			const float peak = _modal_strike_peak(frequency, t60, 0.5f);
+			// The ring peaks a quarter cycle after the strike, after decaying
+			// by exp(-ln(1000) * t / t60) — noticeable only for low, short modes.
+			const float expected = 0.5f * std::exp(-6.9078f / (4.0f * frequency * t60));
+			INFO(frequency, " Hz, t60 ", t60, " s: peak ", peak, ", expected ", expected);
+			CHECK(peak == doctest::Approx(expected).epsilon(0.05f));
+		}
+	}
+	// Two modes with equal gain are equally loud, whatever their pitch or ring.
+	CHECK(_modal_strike_peak(440.0f, 3.0f, 1.0f) == doctest::Approx(_modal_strike_peak(3520.0f, 0.5f, 1.0f)).epsilon(0.05f));
 }
 
 } // namespace TestSymphonyOperators

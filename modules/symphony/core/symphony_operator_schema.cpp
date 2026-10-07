@@ -121,6 +121,21 @@ void OperatorRegistry::annotate_authoring_schema() {
 			ensure_param(*desc, decays);
 			ensure_param(*desc, gains);
 		}
+		if (type_name == StringName("ResonatorAnalyzer")) {
+			// Optional band centres; log-spaced defaults when absent.
+			ParamDescriptor frequencies;
+			frequencies.name = "frequencies";
+			frequencies.value_type = ParamValueType::FLOAT_ARRAY;
+			frequencies.unit = "Hz";
+			ensure_param(*desc, frequencies);
+		}
+		if (type_name == StringName("Waveshaper")) {
+			// Optional custom transfer table; overrides `preset` when present.
+			ParamDescriptor table_data;
+			table_data.name = "table_data";
+			table_data.value_type = ParamValueType::FLOAT_ARRAY;
+			ensure_param(*desc, table_data);
+		}
 
 		tag(*desc, "parameter_name", ParamValueType::STRING);
 		tag(*desc, "display_name", ParamValueType::STRING);
@@ -138,7 +153,12 @@ void OperatorRegistry::annotate_authoring_schema() {
 		tag(*desc, "frequencies", ParamValueType::FLOAT_ARRAY, "Hz");
 		tag(*desc, "decay_times", ParamValueType::FLOAT_ARRAY, "s");
 		tag(*desc, "gains", ParamValueType::FLOAT_ARRAY);
-		tag_enum(*desc, "waveform", { "sine", "saw", "square", "triangle", "pwm" });
+		if (type_name == StringName("LFO")) {
+			// LFO has its own order: 0=sine, 1=triangle, 2=saw, 3=square.
+			tag_enum(*desc, "waveform", { "sine", "triangle", "saw", "square" });
+		} else {
+			tag_enum(*desc, "waveform", { "sine", "saw", "square", "triangle", "pwm" });
+		}
 		tag_enum(*desc, "pin_type", { "audio", "float", "int", "bool", "trigger" });
 		tag_enum(*desc, "loop_mode", { "none", "forward", "ping_pong" });
 		if (type_name == StringName("Noise")) {

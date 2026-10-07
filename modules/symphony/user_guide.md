@@ -99,7 +99,7 @@ AudioManager.play_event(sfx, position, {"size": 2.0, "debris_amount": 0.8})
 # SoundEvent wraps an AudioStreamSymphony graph
 var fire_event: SoundEvent = preload("res://audio/events/fire_loop.tres")
 var play: Dictionary = AudioManager.play_event(fire_event)
-var handle: int = int(play.get("slot", -1))
+var handle: int = int(play.get("handle", -1))
 
 # Modify parameters in real-time
 AudioManager.set_parameter(handle, &"intensity", 0.8)
@@ -193,11 +193,15 @@ Cooldown and voice limits are keyed by the SoundEvent **resource instance**:
 ### Core API
 
 ```gdscript
-# Play a sound. Returns {slot, result, steal_reason}. slot is -1 if rejected.
+# Play a sound. Returns {handle, slot, result, steal_reason}.
+# handle is -1 if the play was rejected.
 var play: Dictionary = AudioManager.play_event(event, position, params)
-var handle: int = int(play.get("slot", -1))
+var handle: int = int(play.get("handle", -1))
 if play.result == SymphonyEventDispatcher.RESULT_STOLEN:
-    print("stole slot %d (%s)" % [handle, play.steal_reason])
+    print("stole a voice for %d (%s)" % [handle, play.steal_reason])
+
+# 3D events take a Vector3 position
+var play_3d: Dictionary = AudioManager.play_event_3d(event_3d, emitter.global_position)
 
 # Stop a voice
 AudioManager.stop(handle)              # Immediate
@@ -293,10 +297,9 @@ Every graph needs:
 ### Example: Simple Laser Sound
 
 ```
-[Oscillator] → [ADSR] → [SVFilter] → [GraphOutput]
-      ↑            ↑
-[GraphInput]  [TriggerInput]
- "frequency"    "fire"
+[GraphInput "frequency"] → [Oscillator (saw)] → [ADSR] → [SVFilter] → [Gain] → [GraphOutput]
+                                                   ↑
+                                     [TriggerInput "fire"]
 ```
 
 The `.tres` representation:
@@ -307,42 +310,67 @@ The `.tres` representation:
 [resource]
 mix_rate = 48000.0
 voice_priority = 50
+schema_version = 2
+duration_limit_seconds = 0.3
 
-graph/node_count = 5
+graph/node_count = 7
 graph/nodes/0/id = 0
 graph/nodes/0/type = &"TriggerInput"
-graph/nodes/0/params = {"name": "fire"}
+graph/nodes/0/params = {"trigger_name": "fire", "auto_trigger_on_play": 1.0}
 graph/nodes/1/id = 1
 graph/nodes/1/type = &"GraphInput"
-graph/nodes/1/params = {"name": "frequency", "default_value": 880.0}
+graph/nodes/1/params = {"parameter_name": "frequency", "default_value": 880.0}
 graph/nodes/2/id = 2
 graph/nodes/2/type = &"Oscillator"
 graph/nodes/2/params = {"waveform": 1}
 graph/nodes/3/id = 3
 graph/nodes/3/type = &"ADSR"
-graph/nodes/3/params = {"attack_ms": 1.0, "decay_ms": 100.0, "sustain": 0.0, "release_ms": 50.0}
+graph/nodes/3/params = {"attack": 0.001, "decay": 0.1, "sustain": 0.0, "release": 0.05}
 graph/nodes/4/id = 4
-graph/nodes/4/type = &"GraphOutput"
-graph/nodes/4/params = {}
+graph/nodes/4/type = &"SVFilter"
+graph/nodes/4/params = {"cutoff": 3000.0, "resonance": 0.3}
+graph/nodes/5/id = 5
+graph/nodes/5/type = &"Gain"
+graph/nodes/5/params = {"gain": 0.25}
+graph/nodes/6/id = 6
+graph/nodes/6/type = &"GraphOutput"
+graph/nodes/6/params = {}
 
-graph/connection_count = 4
+graph/connection_count = 6
 graph/connections/0/from_node = 1
 graph/connections/0/from_pin = 0
 graph/connections/0/to_node = 2
 graph/connections/0/to_pin = 0
-graph/connections/1/from_node = 0
+graph/connections/1/from_node = 2
 graph/connections/1/from_pin = 0
 graph/connections/1/to_node = 3
-graph/connections/1/to_pin = 1
-graph/connections/2/from_node = 2
+graph/connections/1/to_pin = 0
+graph/connections/2/from_node = 0
 graph/connections/2/from_pin = 0
 graph/connections/2/to_node = 3
-graph/connections/2/to_pin = 0
+graph/connections/2/to_pin = 1
 graph/connections/3/from_node = 3
 graph/connections/3/from_pin = 0
 graph/connections/3/to_node = 4
 graph/connections/3/to_pin = 0
+graph/connections/4/from_node = 4
+graph/connections/4/from_pin = 0
+graph/connections/4/to_node = 5
+graph/connections/4/to_pin = 0
+graph/connections/5/from_node = 5
+graph/connections/5/from_pin = 0
+graph/connections/5/to_node = 6
+graph/connections/5/to_pin = 0
 ```
+
+How to read it:
+
+- **Parameter names and units come from the operator schema**, not from memory. Call `AudioStreamSymphony.get_operator_schema()` or read `references/operator-schema.json` in the `godot-audio` skill. ADSR times are in **seconds**. `TriggerInput` uses `trigger_name` and `GraphInput` uses `parameter_name`.
+- **Pins are indices.** `from_pin` / `to_pin` index the operator's `outputs` / `inputs` list in schema order. Here `ADSR` input 0 is `input` (audio) and input 1 is `trigger`. `SVFilter` output 0 is `lp_out`, 1 is `hp_out`, and 2 is `bp_out`.
+- **A float output may feed an audio input.** The compiler promotes it, so `GraphInput → Oscillator.frequency` is valid. Other type mismatches are compile errors.
+- **One connection per input pin.** To sum signals, use `Mix` or `MathAdd`.
+- **Check levels offline.** Resonant filters, distortion and stacked layers can push a graph past full scale. Render it with `render_offline()` and check `peak` (see [Preset Level Contract](#preset-level-contract)).
+- **Optional keys.** Saved graphs may also contain `graph/nodes/N/position`, `graph/nodes/N/collapsed` and `graph/connections/N/is_feedback`. These are editor/feedback metadata and can be omitted when writing by hand.
 
 ### Playing Graph Sounds from GDScript
 
@@ -352,7 +380,7 @@ var laser_event: SoundEvent = preload("res://audio/events/laser.tres")
 
 # Play and get a handle
 var play: Dictionary = AudioManager.play_event(laser_event, position, {"frequency": 1200.0})
-var handle: int = int(play.get("slot", -1))
+var handle: int = int(play.get("handle", -1))
 
 # Retrigger the envelope (TriggerInput defaults to auto_trigger_on_play=true on first play)
 AudioManager.trigger(handle, &"fire")  # returns false if the 64-entry trigger queue was full
@@ -363,20 +391,72 @@ AudioManager.set_parameter(handle, &"frequency", 440.0)
 
 ### TriggerInput — One-Shot Sounds
 
-Graphs with `TriggerInput` nodes fire automatically on play when `auto_trigger_on_play` is true (the default). Retrigger with `AudioManager.trigger(handle, &"name")`. If auto-trigger is disabled, the graph runs but ADSR/envelope stays silent until you trigger.
+Graphs with `TriggerInput` nodes fire automatically on play when `auto_trigger_on_play` is true (the default). Retrigger with `AudioManager.trigger(handle, &"trigger_name")`. If auto-trigger is disabled, the graph runs but ADSR/envelope stays silent until you trigger.
 
 ### GraphOutput — Combining Sources
 
-`GraphOutput` has a single input pin. To mix multiple sources, use `MathAdd` or `Mix` nodes before `GraphOutput`:
+`GraphOutput` has one audio input (pin 0). To mix multiple sources, use `MathAdd` or `Mix` nodes before `GraphOutput`:
 
 ```
 [Noise] ──→ [Mix] ──→ [GraphOutput]
 [Oscillator] ─↗
 ```
 
+`GraphOutput` also has an optional `finish` trigger input (pin 1). When a trigger reaches it, the playback stops and the voice is released.
+
+### Ending One-Shots
+
+A graph plays until something stops it. An ADSR that has decayed to silence does **not** end the voice by itself. Finite sounds must end in one of two ways:
+
+| Method | Use when |
+|--------|----------|
+| `duration_limit_seconds` on the `AudioStreamSymphony` | The length is known. Set it past the envelope tail plus any modal or reverb ring. |
+| A trigger into `GraphOutput.finish` | The graph decides when it is done (for example `WavePlayer.finished`, or a `TriggerDelay` after the strike). |
+
+Loops, drones and ambient beds keep `duration_limit_seconds = 0` and leave `finish` unconnected.
+
 ### SubGraph — Reusable Modules
 
-Use `SubGraph` operators to embed one graph inside another. This enables modular design — build reusable "building blocks" (e.g., a reverb send, a common filter chain) and reference them.
+Use `SubGraph` operators to embed one graph inside another. Set its `resource_path` param to the `.tres` of the inner graph. This enables modular design: build reusable building blocks (a reverb send, a common filter chain) and reference them.
+
+### Validating and Rendering Graphs Offline
+
+Set `schema_version = 2` on every graph you author. `validate_authoring()` then reports unknown operators, unknown or mistyped parameters, unresolved resource paths and duplicate input connections as **errors**. On older graphs (`schema_version` 0) the same findings are only warnings. The graph compiler ignores parameters it does not recognize, so a misspelled name otherwise fails silently by falling back to the default value.
+
+```gdscript
+var graph: AudioStreamSymphony = load("res://audio/graphs/laser.tres")
+var report: Dictionary = graph.validate_authoring()
+if not report.ok:
+    for diag in report.errors:
+        push_error("node %d: %s" % [diag.node_id, diag.message])
+```
+
+`render_offline()` renders a graph without an audio device and writes a WAV plus a sibling JSON file with `peak`, `rms`, `silence` (fraction of silent frames), `nonfinite`, `spectral_centroid`, `render_cost_us`, `frames`, `sample_rate` and `seed`:
+
+```gdscript
+var result: Dictionary = graph.render_offline(
+    0.5,                                   # duration in seconds
+    1,                                     # seed for StochasticTrigger / noise
+    {"frequency": 1200.0},                 # initial GraphInput values
+    [{"name": "fire", "time": 0.0}, {"name": "fire", "time": 0.25}],
+    "user://laser.wav")
+```
+
+From the command line (headless, inside a project that has `res://audio/presets/render_offline.gd`):
+
+```bash
+godot --headless --path <project> -s res://audio/presets/render_offline.gd -- \
+  --graph=res://audio/graphs/laser.tres --duration=0.5 --seed=1 \
+  --param=frequency:1200 --trigger=fire:0.0 --trigger=fire:0.25 \
+  --wav=/tmp/laser.wav
+```
+
+Notes:
+
+- Parameters are applied once, before the first block. A render cannot change a parameter partway through.
+- Triggers fire at the start of the 256-frame block that contains their `time` (about 5 ms resolution at 48 kHz).
+- The render stops early if the graph finishes (`GraphOutput.finish` or `duration_limit_seconds`).
+- `render_offline()` does not call `validate_authoring()`. Run both.
 
 ### Design Decision: Mono-Internal Graph Architecture
 
@@ -406,99 +486,109 @@ The MetaSound-style CAT architecture (polymorphic multi-channel buffers with for
 
 ## Operator Reference
 
-Symphony provides 36 DSP operators organized by category:
+Symphony provides 44 DSP operators. The tables below list each operator's parameters. Pin order matters, because connections address pins by index. The authoritative, machine-readable list (pins in index order, types, ranges, defaults, enum labels) is `AudioStreamSymphony.get_operator_schema()`, which is exported as `references/operator-schema.json` in the `godot-audio` skill. Regenerate that file after changing any operator descriptor.
+
+Parameter values are floats unless noted. Enum parameters take the integer index shown. Times are in milliseconds when the name ends in `_ms`, and in seconds when the unit column says **s**.
 
 ### Generators (sound sources)
 
-| Operator | Description | Key Parameters |
-|----------|-------------|----------------|
-| **Oscillator** | Classic waveforms (sine, saw, square, triangle, PWM) with logistic-curve band-limiting | `waveform`, `frequency`, `pulse_width` |
-| **Noise** | White, pink, brown noise | `mode` (0=white, 1=pink, 2=brown) |
-| **LFO** | Low-frequency oscillator for modulation (polynomial sine) | `frequency`, `waveform`, `amplitude` |
-| **Constant** | Outputs a fixed value | `value` |
-| **WavePlayer** | Plays back a PCM audio buffer | `buffer`, `playback_rate`, `loop` |
-| **FMOscillator** | 2-operator FM synthesis (with output anti-alias filter) | `carrier_freq`, `mod_freq`, `mod_index` |
-| **FormantOsc** | Vowel/formant synthesis | `vowel`, `frequency`, `formant_shift` |
+| Operator | Inputs → Outputs | Parameters |
+|----------|------------------|------------|
+| **Oscillator** | `frequency` (audio), `pulse_width` → `output` | `frequency` Hz, `waveform` (0 sine, 1 saw, 2 square, 3 triangle, 4 pwm), `pulse_width` |
+| **Noise** | — → `output` | `mode` (0 white, 1 pink) |
+| **LFO** | `rate`, `amplitude` → `output` (float) | `rate` Hz, `amplitude`, `waveform` (0 sine, 1 triangle, 2 saw, 3 square) |
+| **Constant** | — → `output` | `value` |
+| **WavePlayer** | `gate` (trigger), `pitch` → `output`, `finished` (trigger) | `resource_path`, `bake_audio`, `loop_mode` (0 none, 1 forward, 2 ping-pong), `loop_start` / `loop_end` (samples; end 0 = file end), `pitch_scale`, `auto_play` |
+| **FMOscillator** | `carrier_freq`, `mod_freq`, `mod_index`, `mod_input` (audio) → `audio_out` | `carrier_freq` Hz, `mod_freq` Hz, `mod_index` (0–10) |
+| **FormantOsc** | `fundamental_freq`, `formant_freq`, `bandwidth` → `audio_out` | `fundamental_freq` Hz, `formant_freq` Hz, `bandwidth` Hz |
 
-### Filters (shape the spectrum)
+Note that `LFO` and `Oscillator` number their waveforms differently.
 
-| Operator | Description | Key Parameters |
-|----------|-------------|----------------|
-| **BiquadFilter** | Standard biquad (LP, HP, BP, Notch, Peak, LowShelf, HighShelf) | `mode`, `frequency`, `q` |
-| **OnePole** | Simple 1-pole LP/HP (6dB/oct) | `mode`, `cutoff` |
-| **SVFilter** | State-variable filter (LP, HP, BP, Notch simultaneously) | `cutoff`, `resonance` |
-| **DCBlocker** | Removes DC offset | — |
-| **Saturator** | Soft-clip saturation/distortion with ADAA anti-aliasing | `drive`, `mode`, `oversample` |
-| **Waveshaper** | Arbitrary transfer function distortion with ADAA anti-aliasing | `curve`, `drive`, `mix` |
+### Filters and Shapers
 
-### Envelopes & Dynamics
+| Operator | Inputs → Outputs | Parameters |
+|----------|------------------|------------|
+| **BiquadFilter** | `input`, `cutoff` (audio) → `output` | `mode` (0 LP, 1 HP, 2 BP, 3 Notch), `cutoff` Hz, `resonance` (Q, 0.1–20) |
+| **OnePole** | `input`, `cutoff` → `output` | `cutoff` Hz (6 dB/oct low-pass) |
+| **SVFilter** | `audio_in`, `cutoff`, `resonance` → `lp_out`, `hp_out`, `bp_out` | `cutoff` Hz, `resonance` (0–1) |
+| **DCBlocker** | `input` → `output` | — |
+| **Saturator** | `input`, `drive` → `output` | `drive` (0.1–20), `mode` (0 soft, 1 hard), `oversample` (0 off, 1 2×). ADAA anti-aliasing |
+| **Waveshaper** | `audio_in`, `drive` → `audio_out` | `drive`, `preset` (0 soft clip, 1 hard clip, 2 tube, 3 foldback, 4 Chebyshev 3rd, 5 Chebyshev 5th), `table_size`, optional `table_data` (float array, replaces `preset`). ADAA anti-aliasing |
 
-| Operator | Description | Key Parameters |
-|----------|-------------|----------------|
-| **ADSR** | Attack-Decay-Sustain-Release envelope | `attack_ms`, `decay_ms`, `sustain`, `release_ms` |
-| **Gain** | Simple volume control | `gain` |
-| **Compressor** | Dynamic range compression | `threshold`, `ratio`, `attack_ms`, `release_ms` |
+### Envelopes and Dynamics
 
-### Math & Mixing
+| Operator | Inputs → Outputs | Parameters |
+|----------|------------------|------------|
+| **ADSR** | `input` (audio), `trigger` → `output` | `attack` s, `decay` s, `sustain` (0–1), `release` s |
+| **EnvelopeFloat** | `trigger`, `target` → `value` (float) | `start_value`, `end_value`, `duration_ms`, `curve` (0 linear, 1 exp rise, 2 exp decay, 3 smooth), `hold_end` |
+| **Gain** | `input`, `gain` → `output` | `gain` (0–10, linear) |
+| **Compressor** | `input` → `output` | `threshold_db`, `ratio`, `attack_ms`, `release_ms`, `makeup_db`, `mode` (0 peak; 1 reserved) |
 
-| Operator | Description | Key Parameters |
-|----------|-------------|----------------|
-| **MathAdd** | Add two signals | — |
-| **Mix** | Weighted blend of two signals | `mix` (0.0 = A only, 1.0 = B only) |
-| **CrossFade** | Crossfade between two inputs via control signal | `control` |
-| **MapRange** | Remap a value from one range to another | `in_min`, `in_max`, `out_min`, `out_max` |
-| **SampleHold** | Samples input on trigger, holds value | — |
-| **RingMod** | Ring modulation (multiply two signals) | — |
+`ADSR` multiplies its audio input by the envelope. To get the envelope alone as a control signal, feed it a `Constant` of 1.0, or use `EnvelopeFloat`.
 
-### Timing & Triggers
+### Math and Mixing
 
-| Operator | Description | Key Parameters |
-|----------|-------------|----------------|
-| **Clock** | Periodic trigger signal | `bpm`, `subdivision` |
-| **TriggerDelay** | Delays a trigger by a fixed time | `delay_ms` |
-| **StochasticTrigger** | Random trigger with controllable density | `density` (events/sec) |
+| Operator | Inputs → Outputs | Parameters |
+|----------|------------------|------------|
+| **MathAdd** | `a`, `b` → `output` | — |
+| **Mix** | `a`, `b`, `mix` → `output` | `mix` (0 = A only, 1 = B only) |
+| **CrossFade** | `audio_a`, `audio_b`, `mix` → `audio_out` | `mix` |
+| **MapRange** | `input` → `output` | `in_min`, `in_max`, `out_min`, `out_max`, `clamp` |
+| **SampleHold** | `input`, `trigger` → `output` | — |
+| **RingMod** | `audio_a`, `audio_b` → `audio_out` | — (multiplies the inputs) |
 
-### Delay & Reverb
+### Timing and Triggers
 
-| Operator | Description | Key Parameters |
-|----------|-------------|----------------|
-| **DelayLine** | Simple delay with feedback | `delay_ms`, `feedback` |
-| **FeedbackPath** | Explicit feedback routing for complex topologies | `delay_samples` |
-| **PitchShifter** | Granular pitch shifting | `semitones`, `grain_size_ms` |
-| **FDNReverb** | Feedback Delay Network reverb | `room_size`, `decay`, `damping`, `mix` |
+| Operator | Inputs → Outputs | Parameters |
+|----------|------------------|------------|
+| **Clock** | — → `trigger` | `bpm`, `subdivision` (ticks per beat, 0.25–16) |
+| **TriggerDelay** | `trigger` → `trigger` | `delay_ms` |
+| **StochasticTrigger** | `density` → `trigger_out` | `density` (events/s), `seed` (0 = the `render_offline` seed when rendering offline, otherwise a different value per voice) |
+
+### Delay and Reverb
+
+| Operator | Inputs → Outputs | Parameters |
+|----------|------------------|------------|
+| **DelayLine** | `audio_in`, `delay_time` → `audio_out` | `delay_ms`, `max_delay_ms`. No built-in feedback; route the output back through `FeedbackPath` |
+| **FeedbackPath** | `audio_in` → `audio_out` | — (marks a feedback edge; adds one micro-block of delay) |
+| **PitchShifter** | `audio_in`, `pitch_shift` → `audio_out` | `pitch_shift` (semitones, ±12), `buffer_ms` |
+| **FDNReverb** | `audio_in`, `room_size`, `decay_time`, `damping`, `pre_delay_ms` → `audio_out` | `num_lines` (4 or 8), `max_delay_ms`, `room_size` (0.01–1), `decay_time` s, `damping`, `pre_delay_ms`. Output is fully wet; blend with `Mix` |
+| **EarlyReflections** | `audio_in`, `room_width`, `room_height`, `room_depth`, `reflection` → `audio_out` | `max_room_dim`, `room_width` / `room_height` / `room_depth` (m), `reflection` (0–1) |
 
 ### Utility
 
-| Operator | Description | Key Parameters |
-|----------|-------------|----------------|
-| **ParameterSmoother** | Smooths a control signal (prevents clicks) | `smooth_time_ms` |
-| **EnvelopeFollower** | Extracts amplitude envelope from audio | `attack_ms`, `release_ms` |
-| **FrequencyEnvelopeFollower** | Extracts amplitude at a specific frequency (zero latency) | `center_frequency`, `responsiveness` |
+| Operator | Inputs → Outputs | Parameters |
+|----------|------------------|------------|
+| **ParameterSmoother** | `value`, `smooth_time_ms` → `smoothed` | `smooth_time_ms`, `mode` (0 linear, 1 log) |
+| **EnvelopeFollower** | `audio_in`, `attack_ms`, `release_ms` → `envelope_out` | `attack_ms`, `release_ms` |
+| **FrequencyEnvelopeFollower** | `audio_in`, `frequency` → `envelope_out` | `center_frequency` Hz, `responsiveness` |
 
 ### Synthesis
 
-| Operator | Description | Key Parameters |
-|----------|-------------|----------------|
-| **ModalBank** | Resonant modal synthesis (bells, metals, glass) | `frequencies[]`, `decays[]`, `gains[]` |
-| **GrainCloud** | Granular synthesis engine | `grain_size_ms`, `density`, `position`, `pitch_randomness`, `scan_speed`, `amp_randomness`, `pitch_tracking`, `trigger_only` |
+| Operator | Inputs → Outputs | Parameters |
+|----------|------------------|------------|
+| **ModalBank** | `excitation` → `audio_out` | `frequencies` (float array, Hz), `decay_times` (float array, s, time to −60 dB), `gains` (float array, strike amplitude per mode), `num_modes`, `max_modes` (≤ 64) |
+| **GrainCloud** | `audio_in`, `trigger`, `grain_size_ms`, `density`, `position`, `pitch_randomness`, `scan_speed`, `amp_randomness`, `pitch_tracking` → `audio_out` | the same names as params, plus `position_randomness`, `trigger_only`, `seed`, `capture_seconds` |
+
+**ModalBank semantics.** Each mode is a damped sine. A unit impulse on `excitation` rings mode *k* as `gains[k] · e^(−6.91·t / decay_times[k]) · sin(2π · frequencies[k] · t)`, so `gains` is the strike amplitude of each mode, independent of its frequency and decay time. Write the material's relative partial amplitudes into `gains` and set the overall level with a `Gain` after the bank. All three arrays are required: if any is missing (for example `decay_times` misspelled as `decays`), the bank has zero modes and is silent. Longer or noisier excitation (a noise burst, a scrape) excites each mode by the energy near its frequency, so the output can exceed the sum of `gains`; check `peak` with `render_offline()`.
 
 ### Spectral
 
-| Operator | Description | Key Parameters |
-|----------|-------------|----------------|
-| **PhaseVocoder** | FFT-based time-stretch and pitch-shift | `time_stretch`, `pitch_shift` |
-| **SpectralGate** | Frequency-domain noise gate | `threshold`, `ratio` |
-| **ResonatorAnalyzer** | Zero-latency frequency power detection via resonator bank | `num_bands`, `frequencies[]`, `responsiveness` |
+| Operator | Inputs → Outputs | Parameters |
+|----------|------------------|------------|
+| **PhaseVocoder** | `audio_in`, `time_stretch`, `pitch_shift` → `audio_out` | `fft_size`, `overlap`, `time_stretch` (0.5–2, duration-based), `pitch_shift` (semitones), `seed` |
+| **SpectralGate** | `audio_in`, `threshold_db`, `reduction_db` → `audio_out` | `fft_size`, `overlap`, `threshold_db`, `reduction_db` |
+| **ResonatorAnalyzer** | `audio_in` → `band_0` … `band_31` (float) | `num_bands` (≤ 32), `responsiveness`, optional `frequencies` (float array, Hz; log-spaced when absent) |
 
 ### I/O (Graph Interface)
 
-| Operator | Description | Key Parameters |
-|----------|-------------|----------------|
-| **GraphInput** | Exposes a named parameter to GDScript | `name`, `default_value` |
-| **GraphInputAudio** | Routes external audio into the graph | `channel` |
-| **GraphOutput** | Final output to speakers (one per graph) | — |
-| **TriggerInput** | Named trigger for one-shot events | `name` |
-| **SubGraph** | Embeds another graph as a node | `graph_resource` |
+| Operator | Inputs → Outputs | Parameters |
+|----------|------------------|------------|
+| **GraphInput** | — → `output` (float) | `parameter_name`, `default_value`, `pin_type`, `sort_order`, `display_name` |
+| **GraphInputAudio** | — → `output` (audio) | `parameter_name`, `sort_order`, `display_name`. Audio entry point of a graph used as a `SubGraph`; silent when standalone |
+| **GraphOutput** | `input` (audio), `finish` (trigger) → — | `pin_type`, `sort_order`, `display_name` |
+| **TriggerInput** | — → `output` (trigger) | `trigger_name`, `auto_trigger_on_play` (default 1) |
+| **SubGraph** | dynamic → dynamic | `resource_path` (inner graph `.tres`) |
 
 ---
 
@@ -528,26 +618,30 @@ var health: float = AudioManager.get_global_parameter(&"player_health")
 RTPC bindings map a parameter to a target property with an optional curve:
 
 ```ini
-# In a SoundEvent .tres file
+# In a SoundEvent .tres file. rtpc_schema_version must come before rtpc_bindings.
+rtpc_schema_version = 2
 rtpc_bindings = [{
     "parameter_name": &"speed",
-    "target": 0,           # 0=Pitch, 1=Volume, 2=FilterCutoff, 3=GraphInput, 4=PlaybackSpeed
-    "curve": null,         # Optional Curve resource for non-linear mapping
-    "min_value": 0.0,
-    "max_value": 100.0,
-    "graph_input_name": &""  # Only used when target = 3 (GraphInput)
+    "target": 2,                 # SoundEvent.RTPC_GRAPH_INPUT
+    "graph_input_name": &"rpm",  # GraphInput to drive (graph-input target only)
+    "curve": null,               # Optional Curve for non-linear mapping
+    "min_value": 800.0,          # Output when the parameter is 0.0
+    "max_value": 6000.0          # Output when the parameter is 1.0
 }]
 ```
 
+**Mapping.** The parameter value is clamped to **0.0–1.0**. If `curve` is set, the clamped value is sampled through the curve. The result is then scaled to `min_value … max_value`. `min_value` and `max_value` are the **output** range, not the input range, so normalize your game values to 0–1 before setting them.
+
 ### RTPC Targets
 
-| Target ID | Name | Effect |
-|-----------|------|--------|
-| 0 | PITCH | Modulates `pitch_scale` on the player |
-| 1 | VOLUME | Modulates volume via the volume stack (layer [1]) |
-| 2 | FILTER_CUTOFF | Reserved for per-voice filter (future) |
-| 3 | GRAPH_INPUT | Routes mapped value to a named `GraphInput` in the DSP graph |
-| 4 | PLAYBACK_SPEED | Same as pitch (affects speed + pitch together) |
+| Value | Constant | Effect of the mapped value |
+|-------|----------|----------------------------|
+| 0 | `SoundEvent.RTPC_PITCH` | Sets the player's `pitch_scale` |
+| 1 | `SoundEvent.RTPC_VOLUME` | Sets the voice volume in dB. It replaces the random `volume_range` offset; attenuation and fades still apply on top. One volume binding per event |
+| 2 | `SoundEvent.RTPC_GRAPH_INPUT` | Sets the `GraphInput` named by `graph_input_name` |
+| 3 | `SoundEvent.RTPC_PLAYBACK_SPEED` | Sets `pitch_scale` (speed and pitch together) |
+
+**Legacy resources.** Older files used 3 for graph input and 4 for playback speed. A `SoundEvent` without `rtpc_schema_version = 2` is migrated on load: target 3 with a `graph_input_name` becomes 2, and target 4 becomes 3. A legacy binding whose target cannot be resolved (graph input with no `graph_input_name`) is dropped with an error.
 
 ### Per-Voice vs Global Parameters
 
@@ -555,6 +649,8 @@ rtpc_bindings = [{
 - **Per-voice**: Set with `AudioManager.set_parameter(handle, name, value)`. Overrides global for that voice only.
 
 Per-voice parameters are resolved first. If none is set, the global value is used.
+
+`set_parameter(handle, name, value)` also writes a `GraphInput` with the same `parameter_name` directly, unmapped. When both a direct value and a mapped binding target the same `GraphInput`, the direct value wins.
 
 ### Parameter Smoothing
 
@@ -820,7 +916,7 @@ states = {
 **Usage:**
 
 ```gdscript
-# Automatic at load time — prints warnings/errors:
+# Automatic at load time. Errors print with push_warning; warnings only with --verbose:
 MusicSystem.load_graph(my_graph)
 # Output: "MusicSystem [exploration→combat]: coherence warning — Energy jump 0.60 ..."
 
@@ -923,7 +1019,7 @@ playback.set_parameter("time_stretch", BeatClock.calculate_duration_stretch_for_
 
 Symphony 2.0 adds a material-aware 3D acoustics layer on top of Godot's `AudioStreamPlayer3D` spatialization. `SpatialAcousticsEngine` runs physics and room simulation on the main thread, smooths the result, and publishes bounded parameters to the audio path without allocating during playback.
 
-For a `SoundEvent` with `spatial_mode = SPATIAL_3D`, the Game Audio Layer handles emitter registration, listener and physics-space updates, stream wrapping, occlusion filters, portal gain and apparent position, propagation delay, and reverb-bus routing. Normal game code continues to call `AudioManager.play_event()`.
+For a `SoundEvent` with `spatial_mode = SPATIAL_3D`, the Game Audio Layer handles emitter registration, listener and physics-space updates, stream wrapping, occlusion filters, portal gain and apparent position, propagation delay, and reverb-bus routing. Game code calls `AudioManager.play_event_3d()` (or uses `SoundEventPlayer3D`).
 
 ### What the system models
 
@@ -946,10 +1042,10 @@ var event := SoundEvent.new()
 event.spatial_mode = SoundEvent.SPATIAL_3D
 event.source_radius = 1.5 # metres; 0.0 keeps point-source occlusion
 
-AudioManager.play_event(event, emitter.global_position)
+AudioManager.play_event_3d(event, emitter.global_position)
 ```
 
-The event still needs one or more streams and the usual voice/attenuation settings described in [SoundEvent — The Core Resource](#soundevent--the-core-resource). For moving voices, keep their slot position current through the Game Audio Layer or `SymphonyVoicePool.set_slot_position()`.
+The event still needs one or more streams and the usual voice/attenuation settings described in [SoundEvent — The Core Resource](#soundevent--the-core-resource). For moving voices, keep their position current with `AudioManager.set_voice_position(handle, position)`.
 
 ### Acoustic materials and collision geometry
 
@@ -1113,7 +1209,7 @@ Scatter events create ambient detail (bird chirps, dripping water, rustling leav
 # Override automatic listener detection:
 AmbientSystem.set_listener_node(my_character)
 
-# Return to auto-detection (uses Camera2D/Camera3D):
+# Return to auto-detection (uses AudioManager's 2D listener position):
 AmbientSystem.set_listener_node(null)
 ```
 
@@ -1226,7 +1322,7 @@ if BusController.has_snapshot(&"exploration"):
 BusController monitors a source bus and ducks target buses when audio is present:
 
 ```gdscript
-# Configure (defaults: Voice bus ducks Music + Ambient)
+# Configure (default: Voice bus ducks Music only; add Ambient explicitly)
 BusController.set_duck_source_bus(&"Voice")
 BusController.set_duck_target_buses([&"Music", &"Ambient"])
 BusController.set_duck_amount_db(-6.0)
@@ -1257,7 +1353,7 @@ When the pool is full and a new sound plays, `SymphonyVoicePool.acquire_slot()` 
 
 1. If the same event is at its per-event cap, steal among that event's voices using its `steal_mode`
 2. Otherwise steal globally among voices whose `priority` is no greater than the incoming event
-3. Mode: `OLDEST`, `QUIETEST`, or `FARTHEST` (ties: lower importance, then slot index)
+3. Mode: `SoundEvent.STEAL_OLDEST`, `STEAL_QUIETEST`, or `STEAL_FARTHEST` (ties: lower importance, then slot index)
 4. Quietest falls back to importance when RMS is unknown (`set_slot_rms()`)
 5. `play_event()` returns `RESULT_STOLEN` (slot is still valid). The steal reason (`oldest` / `quietest` / `farthest`) is recorded in the voice-pool event log.
 
@@ -1423,7 +1519,8 @@ Symphony registers custom Godot performance monitors (visible in Debugger → Mo
 | `audio/active_voices` | Currently playing voice count |
 | `audio/virtual_voices` | Virtualized (sleeping) voice count |
 | `audio/stolen_this_frame` | Voice steals this frame |
-| `audio/budget_percent` | Pool utilization (0-100%) |
+| `audio/budget_percent` | Measured voice DSP budget (0-100%) |
+| `audio/occupancy_percent` | Pool slot utilization (0-100%) |
 | `audio/voices_sfx` | Active SFX voices |
 | `audio/voices_music` | Active music voices |
 | `audio/voices_ambient` | Active ambient voices |
@@ -1529,7 +1626,7 @@ Symphony ships with 90+ ready-to-use procedural graph presets. Use them directly
 ```gdscript
 # Load a preset graph directly
 var fire_stream: AudioStreamSymphony = preload(
-    "res://addons/symphony_audio/presets/graphs/fire.tres"
+    "res://audio/presets/graphs/fire.tres"
 )
 
 # Wrap in a SoundEvent for full voice management
@@ -1541,7 +1638,8 @@ fire_event.loop = true
 fire_event.max_distance = 600.0
 
 # Play
-var handle: int = AudioManager.play_event(fire_event, torch_position)
+var play: Dictionary = AudioManager.play_event(fire_event, torch_position)
+var handle: int = int(play.get("handle", -1))
 
 # Modulate the intensity parameter
 AudioManager.set_parameter(handle, &"intensity", 0.8)
@@ -1556,16 +1654,29 @@ Most presets expose a `GraphInput` parameter for real-time control. Common ones:
 - `speed` — rate of modulation (engine_rev, rolling)
 - `debris_amount` — amount of secondary detail (explosion, crumbling)
 
+### Preset Level Contract
+
+Every bundled preset is leveled to the same rules, enforced by `test/addons/symphony_audio/preset_level_test.gd` with no per-preset exceptions:
+
+- **Peak at or below −1 dBFS** at defaults, with each parameter at both ends of its range, and with all parameters at their minimum or maximum together. A parameter's range is the `in_min`..`in_max` of the `MapRange` nodes it feeds. Each setting is rendered with seeds 1–3.
+- **Loudness −16 dBFS at the reference setting**, measured as the loudest 400 ms window after a 30 Hz high-pass. The reference setting puts level parameters (`intensity`, `force`, `power`, `speed`, …) at their loud end and `distance` at its near end, and leaves character parameters at their defaults. Defaults therefore sit below −16 dBFS when a level parameter is below maximum.
+- **Transient sounds are peak-limited.** Impacts, clicks and drips cannot reach −16 dBFS without breaking the peak rule, so they sit at the peak limit instead.
+- **Character parameters do not swing loudness.** Where a character parameter (for example `frequency_range` or `surface_wetness`) moved the peak by more than 3 dB, the preset has a compensating `Gain` driven by that parameter.
+- **No NaN/Inf, audible at defaults, and one-shots end** within `duration_limit_seconds`.
+
+Mix balance between sounds belongs in `SoundEvent` volume and bus settings, not in the preset graphs.
+
 ---
 
 ## Best Practices & Tips
 
 ### GrainCloud Usage
 
-- Default capture buffer is 2 seconds. Set `capture_seconds` explicitly for longer buffers (up to 10s desktop, 4s web).
-- For PCM source presets: always pass `source_pcm_cache_key` (resource path) to enable memory sharing across voices.
+- GrainCloud granulates whatever reaches its `audio_in` pin (pin 0), captured into a ring buffer. To granulate a sample, feed it from a `WavePlayer`.
+- Default capture buffer is 2 seconds. Set `capture_seconds` for longer buffers (1–10 s; clamped to 4 s on web).
+- The capture buffer costs `capture_seconds × mix_rate × 4` bytes per voice: 384 KB at the 2 s default and 48 kHz. Budget for it.
 - **Never use GrainCloud in LOD 2 graphs** — replace with `Noise → Filter → Gain`.
-- Live-input granulation allocates 384KB per voice — budget accordingly.
+- The `source_pcm_cache_key` path in the C++ source is an engine-internal hook. Setting it in a `.tres` has no effect.
 - **Trigger input** (optional): connect a `Clock`, `StochasticTrigger`, or `TriggerInput` to spawn grains at exact sample positions.
 - **`trigger_only` = true**: disables internal Poisson scheduler — grains spawn ONLY from trigger events. Ideal for beat-synced granular textures.
 - When both density scheduling and trigger input are active (default), external triggers spawn additional grains on top of internal scheduling. Watch for MAX_GRAINS (8) saturation at very high density + trigger rates.
@@ -1590,24 +1701,34 @@ Use this to drive velocity-sensitive downstream nodes — e.g., ADSR with strong
 
 **Example: Beat-synced granular texture**
 ```ini
-# Clock (120 BPM, 16th notes) → GrainCloud (trigger-only mode)
+# Pink noise → GrainCloud.audio_in (pin 0); Clock (120 BPM, 16ths) → GrainCloud.trigger (pin 1)
+schema_version = 2
+graph/node_count = 4
+graph/nodes/0/id = 0
 graph/nodes/0/type = &"Clock"
 graph/nodes/0/params = {"bpm": 120.0, "subdivision": 4.0}
-
-graph/nodes/1/type = &"GrainCloud"
-graph/nodes/1/params = {
-    "grain_size_ms": 60.0,
-    "trigger_only": 1.0,
-    "position": 0.5,
-    "pitch_randomness": 0.1,
-    "source_pcm_cache_key": "res://audio/samples/texture.wav"
-}
-
-# Connection: Clock trigger → GrainCloud trigger input (pin 1)
-graph/connections/0/from_node = 0
+graph/nodes/1/id = 1
+graph/nodes/1/type = &"Noise"
+graph/nodes/1/params = {"mode": 1}
+graph/nodes/2/id = 2
+graph/nodes/2/type = &"GrainCloud"
+graph/nodes/2/params = {"grain_size_ms": 60.0, "trigger_only": 1.0, "position": 0.5, "pitch_randomness": 0.1}
+graph/nodes/3/id = 3
+graph/nodes/3/type = &"GraphOutput"
+graph/nodes/3/params = {}
+graph/connection_count = 3
+graph/connections/0/from_node = 1
 graph/connections/0/from_pin = 0
-graph/connections/0/to_node = 1
-graph/connections/0/to_pin = 1
+graph/connections/0/to_node = 2
+graph/connections/0/to_pin = 0
+graph/connections/1/from_node = 0
+graph/connections/1/from_pin = 0
+graph/connections/1/to_node = 2
+graph/connections/1/to_pin = 1
+graph/connections/2/from_node = 2
+graph/connections/2/from_pin = 0
+graph/connections/2/to_node = 3
+graph/connections/2/to_pin = 0
 ```
 
 ### Graph Design
@@ -1632,6 +1753,7 @@ Symphony automatically skips DSP execution for operators whose audio inputs are 
 |----------|----------------------|
 | `ADSR` | Envelope is in IDLE state (fully released) |
 | `Gain` | Gain value ≈ 0 (< 0.0001) |
+| `DelayLine` / `SVFilter` / `FDNReverb` | Input and tail silent for 2 consecutive blocks |
 
 **Graph design tips for maximum silence propagation benefit:**
 
@@ -1659,6 +1781,10 @@ Symphony automatically skips DSP execution for operators whose audio inputs are 
 ### Anti-Aliasing & Audio Quality
 
 Symphony includes built-in anti-aliasing to prevent digital artifacts from nonlinear operators (Saturator, Waveshaper). These features improve audio quality with minimal performance impact.
+
+#### Oscillator Band-Limiting (PolyBLEP)
+
+`Oscillator` saw, square, triangle and PWM use PolyBLEP: a two-sample polynomial correction at each discontinuity. Output stays within ±1.0 with no DC offset. Triangle integrates the band-limited square, so its corners round off and its peak falls slightly at high pitch (about 0.93 at 3.5 kHz, 0.78 at 10 kHz). PWM is a zero-mean pulse, so narrow widths swing asymmetrically: width 0.1 spans about −0.2 to +1.8.
 
 #### ADAA (Always-On)
 
@@ -1763,13 +1889,13 @@ graph/smooth_time_ms = 5.0            # Default: 5.0 ms (time constant for one-p
 - Use `cooldown_ms` to prevent machine-gun repetition (80-150ms for footsteps)
 - Use `pitch_range` and `volume_range` for natural variation
 - Set `max_voices` for sounds that shouldn't stack (e.g., max_voices=1 for UI clicks)
-- Use `SHUFFLE` variation mode for sequential variety without immediate repetition
+- Use `SoundEvent.VARIATION_SHUFFLE` for sequential variety without immediate repetition
 
 ### Spatial Audio
 
 - Set `spatial_mode = 2D` (or 3D) for any positioned sound
 - Symphony handles distance attenuation via the volume stack — Godot's built-in attenuation is disabled
-- Use `LOGARITHMIC` attenuation for realistic falloff, `LINEAR` for predictable control
+- Use `SoundEvent.ATTENUATION_LOGARITHMIC` for realistic falloff, `ATTENUATION_LINEAR` for predictable control
 - Use `CUSTOM` + a Curve resource for precise artistic control
 
 ### Music Design
@@ -1799,7 +1925,7 @@ graph/smooth_time_ms = 5.0            # Default: 5.0 ms (time constant for one-p
 
 ### Sound doesn't play
 
-1. **`play_event().slot == -1`?**
+1. **`play_event().handle == -1`?**
    - Check `cooldown_ms` — event may be in cooldown
    - Check `max_voices` — voice limit may be reached
    - Check that `streams` array is not empty in the SoundEvent
@@ -1837,7 +1963,7 @@ graph/smooth_time_ms = 5.0            # Default: 5.0 ms (time constant for one-p
 
 ### Music transition sounds wrong
 
-1. **Transition not waiting for bar?** — check that the transition rule has `quantization: NEXT_BAR`
+1. **Transition not waiting for bar?** — check that the transition rule has `"quantization": 2` (`MusicStateGraph.QUANTIZE_NEXT_BAR`)
 2. **BPM mismatch after transition?** — each state should define its own `bpm` and `beats_per_bar`
 3. **Layers not synced?** — ensure all layer streams are exactly the same length
 
@@ -1884,6 +2010,9 @@ graph/smooth_time_ms = 5.0            # Default: 5.0 ms (time constant for one-p
 | `BeatClock` | Beat tracking and time-stretch |
 | `BusController` | Snapshot and ducking management |
 | `RTPCEngine` | Global parameter registry and smoothing |
+| `SymphonyVoiceManager` | DSP budget thresholds and debug metrics |
+| `TransitionAnalyzer` | Music transition loudness/brightness analysis |
+| `SpatialAcousticsEngine` | Occlusion, rooms, portals, shared reverb |
 
 ### Autoloads (GDScript)
 
@@ -1902,13 +2031,13 @@ AudioManager.play_event(sfx_event, position)
 
 # Looping ambient attached to an object
 var play: Dictionary = AudioManager.play_event(loop_event, object.global_position)
-var h: int = int(play.get("slot", -1))
+var h: int = int(play.get("handle", -1))
 # Update position each frame if object moves:
-SymphonyVoicePool.set_slot_position(h, Vector3(object.global_position.x, object.global_position.y, 0.0))
+AudioManager.set_voice_position(h, Vector3(object.global_position.x, object.global_position.y, 0.0))
 
 # Reactive sound (engine RPM)
 var engine_play: Dictionary = AudioManager.play_event(engine_event)
-var engine_handle: int = int(engine_play.get("slot", -1))
+var engine_handle: int = int(engine_play.get("handle", -1))
 func _process(_delta):
     AudioManager.set_parameter(engine_handle, &"rpm", current_rpm / max_rpm)
 
@@ -1927,6 +2056,21 @@ func _on_music_slider_changed(value: float):
 ---
 
 ## Changelog
+
+### v2.0.1 — Corrections: Guide, Schema, DSP and Presets (2026-10-07)
+
+- Operator reference rebuilt from the operator descriptors: real parameter names, pin order, units and enum indices for all 44 operators.
+- Laser example uses `trigger_name`, `parameter_name` and ADSR times in seconds, and sets `schema_version = 2`.
+- New sections: ending one-shots (`duration_limit_seconds`, `GraphOutput.finish`) and validating / rendering graphs offline.
+- RTPC: corrected target numbering (graph input 2, playback speed 3), documented `rtpc_schema_version` migration, and clarified that `min_value` / `max_value` are the output range.
+- Playback examples read `play.get("handle")`; 3D examples use `play_event_3d()` and `set_voice_position()`.
+- GrainCloud: removed the `source_pcm_cache_key` advice (not authorable from `.tres`); the beat-synced example now feeds `audio_in`.
+- Schema fixes: LFO waveform labels now match the LFO order (sine, triangle, saw, square); `ResonatorAnalyzer.frequencies` and `Waveshaper.table_data` are declared, so strict graphs may use them.
+- **Oscillator:** replaced the v1.1 logistic band-limiting with PolyBLEP. The logistic version offset the saw by −1, spiked to about ±2 (saw) and ±3 (square/PWM), and aliased more than an unfiltered saw. Saw, square and triangle now stay within ±1.0 with no DC offset.
+- **Waveshaper:** the ADAA state started inconsistent (`prev_F = 0` instead of F(0)), so the first sample of every voice could spike by up to about 250,000×. The ill-conditioned fallback now evaluates the curve at the midpoint, with a 1e-5 threshold.
+- **Silence propagation:** a stateless operator (Mix, MathAdd, MapRange, CrossFade, RingMod) skipped once while its inputs were silent stayed flagged silent for the rest of the voice, muting everything downstream. Operators that run are now marked active.
+- **ModalBank:** the resonator input gain was `1 − R`, which made a mode's strike amplitude `gain × ~1.1 / (t60 × frequency)`: longer-ringing modes were quieter and high partials were suppressed by 1/frequency (a bell mode at 753 Hz with 2.4 s decay came out at −60 dB). It is now `sin(θ)`, so a unit strike rings each mode at exactly `gain`. Graphs authored against the old scaling come out much louder (up to about 70 dB) and need their `gains` re-authored. Multiplying each mode's gain by `(1 − R) / sin(θ)` reproduces the old sound exactly.
+- **Presets:** releveled to the [Preset Level Contract](#preset-level-contract). `energy_beam`'s `power` now raises the level (it used to lower it); seven presets gained character-parameter gain compensation.
 
 ### v2.0 — Spatial Acoustics (2026-09-01)
 

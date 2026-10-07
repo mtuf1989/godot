@@ -6,17 +6,15 @@
 #include "../../core/symphony_fast_math.h"
 #include "core/math/math_funcs.h"
 
-// Multi-waveform oscillator with logistic-curve band-limiting (branch-free).
-// Replaces PolyBLEP — no branches, no lookup tables, constant cost per sample.
+// Multi-waveform oscillator with PolyBLEP band-limiting.
 // Waveforms: Sine(0), Saw(1), Square(2), Triangle(3), PWM(4)
 //
-// Anti-aliasing method (ADC 2025):
-//   1. Compute naive waveform
-//   2. Derive piecewise-linear window around discontinuity
-//   3. Shape window with logistic curve (approximates sinc integral)
-//   4. Subtract correction from naive output
-//
-// Quality: ~-130dB aliasing at 2x oversampling. Minimum period: ~20 samples.
+// Saw subtracts a two-sample polynomial residual (PolyBLEP) at its reset, so
+// the output stays in [-1, 1] with no DC. Square and PWM are the difference of
+// two band-limited saws; PWM is a zero-mean pulse, so narrow widths swing
+// asymmetrically (e.g. -0.2..+1.8 at width 0.1). Triangle integrates the
+// band-limited square and is pulled gently toward the ideal triangle so it
+// starts centred and cannot drift.
 class SymphonyOscillator : public SymphonyOperator {
 private:
 	const float *SYMPHONY_RESTRICT freq_input = nullptr;
@@ -28,61 +26,31 @@ private:
 	int32_t waveform = 0; // 0=Sine, 1=Saw, 2=Square, 3=Triangle, 4=PWM
 	float default_pulse_width = 0.5f;
 
-	// Logistic steepness parameter. Controls the bandwidth of the correction window.
-	// Higher = steeper transition = more aliasing suppression but wider minimum period.
-	// 18.0 gives ~-130dB at 2x oversampling with ~20-sample minimum period.
-	static constexpr float LOGISTIC_K = 18.0f;
-
-	// ── Fast approximations (branch-free building blocks) ──────────────
-
 	[[nodiscard]] static inline float fast_sine(float p_phase) {
 		return SymphonyFastMath::fast_sine(p_phase);
 	}
 
-	// Fast 2^x approximation (~8 ops, 16-bit accuracy).
-	// Used in the logistic function denominator.
-	[[nodiscard]] static inline float fast_exp2(float p_x) {
-		// Split into integer and fractional parts
-		float i = floorf(p_x);
-		float f = p_x - i;
-		// 3rd-order polynomial for 2^f, f in [0, 1)
-		float poly = 1.0f + f * (0.6931472f + f * (0.2402265f + f * 0.0554959f));
-		// Combine: multiply by 2^i via bit manipulation
-		// ldexpf is typically a single instruction on modern CPUs
-		return ldexpf(poly, (int)i);
+	// Two-sample PolyBLEP residual for a unit downward step at phase 0/1.
+	[[nodiscard]] static inline float poly_blep(float p_phase, float p_dt) {
+		if (p_phase < p_dt) {
+			const float t = p_phase / p_dt;
+			return t + t - t * t - 1.0f;
+		}
+		if (p_phase > 1.0f - p_dt) {
+			const float t = (p_phase - 1.0f) / p_dt;
+			return t * t + t + t + 1.0f;
+		}
+		return 0.0f;
 	}
 
-	// Logistic-shaped band-limited sawtooth: phase in [0, 1), dt = freq/sample_rate.
-	// Returns a band-limited saw in [-1, 1].
-	inline float bl_saw(float p_phase, float p_dt) const {
-		// 1. Naive sawtooth
-		float naive = 2.0f * p_phase - 1.0f;
+	// Band-limited saw in [-1, 1]: phase in [0, 1), dt = freq / sample_rate.
+	[[nodiscard]] static inline float bl_saw(float p_phase, float p_dt) {
+		return (2.0f * p_phase - 1.0f) - poly_blep(p_phase, p_dt);
+	}
 
-		// 2. Piecewise-linear window around the discontinuity at phase=0/1.
-		//    Window width scales with dt (narrower at low frequencies = sharper transition).
-		//    Using min(phase, 1-phase) gives a symmetric triangle peaking at 0.5.
-		float window = p_phase;
-		float complement = 1.0f - p_phase;
-		window = window < complement ? window : complement; // min (branch-free on most CPUs via fmin)
-
-		// Scale window to logistic input range: want ±LOGISTIC_K at window edges.
-		// Window goes from 0 (at discontinuity) to 0.5 (mid-cycle).
-		// We want the logistic argument to span [-K, +K] across the correction zone.
-		// Correction zone width = dt (one sample's worth of phase advance).
-		// Scale: argument = (window / dt - 0.5) * 2 * K
-		float inv_dt = 1.0f / p_dt; // Could use fast_reciprocal, but dt is constant per sample block
-		float arg = (window * inv_dt - 0.5f) * (2.0f * LOGISTIC_K);
-
-		// 3. Logistic curve: 1 / (1 + 2^(-arg))
-		float denom = 1.0f + fast_exp2(-arg);
-		float shaped = 1.0f / denom;
-
-		// 4. Correction: shaped goes from 0→1 across the transition zone.
-		//    Scale to [-1, +1] and subtract from naive.
-		//    The correction amplitude is 2.0 (full step height of the sawtooth).
-		float correction = 2.0f * shaped - 1.0f;
-
-		return naive - correction + 1.0f * p_dt; // +dt compensates for the slight DC offset
+	// Ideal triangle matching the integrated square: +1 at phase 0, -1 at 0.5.
+	[[nodiscard]] static inline float naive_triangle(float p_phase) {
+		return 4.0f * Math::abs(p_phase - 0.5f) - 1.0f;
 	}
 
 public:
@@ -117,7 +85,7 @@ public:
 					sample = fast_sine(phase);
 					break;
 
-				case 1: // Saw (logistic band-limited)
+				case 1: // Saw (PolyBLEP)
 					sample = bl_saw(phase, dt);
 					break;
 
@@ -129,16 +97,28 @@ public:
 					sample = saw1 - saw2;
 				} break;
 
-				case 3: { // Triangle (integrated square, leaky integrator)
+				case 3: { // Triangle (integrated band-limited square)
 					float saw1 = bl_saw(phase, dt);
 					float phase2 = phase + 0.5f;
 					phase2 -= floorf(phase2);
 					float saw2 = bl_saw(phase2, dt);
 					float sq = saw1 - saw2;
-					// Leaky integrator: converts square → triangle
-					// 4*dt scales so the triangle amplitude stays ~1.0 regardless of freq
+					// Integrate square → triangle; 4*dt keeps the amplitude near 1.0.
+					if (!triangle_primed) {
+						// Start on the ideal curve for this phase and frequency so the
+						// first cycle does not overshoot.
+						float start_phase = phase + 0.5f * dt;
+						start_phase -= floorf(start_phase);
+						tri_integrator = naive_triangle(start_phase);
+						triangle_primed = true;
+					}
 					tri_integrator += 4.0f * dt * sq;
-					tri_integrator *= 0.999f; // DC leak prevention
+					// Pull toward the ideal shape instead of leaking toward zero,
+					// so low notes keep full amplitude and float error cannot drift.
+					// The integral of this step is centred half a sample ahead of phase.
+					float mid_phase = phase + 0.5f * dt;
+					mid_phase -= floorf(mid_phase);
+					tri_integrator += (naive_triangle(mid_phase) - tri_integrator) * TRIANGLE_PULL;
 					sample = tri_integrator;
 				} break;
 
@@ -172,6 +152,7 @@ public:
 		if (p_size >= needed) {
 			memcpy(&phase, p_buffer, sizeof(float));
 			memcpy(&tri_integrator, p_buffer + sizeof(float), sizeof(float));
+			triangle_primed = true;
 		}
 	}
 
@@ -202,4 +183,6 @@ public:
 private:
 	// State for integrated triangle (leaky integrator of square wave)
 	float tri_integrator = 0.0f;
+	bool triangle_primed = false;
+	static constexpr float TRIANGLE_PULL = 0.002f;
 };

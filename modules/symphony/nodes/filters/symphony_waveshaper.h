@@ -37,9 +37,17 @@ private:
 	float prev_x = 0.0f;   // Previous input sample (after drive, clamped to [-1,1])
 	float prev_F = 0.0f;   // Previous antiderivative lookup value
 
+	// Below this input step, float error in F1 - prev_F dominates the quotient.
+	static constexpr float ADAA_EPSILON = 1e-5f;
+
 public:
 	SymphonyWaveshaper(float *p_table, float *p_antideriv_table, int32_t p_table_size, float p_drive)
-			: table(p_table), antideriv_table(p_antideriv_table), table_size(p_table_size), default_drive(p_drive) {}
+			: table(p_table), antideriv_table(p_antideriv_table), table_size(p_table_size), default_drive(p_drive) {
+		// The antiderivative is 0 at x = -1, not at x = 0, so prev_F must be
+		// looked up; a zero would make the first sample divide a large error
+		// by a tiny input step.
+		prev_F = table_lookup(antideriv_table, prev_x);
+	}
 
 	virtual void bind_pins(void **p_input_ptrs, void **p_output_ptrs) override {
 		audio_in = (const float *)p_input_ptrs[0];
@@ -74,12 +82,12 @@ public:
 
 			float diff = x1 - prev_x;
 
-			if (fabsf(diff) > 1e-7f) {
+			if (fabsf(diff) > ADAA_EPSILON) {
 				// ADAA: finite difference of antiderivatives
 				audio_out[i] = (F1 - prev_F) / diff;
 			} else {
-				// Fallback: direct transfer function lookup
-				audio_out[i] = table_lookup(table, x1);
+				// Ill-conditioned step: the curve at the midpoint is the limit.
+				audio_out[i] = table_lookup(table, 0.5f * (x1 + prev_x));
 			}
 
 			prev_x = x1;
@@ -113,6 +121,7 @@ public:
 		memcpy(table, p_buffer + offset, sizeof(float) * table_size);
 		// Regenerate antiderivative table from imported transfer table
 		integrate_table(table, antideriv_table, table_size);
+		prev_F = table_lookup(antideriv_table, prev_x);
 	}
 
 	// --- Table generation ---

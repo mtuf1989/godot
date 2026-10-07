@@ -10,6 +10,7 @@ TEST_FORCE_LINK(test_symphony_spatial_engine)
 #include "modules/symphony/spatial/spatial_acoustics_engine.h"
 #include "modules/symphony/spatial/symphony_seqlock.h"
 
+#include "core/os/os.h"
 #include "core/os/thread.h"
 #include <atomic>
 
@@ -260,9 +261,17 @@ TEST_CASE("[Symphony][Spatial][Engine] SeqLock: concurrent reader never tears") 
 	Thread reader;
 	reader.start([](void *ud) {
 		Ctx *c = (Ctx *)ud;
+		uint32_t iter = 0;
 		while (!c->stop->load()) {
 			SpatialParams p;
-			if (c->lock->try_load(p)) {
+			// Alternate the non-blocking and the retrying read paths.
+			bool ok = true;
+			if (iter++ & 1) {
+				p = c->lock->load();
+			} else {
+				ok = c->lock->try_load(p);
+			}
+			if (ok) {
 				c->reads->fetch_add(1);
 				// Invariant maintained by the writer: all three transmission
 				// bands equal occlusion's complement. A torn read would break it.
@@ -278,18 +287,29 @@ TEST_CASE("[Symphony][Spatial][Engine] SeqLock: concurrent reader never tears") 
 			&ctx);
 
 	// Writer: sweep occlusion, keeping the invariant transmission = 1 - occ.
-	for (int i = 0; i < 20000; i++) {
-		float occ = (float)(i % 101) / 100.0f;
+	// A fixed store count can finish before the reader thread is scheduled,
+	// so keep writing until the reader has overlapped with enough stores.
+	// The deadline only bounds a stuck reader; it is not the pass condition.
+	constexpr int MIN_STORES = 20000;
+	constexpr int MIN_READS = 1000;
+	const uint64_t deadline_usec = OS::get_singleton()->get_ticks_usec() + 5000000;
+	int stores = 0;
+	while (stores < MIN_STORES || reads.load() < MIN_READS) {
+		float occ = (float)(stores % 101) / 100.0f;
 		SpatialParams p;
 		p.occlusion = occ;
 		p.transmission[0] = p.transmission[1] = p.transmission[2] = 1.0f - occ;
 		lock.store(p);
+		stores++;
+		if ((stores & 1023) == 0 && OS::get_singleton()->get_ticks_usec() > deadline_usec) {
+			break;
+		}
 	}
 	stop.store(true);
 	reader.wait_to_finish();
 
-	CHECK(reads.load() > 0);   // the reader actually observed values
-	CHECK(torn.load() == 0);   // and never saw a torn one
+	CHECK(reads.load() >= MIN_READS); // the reader overlapped with the writer
+	CHECK(torn.load() == 0); // and never saw a torn one
 }
 
 } // namespace TestSymphonySpatialEngine

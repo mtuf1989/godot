@@ -5,18 +5,19 @@
 #include "../../core/symphony_arena_allocator.h"
 #include "core/math/math_funcs.h"
 
-// ModalBank: N parallel resonant bandpass biquad filters driven by data arrays.
-// Each mode = (frequency, t60 decay time, gain).
-// Struck with an excitation signal, produces material-specific impact tones.
+// ModalBank: N parallel two-pole resonators (modal synthesis) driven by data arrays.
+// Each mode = (frequency, t60 decay time, gain). A unit impulse on the
+// excitation input rings each mode as gain * R^n * sin((n+1) * theta): the
+// strike amplitude is `gain`, independent of the mode's frequency and decay.
 //
 // Modal data (frequencies, decay times, gains) is provided via the graph's
 // parameter interface. Preset data lives in the .tres resource, not in C++.
 //
-// Biquad bandpass coefficients per mode:
+// Resonator coefficients per mode:
 //   bandwidth = -log(0.001) / (PI * t60)
 //   R = exp(-PI * bandwidth / sample_rate)
 //   theta = 2 * PI * frequency / sample_rate
-//   b0 = 1 - R
+//   b0 = sin(theta)   (unit impulse response amplitude; not a constant-peak bandpass)
 //   a1 = -2 * R * cos(theta)
 //   a2 = R * R
 //
@@ -33,7 +34,7 @@ private:
 	float *state_y2 = nullptr; // [max_modes]
 
 	// Per-mode coefficients (precomputed)
-	float *coeff_b0 = nullptr; // [max_modes] - input gain (1 - R)
+	float *coeff_b0 = nullptr; // [max_modes] - input gain sin(theta)
 	float *coeff_a1 = nullptr; // [max_modes] - feedback coeff 1 (-2*R*cos(theta))
 	float *coeff_a2 = nullptr; // [max_modes] - feedback coeff 2 (R*R)
 	float *mode_gain = nullptr; // [max_modes] - per-mode output gain
@@ -100,8 +101,9 @@ public:
 			// Pole angle from center frequency
 			float theta = 2.0f * (float)Math::PI * freq / mix_rate;
 
-			// Biquad bandpass coefficients
-			coeff_b0[m] = 1.0f - R;
+			// sin(theta) makes the impulse response peak at 1, so `gain` is the
+			// mode's strike amplitude. (1 - R) would scale it by ~1.1 / (t60 * freq).
+			coeff_b0[m] = Math::sin(theta);
 			coeff_a1[m] = -2.0f * R * Math::cos(theta);
 			coeff_a2[m] = R * R;
 			mode_gain[m] = gain;

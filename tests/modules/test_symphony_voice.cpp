@@ -265,6 +265,8 @@ TEST_CASE("[Symphony][Authoring] operator schema lists trigger names and modal a
 	bool saw_modal = false;
 	bool saw_finish = false;
 	bool noise_brown = false;
+	bool lfo_triangle_at_1 = false;
+	int declared_arrays = 0;
 	String previous;
 	for (int i = 0; i < operators.size(); i++) {
 		Dictionary op = operators[i];
@@ -279,6 +281,17 @@ TEST_CASE("[Symphony][Authoring] operator schema lists trigger names and modal a
 				Dictionary param = params[p];
 				if (String(param["name"]) == "trigger_name") {
 					saw_trigger = true;
+				}
+			}
+		}
+		if (type == "ResonatorAnalyzer" || type == "Waveshaper") {
+			// Array params the factories read must be declared, or strict
+			// (schema_version 2) validation rejects them as unknown.
+			const String array_param = type == "Waveshaper" ? "table_data" : "frequencies";
+			for (int p = 0; p < params.size(); p++) {
+				Dictionary param = params[p];
+				if (String(param["name"]) == array_param && String(param["type"]) == "float_array") {
+					declared_arrays++;
 				}
 			}
 		}
@@ -299,6 +312,20 @@ TEST_CASE("[Symphony][Authoring] operator schema lists trigger names and modal a
 				}
 			}
 		}
+		// Enum labels are read by index, so each label set must cover the
+		// operator's integer range exactly.
+		for (int p = 0; p < params.size(); p++) {
+			Dictionary param = params[p];
+			Array values = param["enum"];
+			if (values.is_empty()) {
+				continue;
+			}
+			int span = (int)(float)param["max"] - (int)(float)param["min"] + 1;
+			CHECK_MESSAGE(values.size() == span, type, ".", String(param["name"]));
+			if (type == "LFO" && String(param["name"]) == "waveform") {
+				lfo_triangle_at_1 = values.size() > 1 && String(values[1]) == "triangle";
+			}
+		}
 		if (type == "Noise") {
 			for (int p = 0; p < params.size(); p++) {
 				Dictionary param = params[p];
@@ -317,6 +344,8 @@ TEST_CASE("[Symphony][Authoring] operator schema lists trigger names and modal a
 	CHECK(saw_modal);
 	CHECK(saw_finish);
 	CHECK_FALSE(noise_brown);
+	CHECK(lfo_triangle_at_1);
+	CHECK(declared_arrays == 2);
 }
 
 } // namespace TestSymphonyVoice
