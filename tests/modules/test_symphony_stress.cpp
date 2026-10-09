@@ -476,6 +476,8 @@ TEST_CASE("[Symphony][Stress] Concurrent mix with swap parameter trigger teardow
 	Ref<AudioStreamPlaybackSymphony> playback = base;
 	REQUIRE(playback.is_valid());
 	playback->start();
+	SymphonyVoiceManager *reap_mgr = SymphonyVoiceManager::get_singleton();
+	const int32_t retained_baseline = reap_mgr ? reap_mgr->get_retained_voice_count() - 1 : 0;
 
 	struct MixContext {
 		AudioStreamPlaybackSymphony *playback = nullptr;
@@ -497,7 +499,7 @@ TEST_CASE("[Symphony][Stress] Concurrent mix with swap parameter trigger teardow
 			&ctx);
 
 	SymphonyVoiceManager *mgr = SymphonyVoiceManager::get_singleton();
-	for (int i = 0; i < 64; i++) {
+	for (int i = 0; i < 500; i++) {
 		playback->set_parameter(StringName("freq"), 220.0f + (float)i);
 		(void)playback->trigger(StringName("gate"), 1.0f);
 		if ((i % 8) == 0) {
@@ -511,6 +513,11 @@ TEST_CASE("[Symphony][Stress] Concurrent mix with swap parameter trigger teardow
 			if (mgr) {
 				mgr->process_deferred_lod();
 			}
+		}
+		if ((i % 10) == 5) {
+			// stop is a pure request and start restarts from a fresh package (stop-then-start works).
+			playback->stop();
+			playback->start();
 		}
 		if ((i % 16) == 0) {
 			GraphPackageRetirement::drain();
@@ -528,6 +535,15 @@ TEST_CASE("[Symphony][Stress] Concurrent mix with swap parameter trigger teardow
 
 	CHECK(ctx.mixes.load(std::memory_order_relaxed) > 0);
 	CHECK(SymphonyRealtimeScope::violation_count() == 0);
+
+	// Last external Ref gone: the reaper reclaims the parked voice and its packages.
+	playback.unref();
+	base.unref();
+	if (reap_mgr) {
+		reap_mgr->process_deferred_lod();
+		CHECK(reap_mgr->get_retained_voice_count() <= retained_baseline);
+	}
+	CHECK(GraphPackageRetirement::get_pending_count() == 0);
 }
 #endif // THREADS_ENABLED
 

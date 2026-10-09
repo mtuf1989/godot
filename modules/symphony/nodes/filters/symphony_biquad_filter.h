@@ -3,6 +3,7 @@
 #include "../../core/symphony_operator.h"
 #include "../../core/symphony_operator_registry.h"
 #include "../../core/symphony_arena_allocator.h"
+#include "../../core/symphony_denormal_guard.h"
 #include "core/math/math_funcs.h"
 
 // Biquad filter (Robert Bristow-Johnson cookbook).
@@ -90,6 +91,14 @@ public:
 			x2 = x1; x1 = x0;
 			y2 = y1; y1 = y0;
 			output[i] = y0;
+		}
+		if (Math::abs(x1) + Math::abs(x2) + Math::abs(y1) + Math::abs(y2) < 1e-9f) {
+			x1 = x2 = y1 = y2 = 0.0f;
+		} else {
+			symphony_flush_denormal(x1);
+			symphony_flush_denormal(x2);
+			symphony_flush_denormal(y1);
+			symphony_flush_denormal(y2);
 		}
 	}
 

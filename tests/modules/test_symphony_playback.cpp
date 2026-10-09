@@ -520,6 +520,7 @@ TEST_CASE("[Symphony][Playback] stop_on_source_finished clears is_playing when s
 	AudioFrame buf[64];
 	REQUIRE(playback->fire_source_finished_and_mix(buf, 64));
 	CHECK_FALSE(playback->is_playing());
+	// stop is a pure request (I2): the voice stays registered and parked while a Ref is alive.
 	CHECK(playback->is_registered_with_voice_manager());
 
 	SymphonyVoiceManager *mgr = SymphonyVoiceManager::get_singleton();
@@ -528,10 +529,15 @@ TEST_CASE("[Symphony][Playback] stop_on_source_finished clears is_playing when s
 		CHECK(mgr->is_mix_callback_registered());
 	}
 	mgr->enforce_voice_limits();
-	CHECK(playback->is_registered_with_voice_manager());
-	mgr->enforce_voice_limits();
 	mgr->process_deferred_lod();
-	CHECK_FALSE(playback->is_registered_with_voice_manager());
+	CHECK(playback->is_registered_with_voice_manager());
+
+	// Once every external Ref is gone the reaper reclaims it.
+	const int32_t retained_before = mgr->get_retained_voice_count();
+	playback.unref();
+	base.unref();
+	mgr->process_deferred_lod();
+	CHECK(mgr->get_retained_voice_count() == retained_before - 1);
 }
 
 TEST_CASE("[Symphony][Playback][Audio] Resampling keeps 440 Hz across graph rates and pitch") {

@@ -24,6 +24,10 @@ private:
 
 	bool auto_trigger_on_play = true;
 
+	// Audio-thread-only injection slot (auto-trigger on play); consumed in execute().
+	bool local_pending = false;
+	float local_value = 1.0f;
+
 public:
 	SymphonyTriggerInput() {}
 
@@ -35,6 +39,13 @@ public:
 		(void)p_num_frames;
 		if (!output) {
 			return;
+		}
+		// Runs after the graph cleared trigger buffers for this block.
+		if (local_pending) {
+			if (!output->push(0, local_value)) {
+				symphony_note_dropped_trigger();
+			}
+			local_pending = false;
 		}
 		uint32_t r = read_pos.load(std::memory_order_relaxed);
 		uint32_t w = write_pos.load(std::memory_order_acquire);
@@ -60,6 +71,12 @@ public:
 		queue[w % QUEUE_CAPACITY].value = p_value;
 		write_pos.store(w + 1, std::memory_order_release);
 		return true;
+	}
+
+	// Audio thread only: fire on the next execute() without touching the SPSC queue.
+	void fire_local(float p_value = 1.0f) {
+		local_value = p_value;
+		local_pending = true;
 	}
 
 	bool get_auto_trigger_on_play() const { return auto_trigger_on_play; }

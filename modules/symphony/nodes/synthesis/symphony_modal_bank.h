@@ -3,6 +3,7 @@
 #include "../../core/symphony_operator.h"
 #include "../../core/symphony_operator_registry.h"
 #include "../../core/symphony_arena_allocator.h"
+#include "../../core/symphony_denormal_guard.h"
 #include "core/math/math_funcs.h"
 
 // ModalBank: N parallel two-pole resonators (modal synthesis) driven by data arrays.
@@ -58,11 +59,14 @@ public:
 			for (int32_t i = 0; i < p_num_frames; i++) {
 				audio_out[i] = 0.0f;
 			}
+			activity = 0;
 			return;
 		}
 
+		float excitation_peak = 0.0f;
 		for (int32_t i = 0; i < p_num_frames; i++) {
 			float input = excitation[i];
+			excitation_peak = MAX(excitation_peak, Math::abs(input));
 			float sum = 0.0f;
 
 			// Process all modes for this sample
@@ -79,6 +83,20 @@ public:
 
 			audio_out[i] = sum;
 		}
+
+		// Per-block energy flush: dead modes must not hold subnormal state (WASM).
+		int32_t live_modes = 0;
+		for (int32_t m = 0; m < num_modes; m++) {
+			if (Math::abs(state_y1[m]) + Math::abs(state_y2[m]) < 1e-9f) {
+				state_y1[m] = 0.0f;
+				state_y2[m] = 0.0f;
+			} else {
+				symphony_flush_denormal(state_y1[m]);
+				symphony_flush_denormal(state_y2[m]);
+				live_modes++;
+			}
+		}
+		activity = (live_modes == 0 && excitation_peak < 1e-9f) ? 0 : 1;
 	}
 
 	// Recompute biquad coefficients from frequency/t60/gain arrays.

@@ -2,6 +2,7 @@
 #include "../core/symphony_voice_manager.h"
 #include "../core/symphony_graph_package_retirement.h"
 #include "../core/symphony_memory_budget.h"
+#include "../core/symphony_denormal_guard.h"
 #include "../core/symphony_fast_math.h"
 #include "../core/symphony_platform_time.h"
 #include "../core/symphony_realtime_scope.h"
@@ -45,9 +46,15 @@ void AudioStreamPlaybackSymphony::_bind_methods() {
 }
 
 void AudioStreamPlaybackSymphony::_install_package(PreparedGraphPackage *p_package) {
+	// Mixing thread only (I1). Publish control_package before the caller retires the old package (I3).
 	current_package = p_package;
 	current_graph = p_package ? p_package->graph : nullptr;
 	graph_output_node = p_package ? p_package->graph_output : nullptr;
+	if (p_package) {
+		installed_lod_tier.store(p_package->lod_tier, std::memory_order_relaxed);
+		stat_cost_units.store(p_package->estimated_cost_units, std::memory_order_relaxed);
+		cost_ewma_reseed = true;
+	}
 	control_package.store(p_package, std::memory_order_release);
 }
 
@@ -94,8 +101,10 @@ AudioStreamPlaybackSymphony::AdmitResult AudioStreamPlaybackSymphony::_try_admit
 		return AdmitResult::Denied;
 	}
 	float incoming_cost = p_incoming ? p_incoming->estimated_cost_units : 0.0f;
-	const int frames = last_output_frames > 0 ? last_output_frames : 512;
-	const float budget_rate = output_rate_cached > 0.0f ? output_rate_cached : mix_rate_cached;
+	const int32_t last_frames = last_output_frames.load(std::memory_order_relaxed);
+	const int frames = last_frames > 0 ? last_frames : 512;
+	const float out_rate = output_rate_cached.load(std::memory_order_relaxed);
+	const float budget_rate = out_rate > 0.0f ? out_rate : mix_rate_cached.load(std::memory_order_relaxed);
 	float estimated_add = mgr->estimate_cpu_fraction_for_cost(incoming_cost, budget_rate, frames);
 	if (cpu_fraction + estimated_add >= mgr->get_warning_threshold()) {
 		return AdmitResult::Denied;
@@ -125,7 +134,8 @@ void AudioStreamPlaybackSymphony::_begin_equal_power_crossfade(PreparedGraphPack
 	_pkg_active(1);
 	transition_mode = TransitionMode::EqualPowerCrossfade;
 	transition_progress = 0.0f;
-	float samples = mix_rate_cached > 0.0f ? mix_rate_cached * CROSSFADE_SECONDS : 2048.0f;
+	const float graph_rate = mix_rate_cached.load(std::memory_order_relaxed);
+	float samples = graph_rate > 0.0f ? graph_rate * CROSSFADE_SECONDS : 2048.0f;
 	transition_speed = 1.0f / samples;
 	if (SymphonyVoiceManager *mgr = SymphonyVoiceManager::get_singleton()) {
 		mgr->note_crossfade_transition();
@@ -163,22 +173,24 @@ void AudioStreamPlaybackSymphony::_begin_fallback_transition(PreparedGraphPackag
 
 void AudioStreamPlaybackSymphony::_cache_stream_metadata() {
 	if (!stream.is_valid()) {
-		mix_rate_cached = 44100.0f;
-		cached_priority = 50;
-		cached_max_lod = 0;
+		mix_rate_cached.store(44100.0f, std::memory_order_relaxed);
+		cached_priority.store(50, std::memory_order_relaxed);
+		cached_max_lod.store(0, std::memory_order_relaxed);
 		return;
 	}
-	mix_rate_cached = stream->get_mix_rate();
-	cached_priority = stream->get_voice_priority();
-	cached_max_lod = MAX(0, stream->get_lod_count() - 1);
-	cached_duration_limit = stream->get_duration_limit_seconds();
-	output_rate_cached = mix_rate_cached;
+	const float graph_rate = stream->get_mix_rate();
+	mix_rate_cached.store(graph_rate, std::memory_order_relaxed);
+	cached_priority.store(stream->get_voice_priority(), std::memory_order_relaxed);
+	cached_max_lod.store(MAX(0, stream->get_lod_count() - 1), std::memory_order_relaxed);
+	cached_duration_limit.store(stream->get_duration_limit_seconds(), std::memory_order_relaxed);
+	float out_rate = graph_rate;
 	if (AudioServer::get_singleton()) {
 		const float server_rate = AudioServer::get_singleton()->get_mix_rate();
 		if (server_rate > 0.0f) {
-			output_rate_cached = server_rate;
+			out_rate = server_rate;
 		}
 	}
+	output_rate_cached.store(out_rate, std::memory_order_relaxed);
 }
 
 void AudioStreamPlaybackSymphony::request_lod_tier(int32_t p_lod_tier) {
@@ -189,43 +201,49 @@ void AudioStreamPlaybackSymphony::set_budget_lod_floor(int32_t p_lod_tier) {
 	budget_lod_floor.store(CLAMP(p_lod_tier, 0, 8), std::memory_order_release);
 }
 
-void AudioStreamPlaybackSymphony::request_manager_stop() {
-	manager_stop_request.store(true, std::memory_order_release);
+void AudioStreamPlaybackSymphony::set_budget_lod_floor_at(int32_t p_lod_tier, uint64_t p_now_us) {
+	set_budget_lod_floor(p_lod_tier);
+	floor_changed_us.store(p_now_us, std::memory_order_relaxed);
+}
+
+void AudioStreamPlaybackSymphony::_test_set_cost_ewma(float p_pct) {
+	stat_cost_pct_ewma.store(p_pct, std::memory_order_relaxed);
+	cost_ewma_reseed = false;
+	SymphonyVoiceManager *mgr = SymphonyVoiceManager::get_singleton();
+	last_mix_seq.store(mgr ? mgr->get_callback_seq() : 0, std::memory_order_relaxed);
+}
+
+void AudioStreamPlaybackSymphony::_sync_voice_lod() {
+	// Main thread: turn the manager's budget floor into a concrete LOD publish, once per tier.
+	const int32_t floor = budget_lod_floor.load(std::memory_order_acquire);
+	if (floor == main_requested_lod) {
+		return;
+	}
+	if (floor == installed_lod_tier.load(std::memory_order_relaxed)) {
+		main_requested_lod = floor;
+		return;
+	}
+	transition_to_lod(floor);
 }
 
 void AudioStreamPlaybackSymphony::process_manager_requests() {
-	// Main thread only: stop() / LOD compile may touch ObjectDB and containers.
+	// Main thread only: LOD compile may touch ObjectDB and containers.
 	symphony_rt_note(SymphonyRTViolation::ObjectDB, "AudioStreamPlaybackSymphony::process_manager_requests");
-	if (manager_stop_request.exchange(false, std::memory_order_acquire)) {
-		stop();
-		requested_lod_tier.store(-1, std::memory_order_relaxed);
-		return;
-	}
 	int32_t lod = requested_lod_tier.exchange(-1, std::memory_order_acquire);
 	if (lod >= 0) {
 		transition_to_lod(lod);
+		return;
 	}
+	_sync_voice_lod();
 }
 
 void AudioStreamPlaybackSymphony::_register_with_manager() {
-	if (registered_with_manager) {
+	if (registered_with_manager || !Thread::is_main_thread()) {
 		return;
 	}
 	SymphonyVoiceManager *mgr = SymphonyVoiceManager::get_singleton();
-	if (mgr && mgr->register_voice(this)) {
-		registered_with_manager = true;
-	}
-}
-
-void AudioStreamPlaybackSymphony::_arm_release_grace() {
-	bool expected = false;
-	if (!release_pending.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
-		return;
-	}
-	release_grace.store(RELEASE_GRACE_CALLBACKS, std::memory_order_release);
-	if (!registered_with_manager && Thread::is_main_thread()) {
-		_finalize_stop();
-		release_pending.store(false, std::memory_order_release);
+	if (mgr) {
+		mgr->register_voice(this);
 	}
 }
 
@@ -255,83 +273,58 @@ bool AudioStreamPlaybackSymphony::_source_or_graph_finished() const {
 	return false;
 }
 
-bool AudioStreamPlaybackSymphony::tick_release_grace() {
-	if (!release_pending.load(std::memory_order_acquire)) {
-		return false;
+void AudioStreamPlaybackSymphony::_publish_restart_package() {
+	// Main thread only. A voice that has installed a package carries mixed state; a restart needs a
+	// fresh graph. The audio thread adopts it (adopt_mode == Restart) before the next block.
+	if (!stream.is_valid() || !Thread::is_main_thread() || control_package.load(std::memory_order_acquire) == nullptr) {
+		return;
 	}
-	int32_t left = release_grace.load(std::memory_order_relaxed);
-	if (left > 0) {
-		left = release_grace.fetch_sub(1, std::memory_order_acq_rel) - 1;
+	CompiledGraph *graph = stream->compile_lod_graph(main_requested_lod);
+	if (!graph) {
+		return;
 	}
-	if (left <= 0) {
-		release_ready.store(true, std::memory_order_release);
-		return true;
+	PreparedGraphPackage *pkg = PreparedGraphPackage::create_from_graph(graph, 0, 0, main_requested_lod);
+	if (!pkg) {
+		memdelete(graph);
+		return;
 	}
-	return false;
+	pkg->adopt_mode = PreparedGraphPackage::AdoptMode::Restart;
+	_pkg_pending(1);
+	PreparedGraphPackage *old_pending = pending_package.exchange(pkg, std::memory_order_acq_rel);
+	if (old_pending) {
+		_pkg_pending(-1);
+		PreparedGraphPackage::destroy(old_pending);
+	}
 }
 
 void AudioStreamPlaybackSymphony::start(double p_from_pos) {
 	if (p_from_pos != 0.0) {
 		_report_unsupported_seek();
 	}
-	active.store(true, std::memory_order_release);
-	release_pending.store(false, std::memory_order_release);
-	release_ready.store(false, std::memory_order_release);
-	release_grace.store(0, std::memory_order_release);
-	position_us.store(0, std::memory_order_release);
-	stop_pending.store(false, std::memory_order_release);
-	_cache_stream_metadata();
-	PreparedGraphPackage *pending = pending_package.exchange(nullptr, std::memory_order_acquire);
-	if (pending) {
-		if (current_package) {
-			_pkg_active(-1);
-			GraphPackageRetirement::retire(current_package);
-		}
-		_install_package(pending);
-		_pkg_pending(-1);
-		_pkg_active(1);
-	}
-
-	if (current_package) {
-		for (int i = 0; i < current_package->trigger_routes.size(); i++) {
-			SymphonyTriggerInput *tin = current_package->trigger_routes[i].input;
-			if (tin && tin->get_auto_trigger_on_play()) {
-				tin->fire(1.0f);
+	const bool on_main = Thread::is_main_thread();
+	if (on_main) {
+		_cache_stream_metadata();
+		if (control_package.load(std::memory_order_acquire) == nullptr && !active.load(std::memory_order_acquire)) {
+			// Never mixed and not active: no mixer touches this voice, so main installs the first
+			// package directly and controls (set_parameter/trigger) work right after start().
+			if (PreparedGraphPackage *first = pending_package.exchange(nullptr, std::memory_order_acquire)) {
+				_adopt_pending(first);
 			}
+		} else {
+			_publish_restart_package();
 		}
-	}
-
-	begin_resample();
-	if (active.load(std::memory_order_acquire)) {
 		_register_with_manager();
-	} else if (Thread::is_main_thread()) {
-		_finalize_stop();
 	}
+	// Any thread: requests consumed by the mixing thread. active is stored last.
+	position_us.store(0, std::memory_order_release);
+	resample_reset_pending.store(true, std::memory_order_release);
+	auto_fire_pending.store(true, std::memory_order_release);
+	active.store(true, std::memory_order_release);
 }
 
 void AudioStreamPlaybackSymphony::stop() {
+	// Pure request (I2): the mixing thread notices and goes silent; packages stay parked.
 	active.store(false, std::memory_order_release);
-	release_pending.store(false, std::memory_order_release);
-	release_ready.store(false, std::memory_order_release);
-	release_grace.store(0, std::memory_order_release);
-	stop_pending.store(true, std::memory_order_relaxed);
-
-	if (!Thread::is_main_thread()) {
-		_arm_release_grace();
-		return;
-	}
-
-	// Keep this object alive across unregister. Dropping the manager's ref can
-	// be the last reference when a player has already released the playback.
-	Ref<AudioStreamPlaybackSymphony> self_hold(this);
-	if (registered_with_manager) {
-		SymphonyVoiceManager *mgr = SymphonyVoiceManager::get_singleton();
-		if (mgr) {
-			mgr->unregister_voice(this);
-		}
-		registered_with_manager = false;
-	}
-	_finalize_stop();
 }
 
 bool AudioStreamPlaybackSymphony::is_playing() const {
@@ -353,7 +346,35 @@ void AudioStreamPlaybackSymphony::seek(double p_time) {
 }
 
 float AudioStreamPlaybackSymphony::get_stream_sampling_rate() {
-	return mix_rate_cached > 0.0f ? mix_rate_cached : 44100.0f;
+	const float rate = mix_rate_cached.load(std::memory_order_relaxed);
+	return rate > 0.0f ? rate : 44100.0f;
+}
+
+void AudioStreamPlaybackSymphony::_adopt_pending(PreparedGraphPackage *p_pending) {
+	if (p_pending->adopt_mode == PreparedGraphPackage::AdoptMode::Restart) {
+		// Fresh state: drop any in-flight transition, install, then retire the old package (I3).
+		_abort_transition_packages();
+		PreparedGraphPackage *old_current = current_package;
+		_pkg_pending(-1);
+		_install_package(p_pending);
+		_pkg_active(1);
+		if (old_current) {
+			_pkg_active(-1);
+			GraphPackageRetirement::retire(old_current);
+		}
+		return;
+	}
+	AdmitResult admit = current_package ? _try_admit_crossfade(p_pending) : AdmitResult::Denied;
+	if (admit != AdmitResult::Denied) {
+		holds_crossfade_token = (admit == AdmitResult::AdmittedWithToken);
+		_begin_equal_power_crossfade(p_pending);
+	} else if (current_package || incoming_package || outgoing_package || transition_mode != TransitionMode::Idle) {
+		_begin_fallback_transition(p_pending);
+	} else {
+		_pkg_pending(-1);
+		_install_package(p_pending);
+		_pkg_active(1);
+	}
 }
 
 int AudioStreamPlaybackSymphony::_mix_internal(AudioFrame *p_buffer, int p_frames) {
@@ -363,17 +384,16 @@ int AudioStreamPlaybackSymphony::_mix_internal(AudioFrame *p_buffer, int p_frame
 
 	PreparedGraphPackage *pending = pending_package.exchange(nullptr, std::memory_order_acquire);
 	if (pending) {
-		pending_is_lod.exchange(false, std::memory_order_relaxed);
-		AdmitResult admit = current_package ? _try_admit_crossfade(pending) : AdmitResult::Denied;
-		if (admit != AdmitResult::Denied) {
-			holds_crossfade_token = (admit == AdmitResult::AdmittedWithToken);
-			_begin_equal_power_crossfade(pending);
-		} else if (current_package || incoming_package || outgoing_package || transition_mode != TransitionMode::Idle) {
-			_begin_fallback_transition(pending);
-		} else {
-			_pkg_pending(-1);
-			_install_package(pending);
-			_pkg_active(1);
+		_adopt_pending(pending);
+	}
+
+	if (auto_fire_pending.load(std::memory_order_acquire) && current_package) {
+		auto_fire_pending.store(false, std::memory_order_relaxed);
+		for (int i = 0; i < current_package->trigger_routes.size(); i++) {
+			SymphonyTriggerInput *tin = current_package->trigger_routes[i].input;
+			if (tin && tin->get_auto_trigger_on_play()) {
+				tin->fire_local(1.0f);
+			}
 		}
 	}
 
@@ -381,8 +401,6 @@ int AudioStreamPlaybackSymphony::_mix_internal(AudioFrame *p_buffer, int p_frame
 		for (int i = 0; i < p_frames; i++) {
 			p_buffer[i] = AudioFrame(0, 0);
 		}
-		last_mix_time_us = 0.0f;
-		last_rms = 0.0f;
 		return p_frames;
 	}
 
@@ -436,14 +454,16 @@ int AudioStreamPlaybackSymphony::_mix_internal(AudioFrame *p_buffer, int p_frame
 			if (transition_progress >= 1.0f) {
 				// Block boundary: migrate then swap; never run two graphs in one sample.
 				_migrate_into(incoming_package);
-				if (current_package) {
-					_pkg_active(-1);
-					GraphPackageRetirement::retire(current_package);
-				}
+				PreparedGraphPackage *outgoing_current = current_package;
 				_pkg_pending(-1);
 				_install_package(incoming_package);
 				_pkg_active(1);
 				incoming_package = nullptr;
+				// I3: install the new package before retiring the old one.
+				if (outgoing_current) {
+					_pkg_active(-1);
+					GraphPackageRetirement::retire(outgoing_current);
+				}
 				transition_mode = TransitionMode::FallbackFadeIn;
 				transition_progress = 0.0f;
 				transition_speed = 1.0f / (float)FALLBACK_FADE_SAMPLES;
@@ -473,7 +493,6 @@ int AudioStreamPlaybackSymphony::_mix_internal(AudioFrame *p_buffer, int p_frame
 				p_buffer[i] = AudioFrame(0, 0);
 			}
 			active.store(false, std::memory_order_release);
-			stop_pending.store(true, std::memory_order_relaxed);
 			break;
 		}
 	}
@@ -481,34 +500,71 @@ int AudioStreamPlaybackSymphony::_mix_internal(AudioFrame *p_buffer, int p_frame
 	return frames_processed;
 }
 
+void AudioStreamPlaybackSymphony::_update_cost_stats(uint64_t p_mix_us, int p_frames, float p_out_rate) {
+	stat_mix_us_last.store((float)p_mix_us, std::memory_order_relaxed);
+	last_output_frames.store(p_frames, std::memory_order_relaxed);
+	if (p_out_rate <= 0.0f || p_frames <= 0) {
+		return;
+	}
+	const float deadline_s = (float)p_frames / p_out_rate;
+	const float sample = ((float)p_mix_us * 1e-6f / deadline_s) * 100.0f;
+	float ewma = stat_cost_pct_ewma.load(std::memory_order_relaxed);
+	if (cost_ewma_reseed) {
+		cost_ewma_reseed = false;
+		ewma = sample;
+	} else {
+		// Spike clamp, then asymmetric EWMA: fast attack (50 ms), slow release (250 ms).
+		const float clamped = MIN(sample, 3.0f * ewma + 0.5f);
+		const float tau = clamped > ewma ? 0.050f : 0.250f;
+		const float alpha = 1.0f - expf(-deadline_s / tau);
+		ewma += alpha * (clamped - ewma);
+	}
+	stat_cost_pct_ewma.store(ewma, std::memory_order_relaxed);
+}
+
 int AudioStreamPlaybackSymphony::mix(AudioFrame *p_buffer, float p_rate_scale, int p_frames) {
+	SymphonyDenormalGuard denormal_guard;
 	SymphonyRealtimeScope rt_scope;
+#ifdef DEV_ENABLED
+	struct MixDepthScope {
+		std::atomic<int32_t> &depth;
+		explicit MixDepthScope(std::atomic<int32_t> &p_depth) :
+				depth(p_depth) { depth.fetch_add(1, std::memory_order_acq_rel); }
+		~MixDepthScope() { depth.fetch_sub(1, std::memory_order_acq_rel); }
+	} mix_depth_scope(mix_depth);
+#endif
 	if (!active.load(std::memory_order_acquire) || p_frames <= 0) {
 		return 0;
 	}
 
 	const uint64_t t_start = symphony_time_usec();
 	int mixed = 0;
-	float out_rate = output_rate_cached > 0.0f ? output_rate_cached : mix_rate_cached;
+	const float graph_rate = mix_rate_cached.load(std::memory_order_relaxed);
+	float out_rate = output_rate_cached.load(std::memory_order_relaxed);
+	if (out_rate <= 0.0f) {
+		out_rate = graph_rate;
+	}
 	float speed = p_rate_scale;
+	const bool reset_resample = resample_reset_pending.exchange(false, std::memory_order_acq_rel);
 	if (AudioServer::get_singleton()) {
+		if (reset_resample) {
+			begin_resample();
+		}
 		mixed = AudioStreamPlaybackResampled::mix(p_buffer, p_rate_scale, p_frames);
 		const float server_rate = AudioServer::get_singleton()->get_mix_rate();
 		if (server_rate > 0.0f) {
 			out_rate = server_rate;
-			output_rate_cached = server_rate;
+			output_rate_cached.store(server_rate, std::memory_order_relaxed);
 		}
 		speed *= AudioServer::get_singleton()->get_playback_speed_scale();
 	} else {
 		// Native unit tests mix without an audio device. Generate at the graph rate;
 		// device-rate resampling runs when AudioServer is alive.
-		out_rate = mix_rate_cached > 0.0f ? mix_rate_cached : 44100.0f;
-		output_rate_cached = out_rate;
+		out_rate = graph_rate > 0.0f ? graph_rate : 44100.0f;
+		output_rate_cached.store(out_rate, std::memory_order_relaxed);
 		mixed = _mix_internal(p_buffer, p_frames);
 	}
-	last_mix_time_us = (float)(symphony_time_usec() - t_start);
-	last_output_frames = p_frames;
-	last_frame_count = p_frames;
+	const uint64_t mix_us = symphony_time_usec() - t_start;
 
 	if (out_rate <= 0.0f) {
 		out_rate = 44100.0f;
@@ -519,9 +575,9 @@ int AudioStreamPlaybackSymphony::mix(AudioFrame *p_buffer, float p_rate_scale, i
 			position_us.fetch_add((uint64_t)add_us, std::memory_order_acq_rel);
 		}
 	}
-	if (cached_duration_limit > 0.0 && (double)position_us.load(std::memory_order_acquire) / 1000000.0 >= cached_duration_limit) {
+	const double duration_limit = cached_duration_limit.load(std::memory_order_relaxed);
+	if (duration_limit > 0.0 && (double)position_us.load(std::memory_order_acquire) / 1000000.0 >= duration_limit) {
 		active.store(false, std::memory_order_release);
-		stop_pending.store(true, std::memory_order_relaxed);
 	}
 
 	const int rms_frames = mixed > 0 ? mixed : 0;
@@ -533,11 +589,11 @@ int AudioStreamPlaybackSymphony::mix(AudioFrame *p_buffer, float p_rate_scale, i
 	if (unlikely(std::isnan(rms_candidate) || std::isinf(rms_candidate))) {
 		rms_candidate = 0.0f;
 	}
-	last_rms = rms_candidate;
+	stat_rms.store(rms_candidate, std::memory_order_relaxed);
+	_update_cost_stats(mix_us, p_frames, out_rate);
 
-	if (!active.load(std::memory_order_acquire)) {
-		_arm_release_grace();
-	}
+	SymphonyVoiceManager *mgr = SymphonyVoiceManager::get_singleton();
+	last_mix_seq.store(mgr ? mgr->get_callback_seq() : 0, std::memory_order_relaxed);
 	return mixed > 0 ? mixed : 0;
 }
 
@@ -554,6 +610,8 @@ void AudioStreamPlaybackSymphony::swap_graph(CompiledGraph *p_graph) {
 		return;
 	}
 
+	pkg->adopt_mode = PreparedGraphPackage::AdoptMode::Swap;
+	main_requested_lod = 0;
 	_pkg_pending(1);
 	PreparedGraphPackage *old_pending = pending_package.exchange(pkg, std::memory_order_release);
 	if (old_pending) {
@@ -564,6 +622,13 @@ void AudioStreamPlaybackSymphony::swap_graph(CompiledGraph *p_graph) {
 
 void AudioStreamPlaybackSymphony::set_parameter(const StringName &p_name, const Variant &p_value) {
 	// Main thread: never touch current_package directly (audio may swap it).
+	// A pending package is still alive when audio adopts it (only main frees), so write it too:
+	// the value then survives the adoption (first start, restart, hot-swap).
+	if (PreparedGraphPackage *pending = pending_package.load(std::memory_order_acquire)) {
+		if (SymphonyGraphInput *pending_input = pending->find_param(p_name)) {
+			pending_input->set_value((float)p_value);
+		}
+	}
 	// Load the published control package, resolve the route, re-check, then write.
 	for (int attempt = 0; attempt < 2; attempt++) {
 		PreparedGraphPackage *pkg = control_package.load(std::memory_order_acquire);
@@ -586,7 +651,10 @@ void AudioStreamPlaybackSymphony::set_parameter(const StringName &p_name, const 
 }
 
 Variant AudioStreamPlaybackSymphony::get_parameter(const StringName &p_name) const {
-	PreparedGraphPackage *pkg = control_package.load(std::memory_order_acquire);
+	PreparedGraphPackage *pkg = pending_package.load(std::memory_order_acquire);
+	if (!pkg) {
+		pkg = control_package.load(std::memory_order_acquire);
+	}
 	if (!pkg) {
 		return Variant();
 	}
@@ -598,6 +666,15 @@ Variant AudioStreamPlaybackSymphony::get_parameter(const StringName &p_name) con
 }
 
 bool AudioStreamPlaybackSymphony::trigger(const StringName &p_name, float p_value) {
+	// A restart/swap package already published will go live at the next block: fire into it so the
+	// trigger is not lost on the soon-to-be-retired graph.
+	if (control_package.load(std::memory_order_acquire) != nullptr) {
+		if (PreparedGraphPackage *pending = pending_package.load(std::memory_order_acquire)) {
+			if (SymphonyTriggerInput *pending_tin = pending->find_trigger(p_name)) {
+				return pending_tin->fire(p_value);
+			}
+		}
+	}
 	for (int attempt = 0; attempt < 2; attempt++) {
 		PreparedGraphPackage *pkg = control_package.load(std::memory_order_acquire);
 		if (!pkg) {
@@ -620,38 +697,47 @@ bool AudioStreamPlaybackSymphony::trigger(const StringName &p_name, float p_valu
 }
 
 float AudioStreamPlaybackSymphony::get_voice_cpu_microseconds() const {
-	return last_mix_time_us;
+	return stat_mix_us_last.load(std::memory_order_relaxed);
 }
 
 float AudioStreamPlaybackSymphony::get_budget_percent() const {
-	const float rate = output_rate_cached > 0.0f ? output_rate_cached : mix_rate_cached;
-	if (last_output_frames <= 0 || rate <= 0.0f) {
+	float rate = output_rate_cached.load(std::memory_order_relaxed);
+	if (rate <= 0.0f) {
+		rate = mix_rate_cached.load(std::memory_order_relaxed);
+	}
+	const int32_t frames = last_output_frames.load(std::memory_order_relaxed);
+	if (frames <= 0 || rate <= 0.0f) {
 		return 0.0f;
 	}
-	const float deadline_us = (float)last_output_frames / rate * 1e6f;
+	const float deadline_us = (float)frames / rate * 1e6f;
 	if (deadline_us <= 0.0f) {
 		return 0.0f;
 	}
-	return (last_mix_time_us / deadline_us) * 100.0f;
+	return (stat_mix_us_last.load(std::memory_order_relaxed) / deadline_us) * 100.0f;
 }
 
 float AudioStreamPlaybackSymphony::get_last_rms() const {
-	return last_rms;
+	return stat_rms.load(std::memory_order_relaxed);
 }
 
 int AudioStreamPlaybackSymphony::get_effective_priority() const {
-	return cached_priority;
+	return cached_priority.load(std::memory_order_relaxed);
 }
 
 float AudioStreamPlaybackSymphony::get_estimated_cost_units() const {
-	PreparedGraphPackage *pkg = control_package.load(std::memory_order_acquire);
-	return pkg ? pkg->estimated_cost_units : 0.0f;
+	return stat_cost_units.load(std::memory_order_relaxed);
 }
 
 bool AudioStreamPlaybackSymphony::fire_source_finished_and_mix(AudioFrame *p_buffer, int p_frames) {
 	// execute() clears trigger buffers at the start of each micro-block, so a
 	// pre-pushed finished event would be wiped before the stop check. Mirror the
 	// mix() finished branch directly after verifying the package is wired.
+	if (!current_package) {
+		// Test helper runs on main before any mix: adopt the first package like the mixer would.
+		if (PreparedGraphPackage *pending = pending_package.exchange(nullptr, std::memory_order_acquire)) {
+			_adopt_pending(pending);
+		}
+	}
 	if (!current_package || current_package->source_finished_triggers.is_empty()) {
 		return false;
 	}
@@ -664,63 +750,51 @@ bool AudioStreamPlaybackSymphony::fire_source_finished_and_mix(AudioFrame *p_buf
 		}
 	}
 	active.store(false, std::memory_order_release);
-	stop_pending.store(true, std::memory_order_relaxed);
-	_arm_release_grace();
 	return true;
 }
 
-void AudioStreamPlaybackSymphony::_finalize_stop() {
-	stop_pending.store(false, std::memory_order_relaxed);
-
-	_abort_transition_packages();
-
-	if (current_package) {
-		_pkg_active(-1);
-		GraphPackageRetirement::retire(current_package);
-		_install_package(nullptr);
-	}
-
-	PreparedGraphPackage *pending = pending_package.exchange(nullptr, std::memory_order_acquire);
-	if (pending) {
-		_pkg_pending(-1);
-		GraphPackageRetirement::retire(pending);
-	}
-}
-
-AudioStreamPlaybackSymphony::~AudioStreamPlaybackSymphony() {
-	if (registered_with_manager) {
-		SymphonyVoiceManager *mgr = SymphonyVoiceManager::get_singleton();
-		if (mgr) {
-			mgr->abandon_voice_for_destructor(this);
+void AudioStreamPlaybackSymphony::_reclaim_unreachable() {
+	// Main thread, voice provably unreachable by any mixer (reaper: refcount==1 after AudioServer
+	// dropped it; destructor: refcount 0). Off-main callers retire instead (I5).
+#ifdef DEV_ENABLED
+	DEV_ASSERT(mix_depth.load(std::memory_order_acquire) == 0);
+#endif
+	const bool on_main = Thread::is_main_thread();
+	auto dispose = [on_main](PreparedGraphPackage *p_package) {
+		if (on_main) {
+			PreparedGraphPackage::destroy(p_package);
+		} else {
+			GraphPackageRetirement::retire(p_package);
 		}
-		registered_with_manager = false;
-	}
-	if (!Thread::is_main_thread()) {
-		_finalize_stop();
-		_release_crossfade_token();
-		return;
-	}
+	};
 	_release_crossfade_token();
 	if (outgoing_package) {
 		_pkg_outgoing(-1);
-		PreparedGraphPackage::destroy(outgoing_package);
+		dispose(outgoing_package);
 		outgoing_package = nullptr;
 	}
 	if (incoming_package) {
 		_pkg_pending(-1);
-		PreparedGraphPackage::destroy(incoming_package);
+		dispose(incoming_package);
 		incoming_package = nullptr;
 	}
+	transition_mode = TransitionMode::Idle;
 	if (current_package) {
 		_pkg_active(-1);
-		PreparedGraphPackage::destroy(current_package);
+		PreparedGraphPackage *dead = current_package;
 		_install_package(nullptr);
+		dispose(dead);
 	}
 	PreparedGraphPackage *pending = pending_package.exchange(nullptr, std::memory_order_acquire);
 	if (pending) {
 		_pkg_pending(-1);
-		PreparedGraphPackage::destroy(pending);
+		dispose(pending);
 	}
+}
+
+AudioStreamPlaybackSymphony::~AudioStreamPlaybackSymphony() {
+	// Refcount 0: no mixer can reach this voice any more.
+	_reclaim_unreachable();
 	GraphPackageRetirement::drain();
 }
 
@@ -728,7 +802,7 @@ void AudioStreamPlaybackSymphony::transition_to_lod(int p_lod_tier) {
 	if (!stream.is_valid()) {
 		return;
 	}
-	if (p_lod_tier == current_lod_tier) {
+	if (p_lod_tier == main_requested_lod) {
 		return;
 	}
 	if (p_lod_tier < 0 || p_lod_tier >= stream->get_lod_count()) {
@@ -746,7 +820,7 @@ void AudioStreamPlaybackSymphony::transition_to_lod(int p_lod_tier) {
 		return;
 	}
 
-	pending_is_lod.store(true, std::memory_order_release);
+	pkg->adopt_mode = PreparedGraphPackage::AdoptMode::Lod;
 	_pkg_pending(1);
 	PreparedGraphPackage *old_pending = pending_package.exchange(pkg, std::memory_order_acq_rel);
 	if (old_pending) {
@@ -754,5 +828,5 @@ void AudioStreamPlaybackSymphony::transition_to_lod(int p_lod_tier) {
 		PreparedGraphPackage::destroy(old_pending);
 	}
 
-	current_lod_tier = p_lod_tier;
+	main_requested_lod = p_lod_tier;
 }

@@ -3,6 +3,7 @@
 #include "../../core/symphony_operator.h"
 #include "../../core/symphony_operator_registry.h"
 #include "../../core/symphony_arena_allocator.h"
+#include "../../core/symphony_denormal_guard.h"
 #include "core/math/math_funcs.h"
 
 // Simple one-pole low-pass filter (exponential smoothing).
@@ -34,6 +35,11 @@ public:
 		for (int32_t i = 0; i < p_num_frames; i++) {
 			prev = (1.0f - coeff) * input[i] + coeff * prev;
 			output[i] = prev;
+		}
+		if (Math::abs(prev) < 1e-9f) {
+			prev = 0.0f;
+		} else {
+			symphony_flush_denormal(prev);
 		}
 	}
 

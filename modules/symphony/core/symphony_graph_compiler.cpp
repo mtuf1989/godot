@@ -840,6 +840,10 @@ GraphCompiler::CompileResult GraphCompiler::compile(const GraphDescription &p_de
 		if (desc->type_name == StringName("FeedbackPath")) {
 			behavior = SilenceBehavior::ALWAYS_PROCESS;
 		}
+		// ModalBank reports activity=0 once modes flush; override Synthesis ALWAYS_PROCESS.
+		if (desc->type_name == StringName("ModalBank")) {
+			behavior = SilenceBehavior::STATEFUL_TAIL;
+		}
 		if (desc->type_name == StringName("Gain") || desc->type_name == StringName("Mix") ||
 				desc->type_name == StringName("MathAdd") || desc->type_name == StringName("MapRange") ||
 				desc->type_name == StringName("CrossFade") || desc->type_name == StringName("RingMod")) {

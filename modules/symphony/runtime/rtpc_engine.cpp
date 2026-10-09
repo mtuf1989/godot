@@ -69,7 +69,8 @@ float RTPCEngine::_compute_block_alpha(float p_smooth_time_ms, int p_num_frames)
 }
 
 void RTPCEngine::_recompute_block_alphas(int p_num_frames) {
-	for (int i = 0; i < global_param_count; i++) {
+	const int count = global_param_count.load(std::memory_order_acquire);
+	for (int i = 0; i < count; i++) {
 		if (global_params[i].active) {
 			global_params[i].block_alpha = _compute_block_alpha(global_params[i].smooth_time_ms, p_num_frames);
 		}
@@ -78,10 +79,12 @@ void RTPCEngine::_recompute_block_alphas(int p_num_frames) {
 }
 
 void RTPCEngine::smooth_all(int p_num_frames) {
-	if (p_num_frames != cached_mix_frames) {
+	const bool dirty = alphas_dirty.exchange(false, std::memory_order_acq_rel);
+	if (dirty || p_num_frames != cached_mix_frames) {
 		_recompute_block_alphas(p_num_frames);
 	}
-	for (int i = 0; i < global_param_count; i++) {
+	const int count = global_param_count.load(std::memory_order_acquire);
+	for (int i = 0; i < count; i++) {
 		RTPCParameter &param = global_params[i];
 		if (!param.active) {
 			continue;
@@ -99,12 +102,13 @@ void RTPCEngine::smooth_all(int p_num_frames) {
 
 RTPCEngine::Handle RTPCEngine::register_parameter(const StringName &p_name, float p_default_value, float p_smooth_time_ms) {
 	symphony_rt_note(SymphonyRTViolation::ContainerMutation, "RTPCEngine::register_parameter");
-	ERR_FAIL_COND_V_MSG(global_param_count >= MAX_GLOBAL_PARAMETERS, INVALID_HANDLE,
+	const int count = global_param_count.load(std::memory_order_acquire);
+	ERR_FAIL_COND_V_MSG(count >= MAX_GLOBAL_PARAMETERS, INVALID_HANDLE,
 			"RTPCEngine: Maximum global parameter count reached.");
 	ERR_FAIL_COND_V_MSG(global_param_index.has(p_name), INVALID_HANDLE,
 			"RTPCEngine: Parameter '" + String(p_name) + "' already registered.");
 
-	Handle idx = global_param_count++;
+	Handle idx = count;
 	global_params[idx].name = p_name;
 	global_params[idx].current_value.store(p_default_value, std::memory_order_relaxed);
 	global_params[idx].target_value.store(p_default_value, std::memory_order_relaxed);
@@ -112,6 +116,9 @@ RTPCEngine::Handle RTPCEngine::register_parameter(const StringName &p_name, floa
 	global_params[idx].block_alpha = _compute_block_alpha(global_params[idx].smooth_time_ms, cached_mix_frames > 0 ? cached_mix_frames : SYMPHONY_MICRO_BLOCK_SIZE);
 	global_params[idx].active = true;
 	global_param_index[p_name] = idx;
+	// Publish the slot before exposing the new count.
+	global_param_count.store(idx + 1, std::memory_order_release);
+	alphas_dirty.store(true, std::memory_order_release);
 	return idx;
 }
 
@@ -121,7 +128,8 @@ RTPCEngine::Handle RTPCEngine::find_parameter(const StringName &p_name) const {
 }
 
 bool RTPCEngine::set_target(Handle p_handle, float p_value) {
-	if (p_handle < 0 || p_handle >= global_param_count || !global_params[p_handle].active) {
+	const int count = global_param_count.load(std::memory_order_acquire);
+	if (p_handle < 0 || p_handle >= count || !global_params[p_handle].active) {
 		missing_handle_count.fetch_add(1, std::memory_order_relaxed);
 		return false;
 	}
@@ -143,7 +151,8 @@ bool RTPCEngine::has_parameter(const StringName &p_name) const {
 }
 
 float RTPCEngine::get_current_value(Handle p_handle) const {
-	if (p_handle < 0 || p_handle >= global_param_count || !global_params[p_handle].active) {
+	const int count = global_param_count.load(std::memory_order_acquire);
+	if (p_handle < 0 || p_handle >= count || !global_params[p_handle].active) {
 		return 0.0f;
 	}
 	return global_params[p_handle].current_value.load(std::memory_order_relaxed);
@@ -154,7 +163,8 @@ float RTPCEngine::get_current_value(const StringName &p_name) const {
 }
 
 float RTPCEngine::get_target_value(Handle p_handle) const {
-	if (p_handle < 0 || p_handle >= global_param_count || !global_params[p_handle].active) {
+	const int count = global_param_count.load(std::memory_order_acquire);
+	if (p_handle < 0 || p_handle >= count || !global_params[p_handle].active) {
 		return 0.0f;
 	}
 	return global_params[p_handle].target_value.load(std::memory_order_relaxed);
@@ -176,9 +186,7 @@ float RTPCEngine::evaluate_curve(const Ref<Curve> &p_curve, float p_input, float
 
 void RTPCEngine::set_sample_rate(float p_rate) {
 	sample_rate = p_rate;
-	if (cached_mix_frames > 0) {
-		_recompute_block_alphas(cached_mix_frames);
-	}
+	alphas_dirty.store(true, std::memory_order_release);
 }
 
 void RTPCEngine::set_default_smooth_time(float p_ms) {
@@ -207,16 +215,18 @@ bool RTPCEngine::has_global_parameter(const String &p_name) const {
 
 RTPCEngine::Handle RTPCEngine::register_analysis_output(const StringName &p_name) {
 	symphony_rt_note(SymphonyRTViolation::ContainerMutation, "RTPCEngine::register_analysis_output");
-	ERR_FAIL_COND_V_MSG(analysis_output_count >= MAX_ANALYSIS_OUTPUTS, INVALID_HANDLE,
+	const int count = analysis_output_count.load(std::memory_order_acquire);
+	ERR_FAIL_COND_V_MSG(count >= MAX_ANALYSIS_OUTPUTS, INVALID_HANDLE,
 			"RTPCEngine: Maximum analysis output count reached.");
 	ERR_FAIL_COND_V_MSG(analysis_output_index.has(p_name), INVALID_HANDLE,
 			"RTPCEngine: Analysis output '" + String(p_name) + "' already registered.");
 
-	Handle idx = analysis_output_count++;
+	Handle idx = count;
 	analysis_outputs[idx].name = p_name;
 	analysis_outputs[idx].value.store(0.0f, std::memory_order_relaxed);
 	analysis_outputs[idx].active = true;
 	analysis_output_index[p_name] = idx;
+	analysis_output_count.store(idx + 1, std::memory_order_release);
 	return idx;
 }
 
@@ -226,7 +236,8 @@ RTPCEngine::Handle RTPCEngine::find_analysis_output(const StringName &p_name) co
 }
 
 bool RTPCEngine::set_analysis_value(Handle p_handle, float p_value) {
-	if (p_handle < 0 || p_handle >= analysis_output_count || !analysis_outputs[p_handle].active) {
+	const int count = analysis_output_count.load(std::memory_order_acquire);
+	if (p_handle < 0 || p_handle >= count || !analysis_outputs[p_handle].active) {
 		missing_handle_count.fetch_add(1, std::memory_order_relaxed);
 		return false;
 	}
@@ -244,7 +255,8 @@ bool RTPCEngine::set_analysis_value(const StringName &p_name, float p_value) {
 }
 
 float RTPCEngine::get_analysis_value(Handle p_handle) const {
-	if (p_handle < 0 || p_handle >= analysis_output_count || !analysis_outputs[p_handle].active) {
+	const int count = analysis_output_count.load(std::memory_order_acquire);
+	if (p_handle < 0 || p_handle >= count || !analysis_outputs[p_handle].active) {
 		return 0.0f;
 	}
 	return analysis_outputs[p_handle].value.load(std::memory_order_relaxed);
@@ -259,12 +271,12 @@ bool RTPCEngine::has_analysis_output(const StringName &p_name) const {
 }
 
 StringName RTPCEngine::get_analysis_output_name(int p_index) const {
-	ERR_FAIL_INDEX_V(p_index, analysis_output_count, StringName());
+	ERR_FAIL_INDEX_V(p_index, analysis_output_count.load(std::memory_order_acquire), StringName());
 	return analysis_outputs[p_index].name;
 }
 
 float RTPCEngine::get_analysis_output_value_by_index(int p_index) const {
-	ERR_FAIL_INDEX_V(p_index, analysis_output_count, 0.0f);
+	ERR_FAIL_INDEX_V(p_index, analysis_output_count.load(std::memory_order_acquire), 0.0f);
 	return analysis_outputs[p_index].value.load(std::memory_order_relaxed);
 }
 

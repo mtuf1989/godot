@@ -3,6 +3,8 @@
 #include "../../core/symphony_operator.h"
 #include "../../core/symphony_operator_registry.h"
 #include "../../core/symphony_arena_allocator.h"
+#include "../../core/symphony_denormal_guard.h"
+#include "core/math/math_funcs.h"
 
 // DC blocker: y[n] = x[n] - x[n-1] + R * y[n-1], R ≈ 0.995
 class SymphonyDCBlocker : public SymphonyOperator {
@@ -28,6 +30,13 @@ public:
 			x_prev = x;
 			y_prev = y;
 			output[i] = y;
+		}
+		if (Math::abs(x_prev) + Math::abs(y_prev) < 1e-9f) {
+			x_prev = 0.0f;
+			y_prev = 0.0f;
+		} else {
+			symphony_flush_denormal(x_prev);
+			symphony_flush_denormal(y_prev);
 		}
 	}
 

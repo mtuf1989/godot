@@ -4,6 +4,7 @@
 #include "../../core/symphony_operator_registry.h"
 #include "../../core/symphony_arena_allocator.h"
 #include "../../core/symphony_checked_math.h"
+#include "../../core/symphony_denormal_guard.h"
 #include "core/math/math_funcs.h"
 
 #include <cmath>
@@ -220,11 +221,17 @@ public:
 		}
 
 		if (peak < ACTIVITY_THRESHOLD) {
+			for (int l = 0; l < num_lines; l++) {
+				damping_state[l] = 0.0f;
+			}
 			if (silent_blocks < 255) {
 				silent_blocks++;
 			}
 			activity = (silent_blocks >= 2) ? 0 : 1;
 		} else {
+			for (int l = 0; l < num_lines; l++) {
+				symphony_flush_denormal(damping_state[l]);
+			}
 			silent_blocks = 0;
 			activity = 1;
 		}

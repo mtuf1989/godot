@@ -8,6 +8,8 @@
 #include "core/config/engine.h"
 #include "core/object/class_db.h"
 #include "core/object/object.h"
+#include "core/os/thread.h"
+#include "symphony_platform_time.h"
 #include "core/variant/dictionary.h"
 #include "servers/audio/audio_server.h"
 
@@ -78,7 +80,10 @@ void SymphonyVoiceManager::_ensure_mix_callback() {
 
 SymphonyVoiceManager::~SymphonyVoiceManager() {
 	if (mix_callback_registered && mix_callback_server && AudioServer::get_singleton() == mix_callback_server) {
+		// Lock the driver so no mix callback is in flight when it is removed.
+		mix_callback_server->lock();
 		mix_callback_server->remove_mix_callback(_mix_callback, this);
+		mix_callback_server->unlock();
 		mix_callback_registered = false;
 		mix_callback_server = nullptr;
 	}
@@ -87,12 +92,9 @@ SymphonyVoiceManager::~SymphonyVoiceManager() {
 		update_callback_registered = false;
 	}
 	singleton = nullptr;
-	{
-		MutexLock lock(voice_lifetime_mutex);
-		for (Ref<AudioStreamPlaybackSymphony> &voice : retained_voices) {
-			if (voice.is_valid()) {
-				voice->registered_with_manager = false;
-			}
+	for (Ref<AudioStreamPlaybackSymphony> &voice : retained_voices) {
+		if (voice.is_valid()) {
+			voice->registered_with_manager = false;
 		}
 	}
 	retained_voices.clear();
@@ -113,94 +115,79 @@ bool SymphonyVoiceManager::register_voice(AudioStreamPlaybackSymphony *p_voice) 
 	if (!p_voice || _symphony_editor_ui_session()) {
 		return false;
 	}
-	_ensure_mix_callback();
-	MutexLock lock(voice_lifetime_mutex);
-	for (const Ref<AudioStreamPlaybackSymphony> &held : retained_voices) {
-		if (held.ptr() == p_voice) {
-			return true;
-		}
+	if (p_voice->registered_with_manager) {
+		return true;
 	}
+	if (!Thread::is_main_thread()) {
+		return false;
+	}
+	_ensure_mix_callback();
 	symphony_rt_note(SymphonyRTViolation::ContainerMutation, "SymphonyVoiceManager::register_voice");
-	active_voices.insert(p_voice);
+	// Lock-free for the audio thread: SafeList insert only; retained_voices is main-owned.
 	retained_voices.push_back(Ref<AudioStreamPlaybackSymphony>(p_voice));
+	active_voices.insert(p_voice);
+	p_voice->registered_with_manager = true;
 	return true;
 }
 
-void SymphonyVoiceManager::unregister_voice(AudioStreamPlaybackSymphony *p_voice) {
-	if (!p_voice) {
-		return;
-	}
-	Ref<AudioStreamPlaybackSymphony> dropped;
-	{
-		MutexLock lock(voice_lifetime_mutex);
-		symphony_rt_note(SymphonyRTViolation::ContainerMutation, "SymphonyVoiceManager::unregister_voice");
-		active_voices.erase(p_voice);
-		p_voice->registered_with_manager = false;
-		for (int32_t i = 0; i < retained_voices.size(); i++) {
-			if (retained_voices[i].ptr() == p_voice) {
-				dropped = retained_voices[i];
-				retained_voices.remove_at(i);
-				break;
-			}
+int32_t SymphonyVoiceManager::get_parked_package_count() const {
+	int32_t parked = 0;
+	for (const Ref<AudioStreamPlaybackSymphony> &voice : retained_voices) {
+		if (voice.is_valid() && !voice->is_playing() && voice->control_package.load(std::memory_order_acquire) != nullptr) {
+			parked++;
 		}
 	}
-	dropped.unref();
-}
-
-void SymphonyVoiceManager::abandon_voice_for_destructor(AudioStreamPlaybackSymphony *p_voice) {
-	if (!p_voice) {
-		return;
-	}
-	MutexLock lock(voice_lifetime_mutex);
-	active_voices.erase(p_voice);
+	return parked;
 }
 
 void SymphonyVoiceManager::process_deferred_lod() {
-	// Main thread: apply per-voice stop/LOD atomics written by the audio callback.
+	// Main thread: reap unreachable voices, then apply per-voice LOD requests.
 	// At most one LOD compilation per update to avoid allocation bursts (plan §5).
 	symphony_rt_note(SymphonyRTViolation::ObjectDB, "SymphonyVoiceManager::process_deferred_lod");
 	symphony_rt_note(SymphonyRTViolation::ContainerMutation, "SymphonyVoiceManager::process_deferred_lod");
 
-	Vector<AudioStreamPlaybackSymphony *> ready_to_release;
-	Vector<AudioStreamPlaybackSymphony *> live;
-	{
-		MutexLock lock(voice_lifetime_mutex);
-		for (auto it = active_voices.begin(); it != active_voices.end(); ++it) {
-			AudioStreamPlaybackSymphony *v = *it;
-			if (!v) {
-				continue;
-			}
-			if (v->is_release_ready()) {
-				ready_to_release.push_back(v);
-			} else {
-				live.push_back(v);
-			}
+	// Phase 1 (reap, I4): refcount==1 means only our Ref is left, i.e. AudioServer and scripts let go.
+	Vector<int32_t> reap_indices;
+	for (int32_t i = 0; i < retained_voices.size(); i++) {
+		const Ref<AudioStreamPlaybackSymphony> &voice = retained_voices[i];
+		if (voice.is_valid() && voice->get_reference_count() == 1) {
+			reap_indices.push_back(i);
 		}
 	}
-	for (AudioStreamPlaybackSymphony *v : ready_to_release) {
-		Ref<AudioStreamPlaybackSymphony> hold(v);
-		unregister_voice(v);
-		if (hold.is_valid()) {
-			hold->_finalize_stop();
+	if (!reap_indices.is_empty()) {
+		{
+			// Erase only marks nodes into the graveyard; no allocation under the lock.
+			MutexLock lock(voice_lifetime_mutex);
+			for (int32_t idx : reap_indices) {
+				active_voices.erase(retained_voices[idx].ptr());
+			}
+		}
+		for (int32_t k = reap_indices.size() - 1; k >= 0; k--) {
+			const int32_t idx = reap_indices[k];
+			Ref<AudioStreamPlaybackSymphony> dead = retained_voices[idx];
+			retained_voices.remove_at(idx);
+			dead->registered_with_manager = false;
+			dead->_reclaim_unreachable();
+			dead.unref();
 		}
 	}
 
 	bool lod_compiled = false;
-	for (AudioStreamPlaybackSymphony *v : live) {
-		if (!v || !v->is_registered_with_voice_manager()) {
+	for (const Ref<AudioStreamPlaybackSymphony> &voice : retained_voices) {
+		AudioStreamPlaybackSymphony *v = voice.ptr();
+		if (!v) {
 			continue;
 		}
-		if (v->manager_stop_request.load(std::memory_order_relaxed)) {
-			v->process_manager_requests();
-			continue;
-		}
-		if (!lod_compiled && v->requested_lod_tier.load(std::memory_order_relaxed) >= 0) {
+		const bool has_request = v->requested_lod_tier.load(std::memory_order_relaxed) >= 0;
+		const bool floor_differs = v->get_budget_lod_floor() != v->get_current_lod_tier();
+		if (!lod_compiled && (has_request || floor_differs)) {
 			v->process_manager_requests();
 			lod_compiled = true;
 		}
 	}
 
 	active_voices.maybe_cleanup();
+	GraphPackageRetirement::drain();
 }
 
 int32_t SymphonyVoiceManager::get_active_voice_count() const {
@@ -280,6 +267,9 @@ Dictionary SymphonyVoiceManager::get_debug_metrics() const {
 	d["retirement_peak_pending"] = (int)get_retirement_peak_pending_count();
 	d["packages_destroyed"] = (int64_t)get_packages_destroyed_count();
 	d["rt_violations"] = (int)get_rt_violation_count();
+	d["enforce_skipped"] = (int64_t)get_enforce_skipped_count();
+	d["voices_retained"] = get_retained_voice_count();
+	d["packages_parked"] = get_parked_package_count();
 
 	if (SymphonyMemoryBudget *budget = SymphonyMemoryBudget::get_singleton()) {
 		const SymphonyMemoryBudget::Snapshot snap = budget->get_snapshot();
@@ -298,27 +288,27 @@ Dictionary SymphonyVoiceManager::get_debug_metrics() const {
 }
 
 void SymphonyVoiceManager::set_max_voices(int32_t p_max) {
-	max_voices = p_max;
+	max_voices.store(p_max, std::memory_order_relaxed);
 }
 
 int32_t SymphonyVoiceManager::get_max_voices() const {
-	return max_voices;
+	return max_voices.load(std::memory_order_relaxed);
 }
 
 void SymphonyVoiceManager::set_warning_threshold(float p_threshold) {
-	warning_threshold = p_threshold;
+	warning_threshold.store(p_threshold, std::memory_order_relaxed);
 }
 
 float SymphonyVoiceManager::get_warning_threshold() const {
-	return warning_threshold;
+	return warning_threshold.load(std::memory_order_relaxed);
 }
 
 void SymphonyVoiceManager::set_critical_threshold(float p_threshold) {
-	critical_threshold = p_threshold;
+	critical_threshold.store(p_threshold, std::memory_order_relaxed);
 }
 
 float SymphonyVoiceManager::get_critical_threshold() const {
-	return critical_threshold;
+	return critical_threshold.load(std::memory_order_relaxed);
 }
 
 bool SymphonyVoiceManager::try_acquire_crossfade_token() {
@@ -368,26 +358,41 @@ void SymphonyVoiceManager::observe_cost_sample(float p_cost_units, float p_mix_u
 }
 
 void SymphonyVoiceManager::enforce_voice_limits() {
-	// Audio thread only: fixed stack snapshots + per-voice atomics. No ObjectDB,
-	// heap containers, Resource access, or graph compilation (plan §6).
-	MutexLock lock(voice_lifetime_mutex);
+	_enforce_voice_limits_at(symphony_time_usec());
+}
+
+void SymphonyVoiceManager::_enforce_voice_limits_at(uint64_t p_now_us) {
+	// Audio thread only: fixed stack snapshots + per-voice atomics. No ObjectDB, heap containers,
+	// Resource access, package memory or graph compilation (plan §6, I6).
+	callback_seq.fetch_add(1, std::memory_order_acq_rel);
+	if (!voice_lifetime_mutex.try_lock()) {
+		// Main is erasing a reaped voice; decisions resume next callback.
+		metric_enforce_skipped.fetch_add(1, std::memory_order_relaxed);
+		return;
+	}
+	struct ListUnlock {
+		BinaryMutex &mutex;
+		~ListUnlock() { mutex.unlock(); }
+	} list_unlock{ voice_lifetime_mutex };
+	const uint64_t seq = callback_seq.load(std::memory_order_acquire);
 
 	struct VoiceSnapshot {
 		AudioStreamPlaybackSymphony *voice = nullptr;
-		float budget = 0.0f;
+		float cost = 0.0f; // smoothed % of block deadline
 		float rms = 0.0f;
 		int priority = 50;
 		float microseconds = 0.0f;
-		int current_lod = 0;
+		int floor = 0;
 		int max_lod = 0;
-		bool transitioning = false;
+		uint64_t floor_changed_us = UINT64_MAX;
+		float instant_budget = 0.0f;
 	};
 
 	static constexpr int32_t MAX_SNAPSHOT = 256;
 	VoiceSnapshot snapshots[MAX_SNAPSHOT];
 	int32_t voice_count = 0;
 
-	float total_budget = 0.0f;
+	float total_cost = 0.0f;
 	float peak_budget = 0.0f;
 	float total_microseconds = 0.0f;
 
@@ -396,68 +401,115 @@ void SymphonyVoiceManager::enforce_voice_limits() {
 			break;
 		}
 		AudioStreamPlaybackSymphony *v = *it;
-		if (!v || v->tick_release_grace()) {
+		// Only voices that mixed during the previous callback interval count (paused/stopped drop out).
+		if (!v || !v->is_playing() || seq - v->get_last_mix_seq() > 1) {
 			continue;
 		}
-
 		VoiceSnapshot &snap = snapshots[voice_count];
 		snap.voice = v;
-		snap.budget = v->get_budget_percent();
+		snap.cost = v->get_cost_pct_ewma();
 		snap.rms = v->get_last_rms();
 		snap.priority = v->get_effective_priority();
 		snap.microseconds = v->get_voice_cpu_microseconds();
-		snap.current_lod = v->get_current_lod_tier();
+		snap.floor = v->get_budget_lod_floor();
 		snap.max_lod = v->get_cached_max_lod();
-		snap.transitioning = v->is_lod_transitioning();
+		snap.floor_changed_us = v->get_floor_changed_us();
+		snap.instant_budget = v->get_budget_percent();
 
 		observe_cost_sample(v->get_estimated_cost_units(), snap.microseconds);
 
-		total_budget += snap.budget;
-		if (snap.budget > peak_budget) {
-			peak_budget = snap.budget;
-		}
+		total_cost += snap.cost;
+		peak_budget = MAX(peak_budget, snap.instant_budget);
 		total_microseconds += snap.microseconds;
 		voice_count++;
 	}
 
-	float avg_microseconds = (voice_count > 0) ? (total_microseconds / voice_count) : 0.0f;
+	const float avg_microseconds = (voice_count > 0) ? (total_microseconds / voice_count) : 0.0f;
 
-	// Phase 2: queue LOD demotions onto per-voice atomics.
-	if (total_budget > warning_threshold * 100.0f && total_budget <= critical_threshold * 100.0f) {
-		float remaining_budget_lod = total_budget;
-		float target_budget = warning_threshold * 100.0f * 0.85f;
-		static constexpr int32_t MAX_LODS_PER_CALLBACK = 16;
-		int32_t lod_queued = 0;
+	const float warn_pct = get_warning_threshold() * 100.0f;
+	const float crit_pct = get_critical_threshold() * 100.0f;
+	const float release_pct = MAX(0.0f, warn_pct - RELEASE_HYSTERESIS * 100.0f);
+	const float target_pct = warn_pct - ENGAGE_TARGET_BELOW_WARNING * 100.0f;
+	const float release_projection_limit = MAX(0.0f, release_pct - 5.0f);
 
-		while (remaining_budget_lod > target_budget && lod_queued < MAX_LODS_PER_CALLBACK) {
+	// Phase 2: LOD floor hysteresis. Floors are only ever cleared one tier at a time by the
+	// release rule, never by a blanket reset (a high load must not undo demotions).
+	float level = total_cost;
+	if (level > warn_pct) {
+		if (!over_warn_active) {
+			over_warn_active = true;
+			over_warn_since_us = p_now_us;
+		}
+	} else {
+		over_warn_active = false;
+	}
+	const bool above_critical = level > crit_pct;
+	const bool warn_sustained = over_warn_active && (p_now_us - over_warn_since_us) >= WARN_SUSTAIN_US;
+	bool engaged = false;
+	if (above_critical || warn_sustained) {
+		static constexpr int32_t MAX_STEPS_WARN = 4;
+		static constexpr int32_t MAX_STEPS_CRITICAL = 16;
+		const int32_t max_steps = above_critical ? MAX_STEPS_CRITICAL : MAX_STEPS_WARN;
+		for (int32_t step = 0; step < max_steps && level > target_pct; step++) {
 			int32_t best_idx = -1;
-			float best_budget = 0.0f;
-
+			float best_cost = 0.0f;
 			for (int32_t i = 0; i < voice_count; i++) {
-				if (snapshots[i].current_lod < snapshots[i].max_lod &&
-						!snapshots[i].transitioning &&
-						snapshots[i].budget > best_budget) {
-					best_budget = snapshots[i].budget;
+				const VoiceSnapshot &snap = snapshots[i];
+				if (snap.floor >= snap.max_lod) {
+					continue;
+				}
+				if (snap.floor_changed_us != UINT64_MAX && (p_now_us - snap.floor_changed_us) < FLOOR_CHANGE_MIN_US) {
+					continue;
+				}
+				if (snap.cost > best_cost) {
+					best_cost = snap.cost;
 					best_idx = i;
 				}
 			}
-
 			if (best_idx < 0) {
 				break;
 			}
-
-			int32_t new_lod = snapshots[best_idx].current_lod + 1;
-			snapshots[best_idx].voice->set_budget_lod_floor(new_lod);
-			snapshots[best_idx].current_lod = new_lod;
-			snapshots[best_idx].transitioning = true;
-			lod_queued++;
-
-			remaining_budget_lod -= snapshots[best_idx].budget * 0.4f;
-			snapshots[best_idx].budget *= 0.6f;
+			VoiceSnapshot &chosen = snapshots[best_idx];
+			chosen.floor += 1;
+			chosen.floor_changed_us = p_now_us;
+			chosen.voice->set_budget_lod_floor_at(chosen.floor, p_now_us);
+			// A tier drop is projected to cost ~60% of the previous tier.
+			level -= chosen.cost * 0.4f;
+			engaged = true;
 		}
-	} else {
+	}
+
+	if (engaged || level >= release_pct) {
+		below_release_active = false;
+	} else if (!below_release_active) {
+		below_release_active = true;
+		below_release_since_us = p_now_us;
+	}
+	if (!engaged && below_release_active && (p_now_us - below_release_since_us) >= RELEASE_QUIET_US &&
+			(!has_released || (p_now_us - last_release_us) >= RELEASE_SPACING_US)) {
+		int32_t best_idx = -1;
+		int best_priority = -1;
 		for (int32_t i = 0; i < voice_count; i++) {
-			snapshots[i].voice->set_budget_lod_floor(0);
+			const VoiceSnapshot &snap = snapshots[i];
+			if (snap.floor <= 0) {
+				continue;
+			}
+			if (snap.floor_changed_us != UINT64_MAX && (p_now_us - snap.floor_changed_us) < RELEASE_DWELL_US) {
+				continue;
+			}
+			// Going up a tier is projected to cost 1/0.6 of the current tier.
+			if (level + snap.cost * (1.0f / 0.6f - 1.0f) >= release_projection_limit) {
+				continue;
+			}
+			if (snap.priority > best_priority) {
+				best_priority = snap.priority;
+				best_idx = i;
+			}
+		}
+		if (best_idx >= 0) {
+			snapshots[best_idx].voice->set_budget_lod_floor_at(snapshots[best_idx].floor - 1, p_now_us);
+			has_released = true;
+			last_release_us = p_now_us;
 		}
 	}
 
@@ -473,24 +525,28 @@ void SymphonyVoiceManager::enforce_voice_limits() {
 		is_victim_flags[idx] = true;
 		victim_indices[victim_count++] = idx;
 	};
-
-	if (max_voices > 0 && voice_count > max_voices) {
-		while (voice_count - victim_count > max_voices) {
-			int worst_idx = -1;
-			int worst_priority = INT32_MAX;
-			float worst_rms = FLT_MAX;
-
-			for (int32_t i = 0; i < voice_count; i++) {
-				if (is_victim_flags[i]) {
-					continue;
-				}
-				if (snapshots[i].priority < worst_priority ||
-						(snapshots[i].priority == worst_priority && snapshots[i].rms < worst_rms)) {
-					worst_priority = snapshots[i].priority;
-					worst_rms = snapshots[i].rms;
-					worst_idx = i;
-				}
+	auto pick_worst = [&]() {
+		int worst_idx = -1;
+		int worst_priority = INT32_MAX;
+		float worst_rms = FLT_MAX;
+		for (int32_t i = 0; i < voice_count; i++) {
+			if (is_victim_flags[i]) {
+				continue;
 			}
+			if (snapshots[i].priority < worst_priority ||
+					(snapshots[i].priority == worst_priority && snapshots[i].rms < worst_rms)) {
+				worst_priority = snapshots[i].priority;
+				worst_rms = snapshots[i].rms;
+				worst_idx = i;
+			}
+		}
+		return worst_idx;
+	};
+
+	const int32_t voice_limit = get_max_voices();
+	if (voice_limit > 0 && voice_count > voice_limit) {
+		while (voice_count - victim_count > voice_limit) {
+			const int32_t worst_idx = pick_worst();
 			if (worst_idx < 0) {
 				break;
 			}
@@ -498,34 +554,20 @@ void SymphonyVoiceManager::enforce_voice_limits() {
 		}
 	}
 
-	float remaining_budget = 0.0f;
+	// Steal while the smoothed load is above critical, down to warning.
+	float remaining_cost = 0.0f;
 	for (int32_t i = 0; i < voice_count; i++) {
 		if (!is_victim_flags[i]) {
-			remaining_budget += snapshots[i].budget;
+			remaining_cost += snapshots[i].cost;
 		}
 	}
-
-	if (remaining_budget > critical_threshold * 100.0f) {
-		while (remaining_budget > warning_threshold * 100.0f) {
-			int worst_idx = -1;
-			int worst_priority = INT32_MAX;
-			float worst_rms = FLT_MAX;
-
-			for (int32_t i = 0; i < voice_count; i++) {
-				if (is_victim_flags[i]) {
-					continue;
-				}
-				if (snapshots[i].priority < worst_priority ||
-						(snapshots[i].priority == worst_priority && snapshots[i].rms < worst_rms)) {
-					worst_priority = snapshots[i].priority;
-					worst_rms = snapshots[i].rms;
-					worst_idx = i;
-				}
-			}
+	if (remaining_cost > crit_pct) {
+		while (remaining_cost > warn_pct) {
+			const int32_t worst_idx = pick_worst();
 			if (worst_idx < 0) {
 				break;
 			}
-			remaining_budget -= snapshots[worst_idx].budget;
+			remaining_cost -= snapshots[worst_idx].cost;
 			mark_victim(worst_idx);
 		}
 	}
@@ -533,12 +575,12 @@ void SymphonyVoiceManager::enforce_voice_limits() {
 	// Phase 4: publish metrics.
 	metric_active_count.store(voice_count, std::memory_order_relaxed);
 	metric_stolen_this_frame.store(victim_count, std::memory_order_relaxed);
-	metric_total_budget_millipercent.store(static_cast<int32_t>(total_budget * 1000.0f), std::memory_order_relaxed);
+	metric_total_budget_millipercent.store(static_cast<int32_t>(total_cost * 1000.0f), std::memory_order_relaxed);
 	metric_peak_budget_millipercent.store(static_cast<int32_t>(peak_budget * 1000.0f), std::memory_order_relaxed);
 	metric_avg_voice_microseconds_x1000.store(static_cast<int32_t>(avg_microseconds * 1000.0f), std::memory_order_relaxed);
 
-	// Phase 5: request stops via atomics only (main thread performs stop()).
+	// Phase 5: steals are a pure atomic request (I2); the voice goes silent on its next mix.
 	for (int32_t i = 0; i < victim_count; i++) {
-		snapshots[victim_indices[i]].voice->request_manager_stop();
+		snapshots[victim_indices[i]].voice->stop();
 	}
 }

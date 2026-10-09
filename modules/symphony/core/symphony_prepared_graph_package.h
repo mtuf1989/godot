@@ -53,8 +53,17 @@ struct PreparedGraphPackage {
 	float estimated_cost_units = 0.0f;
 	int lod_tier = 0;
 
+	// How the mixing thread adopts this package (immutable once published).
+	// Swap: graph hot-swap. Lod: LOD tier change. Restart: fresh state after stop/start.
+	enum class AdoptMode : uint8_t { Swap, Lod, Restart };
+	AdoptMode adopt_mode = AdoptMode::Swap;
+
 	// Intrusive retirement link (filled by retirement queue in a later slice).
 	PreparedGraphPackage *retire_next = nullptr;
+#ifdef DEV_ENABLED
+	// Set by GraphPackageRetirement::retire(); a package must be retired at most once.
+	bool retired = false;
+#endif
 
 	static PreparedGraphPackage *create_from_graph(CompiledGraph *p_graph, size_t p_arena_bytes = 0, size_t p_total_bytes = 0, int p_lod_tier = 0, float p_estimated_cost_units = 0.0f);
 	static void destroy(PreparedGraphPackage *p_package);

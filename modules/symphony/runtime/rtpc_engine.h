@@ -27,7 +27,7 @@ public:
 
 	struct alignas(CACHE_LINE_SIZE) RTPCParameter {
 		std::atomic<float> current_value{ 0.0f };
-		float block_alpha = 1.0f; // Precomputed for current mix frame count
+		float block_alpha = 1.0f; // Audio-owned; recomputed when alphas_dirty
 		float smooth_time_ms = DEFAULT_SMOOTH_TIME_MS;
 		bool active = false;
 		char _pad[CACHE_LINE_SIZE - sizeof(std::atomic<float>) - sizeof(float) - sizeof(float) - sizeof(bool)];
@@ -45,16 +45,17 @@ private:
 	static RTPCEngine *singleton;
 
 	RTPCParameter global_params[MAX_GLOBAL_PARAMETERS];
-	int global_param_count = 0;
+	std::atomic<int> global_param_count{ 0 };
 	HashMap<StringName, Handle> global_param_index; // Main-thread lookup only
 
 	AnalysisOutput analysis_outputs[MAX_ANALYSIS_OUTPUTS];
-	int analysis_output_count = 0;
+	std::atomic<int> analysis_output_count{ 0 };
 	HashMap<StringName, Handle> analysis_output_index; // Main-thread lookup only
 
 	float sample_rate = 44100.0f;
 	float default_smooth_time_ms = DEFAULT_SMOOTH_TIME_MS;
-	int cached_mix_frames = 0;
+	int cached_mix_frames = 0; // Audio-owned
+	std::atomic<bool> alphas_dirty{ true };
 	bool mix_callback_registered = false;
 	std::atomic<uint64_t> missing_handle_count{ 0 };
 
@@ -95,7 +96,7 @@ public:
 
 	[[nodiscard]] float evaluate_curve(const Ref<Curve> &p_curve, float p_input, float p_min_out, float p_max_out) const;
 
-	int get_analysis_output_count() const { return analysis_output_count; }
+	int get_analysis_output_count() const { return analysis_output_count.load(std::memory_order_acquire); }
 	StringName get_analysis_output_name(int p_index) const;
 	float get_analysis_output_value_by_index(int p_index) const;
 
@@ -110,7 +111,7 @@ public:
 	float get_sample_rate() const { return sample_rate; }
 	void set_default_smooth_time(float p_ms);
 	float get_default_smooth_time() const { return default_smooth_time_ms; }
-	int get_parameter_count() const { return global_param_count; }
+	int get_parameter_count() const { return global_param_count.load(std::memory_order_acquire); }
 	[[nodiscard]] uint64_t get_missing_handle_count() const;
 
 	bool set_parameter_target(const String &p_name, float p_value);

@@ -5,6 +5,7 @@
 #include "symphony_graph_package_retirement.h"
 #include "symphony_realtime_scope.h"
 
+#include "core/os/thread.h"
 #include "servers/audio/audio_server.h"
 
 std::atomic<PreparedGraphPackage *> GraphPackageRetirement::head{ nullptr };
@@ -43,6 +44,10 @@ void GraphPackageRetirement::retire(PreparedGraphPackage *p_package) {
 	if (!p_package) {
 		return;
 	}
+#ifdef DEV_ENABLED
+	DEV_ASSERT(!p_package->retired);
+	p_package->retired = true;
+#endif
 	PreparedGraphPackage *old_head = head.load(std::memory_order_relaxed);
 	do {
 		p_package->retire_next = old_head;
@@ -52,6 +57,10 @@ void GraphPackageRetirement::retire(PreparedGraphPackage *p_package) {
 }
 
 void GraphPackageRetirement::drain() {
+	// I5: packages are freed only on the main thread.
+	if (!Thread::is_main_thread()) {
+		return;
+	}
 	symphony_rt_note(SymphonyRTViolation::Free, "GraphPackageRetirement::drain");
 	PreparedGraphPackage *list = head.exchange(nullptr, std::memory_order_acquire);
 	uint32_t destroyed = 0;

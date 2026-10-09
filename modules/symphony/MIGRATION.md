@@ -5,9 +5,9 @@ Update this file with each commit that changes a public API.
 
 ## Status
 
-- **Milestone:** M3 C++ complete. Game Audio Layer (`game-template/addons/symphony_audio`) migrated (RTPC handles, `play_event` Dictionary, `trigger()`, LOD poll removed). Tech-fix plan P0 landed (shared test helpers).
+- **Milestone:** M3 C++ complete. Tech-fix plan **P0 + P1** landed (shared helpers; voice lifetime / denormals / RTPC atomics / LOD hysteresis).
 - **Branch:** `features/symphony_fixed`
-- **Tests:** 202 Symphony cases (2026-10-09). Editor TSan (`.san`) rebuilt same day — suite green; **1 baseline data-race warning** (stacks stripped/`<null>` under TSan). P1 exit gate: new Symphony-frame races = 0 vs this baseline.
+- **Tests:** 210 Symphony cases (2026-10-09). Editor TSan (`.san`) P0 baseline: suite green with **1** data-race warning. Re-run `.san` after P1 to confirm new Symphony-frame races = 0.
 
 ## Completed
 

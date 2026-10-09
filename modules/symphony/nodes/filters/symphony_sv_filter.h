@@ -3,6 +3,7 @@
 #include "../../core/symphony_operator.h"
 #include "../../core/symphony_operator_registry.h"
 #include "../../core/symphony_arena_allocator.h"
+#include "../../core/symphony_denormal_guard.h"
 #include "core/math/math_funcs.h"
 
 // Topology-preserving state-variable filter (TPT/ZDF) with simultaneous LP/HP/BP.
@@ -102,11 +103,15 @@ public:
 
 		float state_mag = Math::abs(ic1eq) + Math::abs(ic2eq);
 		if (peak < ACTIVITY_THRESHOLD && state_mag < ACTIVITY_THRESHOLD) {
+			ic1eq = 0.0f;
+			ic2eq = 0.0f;
 			if (silent_blocks < 255) {
 				silent_blocks++;
 			}
 			activity = (silent_blocks >= 2) ? 0 : 1;
 		} else {
+			symphony_flush_denormal(ic1eq);
+			symphony_flush_denormal(ic2eq);
 			silent_blocks = 0;
 			activity = 1;
 		}

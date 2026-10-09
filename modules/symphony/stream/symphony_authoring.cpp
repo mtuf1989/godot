@@ -1,6 +1,7 @@
 #include "audio_stream_symphony.h"
 
 #include "audio_stream_playback_symphony.h"
+#include "../core/symphony_denormal_guard.h"
 #include "../core/symphony_operator_registry.h"
 #include "../core/symphony_render_seed.h"
 
@@ -223,6 +224,7 @@ Dictionary AudioStreamSymphony::render_offline(double p_duration_seconds, int64_
 	int silent = 0;
 	double cost_us = 0.0;
 	AudioFrame block[256];
+	SymphonyDenormalGuard denormal_guard;
 	while (written < total_frames && symphony->is_playing()) {
 		int frames_now = MIN(256, total_frames - written);
 		double block_end = (double)(written + frames_now) / (double)rate;
