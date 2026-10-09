@@ -39,7 +39,7 @@
 | V1 | `b10b24d6ca` (+ gt `a700bb3a`) | Timing/callback/replace tests; DemoScoreFactory; 1000-seed batch; `QUALIFICATION.md` |
 | P8b | `7b5950da02` (+ gt `b6e4fc04`) | Category caps; shared `_admit` (N8); STEAL_QUIETEST (N12); GDScript admit tiers/caps |
 | P9 | `f5f378a49e` | State-in-locals; FeedbackPath zero-extra; flatten cache + arena freelist; `test_symphony_p9.cpp` |
-| Lifetime+Profile | *(this commit)* | Denser T2/T4/T6–T9/T11/T13–T16; `test_symphony_profile.cpp` harness |
+| Lifetime+Profile | `8e7ef9d622` | Denser T2/T4/T6–T9/T11/T13–T16; `test_symphony_profile.cpp` harness |
 
 ### P1 leftovers (closed — optional coverage only)
 
