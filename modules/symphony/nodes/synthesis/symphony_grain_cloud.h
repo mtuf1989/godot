@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../../core/symphony_operator.h"
+#include "../../core/symphony_seed.h"
 #include "../../core/symphony_operator_registry.h"
 #include "../../core/symphony_arena_allocator.h"
 #include "../../core/symphony_checked_math.h"
@@ -493,7 +494,7 @@ public:
 		desc.params.push_back({ "position_randomness", 0.1f, 0.0f, 1.0f, 0.01f });
 		desc.params.push_back({ "pitch_tracking", 0.0f, 0.0f, 1.0f, 0.01f });
 		desc.params.push_back({ "trigger_only", 0.0f, 0.0f, 1.0f, 1.0f });
-		desc.params.push_back({ "seed", 1.0f, 1.0f, 999999.0f, 1.0f });
+		desc.params.push_back({ "seed", 1.0f, 0.0f, (float)SYMPHONY_SEED_PARAM_MAX, 1.0f });
 		desc.params.push_back({ "capture_seconds", 2.0f, 1.0f, 10.0f, 1.0f });
 		desc.state_size = sizeof(SymphonyGrainCloud);
 		desc.state_align = alignof(SymphonyGrainCloud);
@@ -572,10 +573,12 @@ public:
 		gc->default_pitch_tracking = p_params.has("pitch_tracking") ? (float)p_params["pitch_tracking"] : 0.0f;
 		gc->trigger_only = p_params.has("trigger_only") ? ((float)p_params["trigger_only"] >= 0.5f) : false;
 
-		// RNG seed (different per voice for variety)
-		gc->rng_state = p_params.has("seed") ? (uint32_t)(float)p_params["seed"] : 1;
-		if (gc->rng_state == 0) {
-			gc->rng_state = 1; // xorshift cannot have 0 state
+		// Per-voice seed. xorshift cannot have 0 state.
+		const SymphonyCompileContext &ctx = symphony_compile_context();
+		const uint32_t authored = symphony_authored_seed(p_params, 1u);
+		gc->rng_state = symphony_node_seed(ctx.voice_seed, ctx.node_id, authored, false);
+		if (gc->rng_state == 0u) {
+			gc->rng_state = 1u;
 		}
 
 		// Capture buffer sizing

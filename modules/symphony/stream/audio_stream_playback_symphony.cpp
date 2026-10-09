@@ -279,7 +279,7 @@ void AudioStreamPlaybackSymphony::_publish_restart_package() {
 	if (!stream.is_valid() || !Thread::is_main_thread() || control_package.load(std::memory_order_acquire) == nullptr) {
 		return;
 	}
-	CompiledGraph *graph = stream->compile_lod_graph(main_requested_lod);
+	CompiledGraph *graph = stream->compile_lod_graph(main_requested_lod, voice_seed);
 	if (!graph) {
 		return;
 	}
@@ -316,7 +316,7 @@ void AudioStreamPlaybackSymphony::start(double p_from_pos) {
 		_register_with_manager();
 	}
 	// Any thread: requests consumed by the mixing thread. active is stored last.
-	position_us.store(0, std::memory_order_release);
+	frames_rendered.store(0, std::memory_order_release);
 	resample_reset_pending.store(true, std::memory_order_release);
 	auto_fire_pending.store(true, std::memory_order_release);
 	active.store(true, std::memory_order_release);
@@ -336,7 +336,33 @@ int AudioStreamPlaybackSymphony::get_loop_count() const {
 }
 
 double AudioStreamPlaybackSymphony::get_playback_position() const {
-	return (double)position_us.load(std::memory_order_acquire) / 1000000.0;
+	const double rate = (double)mix_rate_cached.load(std::memory_order_acquire);
+	if (rate <= 0.0) {
+		return 0.0;
+	}
+	return (double)frames_rendered.load(std::memory_order_acquire) / rate;
+}
+
+int AudioStreamPlaybackSymphony::mix_graph_rate(AudioFrame *p_buffer, int p_frames) {
+	return _mix_internal(p_buffer, p_frames);
+}
+
+void AudioStreamPlaybackSymphony::_note_rendered_frames(int p_frames) {
+	if (p_frames <= 0) {
+		return;
+	}
+	frames_rendered.fetch_add((uint64_t)p_frames, std::memory_order_acq_rel);
+	const double duration_limit = cached_duration_limit.load(std::memory_order_relaxed);
+	if (duration_limit <= 0.0) {
+		return;
+	}
+	const double rate = (double)mix_rate_cached.load(std::memory_order_relaxed);
+	if (rate <= 0.0) {
+		return;
+	}
+	if ((double)frames_rendered.load(std::memory_order_relaxed) / rate >= duration_limit) {
+		active.store(false, std::memory_order_release);
+	}
 }
 
 void AudioStreamPlaybackSymphony::seek(double p_time) {
@@ -401,6 +427,7 @@ int AudioStreamPlaybackSymphony::_mix_internal(AudioFrame *p_buffer, int p_frame
 		for (int i = 0; i < p_frames; i++) {
 			p_buffer[i] = AudioFrame(0, 0);
 		}
+		_note_rendered_frames(p_frames);
 		return p_frames;
 	}
 
@@ -497,6 +524,7 @@ int AudioStreamPlaybackSymphony::_mix_internal(AudioFrame *p_buffer, int p_frame
 		}
 	}
 
+	_note_rendered_frames(frames_processed);
 	return frames_processed;
 }
 
@@ -544,7 +572,6 @@ int AudioStreamPlaybackSymphony::mix(AudioFrame *p_buffer, float p_rate_scale, i
 	if (out_rate <= 0.0f) {
 		out_rate = graph_rate;
 	}
-	float speed = p_rate_scale;
 	const bool reset_resample = resample_reset_pending.exchange(false, std::memory_order_acq_rel);
 	if (AudioServer::get_singleton()) {
 		if (reset_resample) {
@@ -556,7 +583,6 @@ int AudioStreamPlaybackSymphony::mix(AudioFrame *p_buffer, float p_rate_scale, i
 			out_rate = server_rate;
 			output_rate_cached.store(server_rate, std::memory_order_relaxed);
 		}
-		speed *= AudioServer::get_singleton()->get_playback_speed_scale();
 	} else {
 		// Native unit tests mix without an audio device. Generate at the graph rate;
 		// device-rate resampling runs when AudioServer is alive.
@@ -568,16 +594,6 @@ int AudioStreamPlaybackSymphony::mix(AudioFrame *p_buffer, float p_rate_scale, i
 
 	if (out_rate <= 0.0f) {
 		out_rate = 44100.0f;
-	}
-	if (mixed > 0 && speed > 0.0f) {
-		const double add_us = ((double)mixed / (double)out_rate) * (double)speed * 1000000.0;
-		if (add_us > 0.0) {
-			position_us.fetch_add((uint64_t)add_us, std::memory_order_acq_rel);
-		}
-	}
-	const double duration_limit = cached_duration_limit.load(std::memory_order_relaxed);
-	if (duration_limit > 0.0 && (double)position_us.load(std::memory_order_acquire) / 1000000.0 >= duration_limit) {
-		active.store(false, std::memory_order_release);
 	}
 
 	const int rms_frames = mixed > 0 ? mixed : 0;
@@ -809,7 +825,7 @@ void AudioStreamPlaybackSymphony::transition_to_lod(int p_lod_tier) {
 		return;
 	}
 
-	CompiledGraph *new_graph = stream->compile_lod_graph(p_lod_tier);
+	CompiledGraph *new_graph = stream->compile_lod_graph(p_lod_tier, voice_seed);
 	if (!new_graph) {
 		return;
 	}

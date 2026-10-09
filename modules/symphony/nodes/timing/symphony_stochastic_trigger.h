@@ -4,7 +4,7 @@
 #include "../../core/symphony_operator_registry.h"
 #include "../../core/symphony_arena_allocator.h"
 #include "../../core/symphony_trigger.h"
-#include "../../core/symphony_render_seed.h"
+#include "../../core/symphony_seed.h"
 
 // Poisson-like random trigger emitter. Fires trigger impulses at a rate
 // controlled by density (events/sec). Essential for rain, fire crackle, insects.
@@ -76,7 +76,7 @@ public:
 		desc.inputs.push_back({ "density", SymphonyPinType::FLOAT, false });
 		desc.outputs.push_back({ "trigger_out", SymphonyPinType::TRIGGER, false });
 		desc.params.push_back({ "density", 5.0f, 0.0f, 1000.0f, 0.1f });
-		desc.params.push_back({ "seed", 0.0f, 0.0f, 4294967295.0f, 1.0f });
+		desc.params.push_back({ "seed", 0.0f, 0.0f, (float)SYMPHONY_SEED_PARAM_MAX, 1.0f });
 		desc.state_size = sizeof(SymphonyStochasticTrigger);
 		desc.state_align = alignof(SymphonyStochasticTrigger);
 		desc.create_fn = &SymphonyStochasticTrigger::create;
@@ -85,17 +85,10 @@ public:
 
 	static SymphonyOperator *create(ArenaAllocator &p_arena, const HashMap<StringName, Variant> &p_params, float p_mix_rate) {
 		float density = p_params.has("density") ? (float)p_params["density"] : 5.0f;
-		uint32_t seed = p_params.has("seed") ? (uint32_t)(float)p_params["seed"] : 0;
-		// Seed 0 is explicit only when an offline render seed is installed.
-		// Otherwise keep a per-voice value derived from the arena address.
-		if (seed == 0) {
-			uint32_t render_seed = SymphonyRenderSeed::get();
-			if (render_seed != 0u) {
-				seed = render_seed;
-			} else {
-				seed = (uint32_t)(uintptr_t)&p_arena ^ 0xDEADBEEF;
-				seed = seed * 1664525u + 1013904223u;
-			}
+		const SymphonyCompileContext &ctx = symphony_compile_context();
+		uint32_t seed = symphony_node_seed(ctx.voice_seed, ctx.node_id, symphony_authored_seed(p_params, 0), false);
+		if (seed == 0u) {
+			seed = 1u;
 		}
 		void *mem = p_arena.alloc(sizeof(SymphonyStochasticTrigger), alignof(SymphonyStochasticTrigger));
 		return new (mem) SymphonyStochasticTrigger(p_mix_rate, density, seed);

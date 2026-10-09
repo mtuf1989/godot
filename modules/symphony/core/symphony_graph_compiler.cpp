@@ -5,6 +5,7 @@
 #include "symphony_memory_budget.h"
 #include "symphony_graph_package_retirement.h"
 #include "symphony_realtime_scope.h"
+#include "symphony_seed.h"
 
 #include <cmath>
 #include <limits>
@@ -153,7 +154,7 @@ static bool _validate_graph_structure(const GraphDescription &p_desc, float p_mi
 	return r_result.errors.is_empty();
 }
 
-GraphCompiler::CompileResult GraphCompiler::compile(const GraphDescription &p_desc, float p_mix_rate, const String &p_resource_path) {
+GraphCompiler::CompileResult GraphCompiler::compile(const GraphDescription &p_desc, float p_mix_rate, const String &p_resource_path, uint64_t p_voice_seed) {
 	symphony_rt_note(SymphonyRTViolation::Compile, "GraphCompiler::compile");
 	CompileResult result;
 	const OperatorRegistry *registry = OperatorRegistry::get_singleton();
@@ -654,6 +655,13 @@ GraphCompiler::CompileResult GraphCompiler::compile(const GraphDescription &p_de
 			!SymphonyCheckedMath::add(planned_non_arena, sizeof(int32_t) * (size_t)node_count, planned_non_arena)) {
 		return plan_fail("Non-arena package size overflow.");
 	}
+	if (total_promotions > 0) {
+		// promotions_after_offsets plus a worst-case head-publish index per node.
+		if (!SymphonyCheckedMath::add(planned_non_arena, sizeof(int32_t) * (size_t)(node_count + 1), planned_non_arena) ||
+				!SymphonyCheckedMath::add(planned_non_arena, sizeof(int32_t) * (size_t)node_count, planned_non_arena)) {
+			return plan_fail("Non-arena package size overflow.");
+		}
+	}
 	result.non_arena_bytes = planned_non_arena;
 	result.route_metadata_bytes = planned_non_arena;
 	size_t total_package = 0;
@@ -747,6 +755,23 @@ GraphCompiler::CompileResult GraphCompiler::compile(const GraphDescription &p_de
 	compiled->node_ids = memnew_arr(int32_t, node_count);
 	compiled->operator_types = memnew_arr(StringName, node_count);
 
+	HashMap<int32_t, int32_t> node_idx_to_exec_order;
+	for (int32_t s = 0; s < node_count; s++) {
+		node_idx_to_exec_order.insert(sorted_order[s], s);
+	}
+
+	// Parallel to compiled->promotions while they are still in consumer order.
+	Vector<int32_t> promotion_after_op;
+	Vector<int32_t> promotion_producer_exec;
+	if (total_promotions > 0) {
+		promotion_after_op.resize(total_promotions);
+		promotion_producer_exec.resize(total_promotions);
+		for (int32_t i = 0; i < total_promotions; i++) {
+			promotion_after_op.write[i] = -1;
+			promotion_producer_exec.write[i] = -1;
+		}
+	}
+
 	for (int32_t s = 0; s < node_count; s++) {
 		int32_t node_idx = sorted_order[s];
 		const NodeDesc &nd = desc_ref.nodes[node_idx];
@@ -754,7 +779,11 @@ GraphCompiler::CompileResult GraphCompiler::compile(const GraphDescription &p_de
 
 		// Create operator via factory function (placement new inside arena).
 		compiled->arena.mark();
-		SymphonyOperator *op = desc->create_fn(compiled->arena, nd.params, p_mix_rate);
+		SymphonyOperator *op = nullptr;
+		{
+			SymphonyCompileContextScope seed_scope(p_voice_seed, StringName(String::num_int64(nd.id)));
+			op = desc->create_fn(compiled->arena, nd.params, p_mix_rate);
+		}
 		if (!op) {
 			compiled->arena.rewind_to_mark();
 			result.errors.push_back(vformat("Failed to create operator '%s' (node %d).", String(desc->type_name), nd.id));
@@ -797,6 +826,12 @@ GraphCompiler::CompileResult GraphCompiler::compile(const GraphDescription &p_de
 					}
 					compiled->promotions[promotion_idx].src = (const float *)output_buffers[src.source_node_idx][src.source_pin];
 					compiled->promotions[promotion_idx].dst = promo_buf;
+					const int32_t producer_exec = node_idx_to_exec_order.has(src.source_node_idx) ? node_idx_to_exec_order[src.source_node_idx] : -1;
+					const bool from_graph_input = desc_ref.nodes[src.source_node_idx].type_name == StringName("GraphInput");
+					// Graph-input promotions stay at the top (after_op < 0). Every
+					// other producer fills its promotions immediately after it runs.
+					promotion_producer_exec.write[promotion_idx] = producer_exec;
+					promotion_after_op.write[promotion_idx] = from_graph_input ? -1 : producer_exec;
 					promotion_idx++;
 					input_ptrs[p] = promo_buf;
 				} else {
@@ -814,16 +849,78 @@ GraphCompiler::CompileResult GraphCompiler::compile(const GraphDescription &p_de
 		op->bind_pins(input_ptrs, output_ptrs);
 	}
 
+	// Group promotions: graph-input producers at the head, everyone else in a
+	// per-operator range filled right after that operator runs.
+	if (promotion_idx > 0) {
+		Vector<int32_t> after_counts;
+		after_counts.resize(node_count);
+		for (int32_t i = 0; i < node_count; i++) {
+			after_counts.write[i] = 0;
+		}
+		int32_t head_count = 0;
+		for (int32_t i = 0; i < promotion_idx; i++) {
+			const int32_t after = promotion_after_op[i];
+			if (after < 0 || after >= node_count) {
+				head_count++;
+			} else {
+				after_counts.write[after]++;
+			}
+		}
+
+		compiled->promotion_head_count = head_count;
+		compiled->promotions_after_offsets = memnew_arr(int32_t, node_count + 1);
+		compiled->promotions_after_offsets[0] = head_count;
+		for (int32_t i = 0; i < node_count; i++) {
+			compiled->promotions_after_offsets[i + 1] = compiled->promotions_after_offsets[i] + after_counts[i];
+		}
+
+		CompiledGraph::Promotion *ordered = memnew_arr(CompiledGraph::Promotion, promotion_idx);
+		Vector<int32_t> cursor;
+		cursor.resize(node_count);
+		for (int32_t i = 0; i < node_count; i++) {
+			cursor.write[i] = compiled->promotions_after_offsets[i];
+		}
+		int32_t head_cursor = 0;
+		Vector<int32_t> publish;
+		for (int32_t i = 0; i < promotion_idx; i++) {
+			const int32_t after = promotion_after_op[i];
+			if (after < 0 || after >= node_count) {
+				ordered[head_cursor++] = compiled->promotions[i];
+				const int32_t producer = promotion_producer_exec[i];
+				if (producer >= 0) {
+					bool seen = false;
+					for (int32_t p = 0; p < publish.size(); p++) {
+						if (publish[p] == producer) {
+							seen = true;
+							break;
+						}
+					}
+					if (!seen) {
+						publish.push_back(producer);
+					}
+				}
+			} else {
+				ordered[cursor.write[after]++] = compiled->promotions[i];
+			}
+		}
+		for (int32_t i = 0; i < promotion_idx; i++) {
+			compiled->promotions[i] = ordered[i];
+		}
+		memdelete_arr(ordered);
+
+		if (publish.size() > 0) {
+			compiled->head_publish_count = publish.size();
+			compiled->head_publish_ops = memnew_arr(int32_t, publish.size());
+			for (int32_t i = 0; i < publish.size(); i++) {
+				compiled->head_publish_ops[i] = publish[i];
+			}
+		}
+	}
+
 	// --- Phase 8: Build silence propagation tables ---
 	// For each operator in execution order, record which other operators (by execution
 	// index) feed AUDIO data into it. This enables the execute() loop to skip operators
 	// whose audio inputs are all inactive (silent).
-
-	// Map from original node_idx → execution order index (sorted position).
-	HashMap<int32_t, int32_t> node_idx_to_exec_order;
-	for (int32_t s = 0; s < node_count; s++) {
-		node_idx_to_exec_order.insert(sorted_order[s], s);
-	}
 
 	// Mark operators with silence behavior from the descriptor (improve_plan §7).
 	for (int32_t s = 0; s < node_count; s++) {

@@ -71,8 +71,8 @@ public:
 	GraphDescription &get_graph_for_tier_mut(int p_tier);
 	void set_graph_for_tier(int p_tier, const GraphDescription &p_desc);
 
-	CompiledGraph *compile_graph() const;
-	CompiledGraph *compile_lod_graph(int p_lod_tier) const;
+	CompiledGraph *compile_graph(uint64_t p_voice_seed = 0) const;
+	CompiledGraph *compile_lod_graph(int p_lod_tier, uint64_t p_voice_seed = 0) const;
 	[[nodiscard]] int get_lod_count() const; // Returns 1 if no LOD graphs, up to 3 (LOD 0 + 2 variants)
 	[[nodiscard]] int get_lod_variant_count() const { return lod_graphs.size(); }
 

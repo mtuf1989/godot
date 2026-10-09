@@ -6,7 +6,7 @@
 #include "core/math/vector3.h"
 #include "core/templates/hash_map.h"
 #include "core/templates/vector.h"
-#include "symphony_seqlock.h"
+#include "../core/symphony_seqlock.h"
 #include "occlusion_solver.h"
 #include "spatial_graph_wrapper.h"
 #include "probe_scheduler.h"

@@ -3,6 +3,7 @@
 #include "audio_stream_playback_symphony.h"
 #include "../core/symphony_denormal_guard.h"
 #include "../core/symphony_operator_registry.h"
+#include "../core/symphony_platform_time.h"
 #include "../core/symphony_render_seed.h"
 
 #include "core/io/file_access.h"
@@ -239,11 +240,12 @@ Dictionary AudioStreamSymphony::render_offline(double p_duration_seconds, int64_
 				trigger_fired.write[t] = 1;
 			}
 		}
-		int produced = symphony->mix(block, 1.0f, frames_now);
+		const uint64_t block_start = symphony_time_usec();
+		int produced = symphony->mix_graph_rate(block, frames_now);
+		cost_us += (double)(symphony_time_usec() - block_start);
 		if (produced <= 0) {
 			break;
 		}
-		cost_us += symphony->get_voice_cpu_microseconds();
 		for (int i = 0; i < produced && written < total_frames; i++) {
 			frames.write[written] = block[i];
 			float sample = 0.5f * (block[i].left + block[i].right);

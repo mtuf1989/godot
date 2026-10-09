@@ -39,5 +39,7 @@ public:
 	// Compile a graph description into an executable CompiledGraph.
 	// p_mix_rate: the audio sample rate (needed by operators for rate-dependent calculations).
 	// p_resource_path: included in structured diagnostics. Empty for anonymous graphs.
-	static CompileResult compile(const GraphDescription &p_desc, float p_mix_rate, const String &p_resource_path = String());
+	// p_voice_seed is mixed into per-node PRNG seeds (see symphony_seed.h).
+	// Offline renders pass the render seed; live voices pass the playback's seed.
+	static CompileResult compile(const GraphDescription &p_desc, float p_mix_rate, const String &p_resource_path = String(), uint64_t p_voice_seed = 0);
 };

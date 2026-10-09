@@ -5,9 +5,13 @@ Update this file with each commit that changes a public API.
 
 ## Status
 
-- **Milestone:** M3 C++ complete. Tech-fix plan **P0 + P1** landed (shared helpers; voice lifetime / denormals / RTPC atomics / LOD hysteresis).
+- **Milestone:** M3 C++ complete. Tech-fix plan **P0 + P1 + P1b** landed (shared helpers; voice lifetime / denormals / RTPC atomics / LOD hysteresis; promotion order, seqlock, per-voice seeds, frame counter, offline rate).
 - **Branch:** `features/symphony_fixed`
-- **Tests:** 210 Symphony cases (2026-10-09). Editor TSan (`.san`) P0 baseline: suite green with **1** data-race warning. Re-run `.san` after P1 to confirm new Symphony-frame races = 0.
+- **Tests:** 218 Symphony cases (2026-10-09), including P1b. Editor TSan (`.san`) P0 baseline: suite green with **1** data-race warning. Re-run `.san` after P1 before closing S0.
+- **SeqLock** moved from `spatial/symphony_seqlock.h` to `core/symphony_seqlock.h`.
+- **PhaseVocoder** no longer has a `seed` parameter.
+- **Noise** gained `seed` and `deterministic_seed`. Seed parameters on Noise, GrainCloud and StochasticTrigger clamp to 16777215.
+- **render_offline** writes graph-rate frames and does not follow the output device.
 
 ## Completed
 

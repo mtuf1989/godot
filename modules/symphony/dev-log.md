@@ -1,5 +1,9 @@
 # Dev Log — Symphony Audio System
 
+## P1b (2026-10-09)
+
+Float→Audio promotions copy after the producer (graph inputs at the top of the block). SeqLock stores atomic words and lives in `core/`. Each playback has one voice seed, reused for LOD recompiles; `render_offline` uses the render seed. Playback position is `frames_rendered / graph_rate`. Offline renders call the unresampled graph-rate mix.
+
 ## User Guide Topics (to document)
 
 The following topics need proper user-facing documentation before the module is used by others. Currently they exist only as dev-log notes or source comments.

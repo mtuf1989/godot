@@ -8,7 +8,7 @@
 TEST_FORCE_LINK(test_symphony_spatial_engine)
 
 #include "modules/symphony/spatial/spatial_acoustics_engine.h"
-#include "modules/symphony/spatial/symphony_seqlock.h"
+#include "modules/symphony/core/symphony_seqlock.h"
 
 #include "core/os/os.h"
 #include "core/os/thread.h"

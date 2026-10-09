@@ -4,6 +4,8 @@
 #include "../core/symphony_graph_flattener.h"
 #include "../core/symphony_operator_registry.h"
 #include "../core/symphony_memory_budget.h"
+#include "../core/symphony_render_seed.h"
+#include "../core/symphony_seed.h"
 
 #include "core/object/class_db.h"
 #include "core/io/resource.h"
@@ -502,7 +504,7 @@ void AudioStreamSymphony::set_graph_for_tier(int p_tier, const GraphDescription 
 	set_lod_variant(p_tier, p_desc);
 }
 
-CompiledGraph *AudioStreamSymphony::compile_graph() const {
+CompiledGraph *AudioStreamSymphony::compile_graph(uint64_t p_voice_seed) const {
 	// Pre-pass: flatten any SubGraph nodes into a single graph.
 	String owner_path = get_path();
 	GraphFlattener::FlattenResult flat = GraphFlattener::flatten(graph_desc, owner_path);
@@ -513,7 +515,7 @@ CompiledGraph *AudioStreamSymphony::compile_graph() const {
 		return nullptr;
 	}
 
-	GraphCompiler::CompileResult result = GraphCompiler::compile(flat.graph, mix_rate, owner_path);
+	GraphCompiler::CompileResult result = GraphCompiler::compile(flat.graph, mix_rate, owner_path, p_voice_seed);
 	if (!result.success()) {
 		for (const String &err : result.errors) {
 			ERR_PRINT(vformat("Symphony compile error: %s", err));
@@ -858,8 +860,12 @@ Ref<AudioStreamPlayback> AudioStreamSymphony::instantiate_playback() {
 	// resource preview generator). Procedural audio has no meaningful waveform
 	// preview, and compiling + executing DSP on the preview thread causes heap
 	// pressure that corrupts other threads (manifests as embree crash on macOS).
+	const uint32_t render_seed = SymphonyRenderSeed::get();
+	const uint64_t voice_seed = render_seed != 0u ? (uint64_t)render_seed : symphony_draw_voice_seed();
+	playback->voice_seed = voice_seed;
+
 	if (graph_desc.nodes.size() > 0 && Thread::is_main_thread()) {
-		CompiledGraph *compiled = compile_graph();
+		CompiledGraph *compiled = compile_graph(voice_seed);
 		if (compiled) {
 			playback->swap_graph(compiled);
 		}
@@ -886,9 +892,9 @@ bool AudioStreamSymphony::is_monophonic() const {
 
 // --- LOD System ---
 
-CompiledGraph *AudioStreamSymphony::compile_lod_graph(int p_lod_tier) const {
+CompiledGraph *AudioStreamSymphony::compile_lod_graph(int p_lod_tier, uint64_t p_voice_seed) const {
 	if (p_lod_tier <= 0) {
-		return compile_graph(); // LOD 0 = main graph
+		return compile_graph(p_voice_seed); // LOD 0 = main graph
 	}
 	int lod_index = p_lod_tier - 1; // lod_graphs[0] = LOD 1, lod_graphs[1] = LOD 2
 	if (lod_index >= lod_graphs.size()) {
@@ -896,12 +902,12 @@ CompiledGraph *AudioStreamSymphony::compile_lod_graph(int p_lod_tier) const {
 		if (lod_graphs.size() > 0) {
 			lod_index = lod_graphs.size() - 1;
 		} else {
-			return compile_graph(); // No LOD variants, use main graph
+			return compile_graph(p_voice_seed); // No LOD variants, use main graph
 		}
 	}
 	const GraphDescription &lod_desc = lod_graphs[lod_index];
 	if (lod_desc.nodes.size() == 0) {
-		return compile_graph(); // Empty LOD, fall back
+		return compile_graph(p_voice_seed); // Empty LOD, fall back
 	}
 
 	// Lint: warn if expensive operators appear in LOD 2 graphs.
@@ -926,7 +932,7 @@ CompiledGraph *AudioStreamSymphony::compile_lod_graph(int p_lod_tier) const {
 		}
 		return nullptr;
 	}
-	GraphCompiler::CompileResult result = GraphCompiler::compile(flat.graph, mix_rate, owner_path);
+	GraphCompiler::CompileResult result = GraphCompiler::compile(flat.graph, mix_rate, owner_path, p_voice_seed);
 	if (!result.success()) {
 		for (const String &err : result.errors) {
 			ERR_PRINT(vformat("Symphony LOD compile error (tier %d): %s", p_lod_tier, err));

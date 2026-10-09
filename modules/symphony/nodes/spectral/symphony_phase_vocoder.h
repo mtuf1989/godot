@@ -367,7 +367,6 @@ public:
 		desc.params.push_back({ "overlap", 4.0f, 2.0f, 8.0f, 1.0f });
 		desc.params.push_back({ "time_stretch", 1.0f, 0.5f, 2.0f, 0.01f });
 		desc.params.push_back({ "pitch_shift", 0.0f, -12.0f, 12.0f, 0.01f });
-		desc.params.push_back({ "seed", 1.0f, 1.0f, 999999.0f, 1.0f });
 		desc.state_size = sizeof(SymphonyPhaseVocoder);
 		desc.state_align = alignof(SymphonyPhaseVocoder);
 		// At max fft_size=8192: allocates 7 buffers of N floats (input_ring×2, output_ring×2,

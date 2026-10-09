@@ -495,7 +495,7 @@ Parameter values are floats unless noted. Enum parameters take the integer index
 | Operator | Inputs → Outputs | Parameters |
 |----------|------------------|------------|
 | **Oscillator** | `frequency` (audio), `pulse_width` → `output` | `frequency` Hz, `waveform` (0 sine, 1 saw, 2 square, 3 triangle, 4 pwm), `pulse_width` |
-| **Noise** | — → `output` | `mode` (0 white, 1 pink) |
+| **Noise** | — → `output` | `mode` (0 white, 1 pink), `seed` (0–16777215), `deterministic_seed` (off: mix the seed with the voice; on: the authored seed alone, so every voice matches) |
 | **LFO** | `rate`, `amplitude` → `output` (float) | `rate` Hz, `amplitude`, `waveform` (0 sine, 1 triangle, 2 saw, 3 square) |
 | **Constant** | — → `output` | `value` |
 | **WavePlayer** | `gate` (trigger), `pitch` → `output`, `finished` (trigger) | `resource_path`, `bake_audio`, `loop_mode` (0 none, 1 forward, 2 ping-pong), `loop_start` / `loop_end` (samples; end 0 = file end), `pitch_scale`, `auto_play` |
@@ -543,7 +543,7 @@ Note that `LFO` and `Oscillator` number their waveforms differently.
 |----------|------------------|------------|
 | **Clock** | — → `trigger` | `bpm`, `subdivision` (ticks per beat, 0.25–16) |
 | **TriggerDelay** | `trigger` → `trigger` | `delay_ms` |
-| **StochasticTrigger** | `density` → `trigger_out` | `density` (events/s), `seed` (0 = the `render_offline` seed when rendering offline, otherwise a different value per voice) |
+| **StochasticTrigger** | `density` → `trigger_out` | `density` (events/s), `seed` (0–16777215, mixed with the voice seed). `render_offline` uses its render seed as the voice seed, so the same seed repeats. |
 
 ### Delay and Reverb
 
@@ -576,7 +576,7 @@ Note that `LFO` and `Oscillator` number their waveforms differently.
 
 | Operator | Inputs → Outputs | Parameters |
 |----------|------------------|------------|
-| **PhaseVocoder** | `audio_in`, `time_stretch`, `pitch_shift` → `audio_out` | `fft_size`, `overlap`, `time_stretch` (0.5–2, duration-based), `pitch_shift` (semitones), `seed` |
+| **PhaseVocoder** | `audio_in`, `time_stretch`, `pitch_shift` → `audio_out` | `fft_size`, `overlap`, `time_stretch` (0.5–2, duration-based), `pitch_shift` (semitones) |
 | **SpectralGate** | `audio_in`, `threshold_db`, `reduction_db` → `audio_out` | `fft_size`, `overlap`, `threshold_db`, `reduction_db` |
 | **ResonatorAnalyzer** | `audio_in` → `band_0` … `band_31` (float) | `num_bands` (≤ 32), `responsiveness`, optional `frequencies` (float array, Hz; log-spaced when absent) |
 
@@ -2056,6 +2056,14 @@ func _on_music_slider_changed(value: float):
 ---
 
 ## Changelog
+
+### P1b — Foundation extras (2026-10-09)
+
+- **Float→Audio promotion:** a FLOAT producer feeding an AUDIO pin was copied at the start of the block, so the consumer heard the previous block. Promotions now copy immediately after their producer. Graph-input promotions stay at the top of the block, after that input publishes its value.
+- **SeqLock:** the payload copy was a data race suppressed with a TSan annotation, and the fences did not match the atomic-word pattern. Words are now `std::atomic<uint32_t>`. The header lives in `core/symphony_seqlock.h`.
+- **Noise:** each voice draws one seed and reuses it across LOD recompiles. `seed` mixes with that voice seed; `deterministic_seed` keeps the authored sequence. `render_offline` uses the render seed as the voice seed, so a repeated render matches sample for sample. The same mixing applies to GrainCloud and StochasticTrigger. PhaseVocoder's unused `seed` parameter is gone. Authored seeds stop at 16777215, the last integer a float32 stores exactly.
+- **Playback position:** `position_us` truncated every mix to whole microseconds, so a 10 minute voice could drift by tens of milliseconds. Position is now `frames_rendered / graph_rate`, exact to a frame.
+- **render_offline:** it asked `mix()` for graph-rate frames while `mix()` resampled to the device, so a 48 kHz graph rendered on a 44.1 kHz device was the wrong pitch and the wrong length. Offline renders now run the unresampled graph-rate path.
 
 ### v2.0.1 — Corrections: Guide, Schema, DSP and Presets (2026-10-07)
 

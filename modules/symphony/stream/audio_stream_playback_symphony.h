@@ -72,8 +72,13 @@ private:
 	// Manager-owned (written inside enforce_voice_limits only): when the floor last changed.
 	std::atomic<uint64_t> floor_changed_us{ UINT64_MAX };
 
-	// Monotonic authored time in microseconds: rendered output frames × effective speed.
-	std::atomic<uint64_t> position_us{ 0 };
+	// Graph-rate frames actually rendered. get_playback_position() is frames / graph rate.
+	// Replaces the truncated microsecond accumulator (it drifted by tens of milliseconds
+	// over a few minutes whenever frames/rate was not an integer number of microseconds).
+	std::atomic<uint64_t> frames_rendered{ 0 };
+	// Drawn once in instantiate_playback and reused for every LOD recompile of this voice.
+	// Main thread only (compile never runs on the audio thread).
+	uint64_t voice_seed = 0;
 	std::atomic<bool> unsupported_seek{ false };
 
 	// start() requests consumed on the mixing thread.
@@ -111,6 +116,7 @@ private:
 	void _adopt_pending(PreparedGraphPackage *p_pending);
 	void _cache_stream_metadata();
 	void _update_cost_stats(uint64_t p_mix_us, int p_frames, float p_out_rate);
+	void _note_rendered_frames(int p_frames);
 	void _sync_voice_lod();
 
 protected:
@@ -124,6 +130,11 @@ public:
 	virtual bool is_playing() const override;
 	virtual int get_loop_count() const override;
 	virtual double get_playback_position() const override;
+	// Graph-rate frame counter. Music transport (P7) schedules against this.
+	[[nodiscard]] uint64_t get_frames_rendered() const { return frames_rendered.load(std::memory_order_acquire); }
+	// Unresampled graph-rate render. render_offline uses this so the WAV rate,
+	// frame count and pitch do not depend on the output device.
+	int mix_graph_rate(AudioFrame *p_buffer, int p_frames);
 	virtual void seek(double p_time) override;
 	virtual int mix(AudioFrame *p_buffer, float p_rate_scale, int p_frames) override;
 

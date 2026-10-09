@@ -26,12 +26,22 @@ struct CompiledGraph {
 	int32_t trigger_buffer_count = 0;
 
 	// Float→Audio promotion: pairs of (source float*, dest audio buffer*).
+	// Layout: [0, promotion_head_count) are filled at the top of execute()
+	// (graph-input producers). The rest are grouped by producer:
+	// promotions[promotions_after_offsets[i] .. promotions_after_offsets[i+1])
+	// are filled immediately after operator i runs.
 	struct Promotion {
 		const float *src;
 		float *dst;
 	};
 	Promotion *promotions = nullptr;
 	int32_t promotion_count = 0;
+	int32_t promotion_head_count = 0;
+	// Exec indices of graph-input producers. They run once, before the head
+	// promotions, and are not run again in the operator loop.
+	int32_t *head_publish_ops = nullptr;
+	int32_t head_publish_count = 0;
+	int32_t *promotions_after_offsets = nullptr; // Size: operator_count + 1. Heap.
 
 	// --- Silence propagation support ---
 	// For each operator [i], audio_input_ops[audio_input_offsets[i]..audio_input_offsets[i+1])
@@ -59,21 +69,51 @@ struct CompiledGraph {
 	// Execute all operators for one micro-block with silence propagation.
 	void execute(int32_t p_num_frames) {
 		SymphonyRealtimeScope rt_scope;
-		// Fill promotion buffers (Float→Audio).
-		for (int32_t i = 0; i < promotion_count; i++) {
-			float val = promotions[i].src[0];
-			SYMPHONY_ASSERT_FINITE_SCALAR(val);
-			float *SYMPHONY_RESTRICT dst = promotions[i].dst;
-			for (int32_t s = 0; s < p_num_frames; s++) {
-				dst[s] = val;
+
+		auto fill_promotions = [&](int32_t begin, int32_t end) {
+			for (int32_t i = begin; i < end; i++) {
+				const float val = promotions[i].src ? promotions[i].src[0] : 0.0f;
+				SYMPHONY_ASSERT_FINITE_SCALAR(val);
+				float *SYMPHONY_RESTRICT dst = promotions[i].dst;
+				for (int32_t s = 0; s < p_num_frames; s++) {
+					dst[s] = val;
+				}
 			}
+		};
+
+		auto was_published = [&](int32_t op_index) -> bool {
+			for (int32_t h = 0; h < head_publish_count; h++) {
+				if (head_publish_ops[h] == op_index) {
+					return true;
+				}
+			}
+			return false;
+		};
+
+		// Graph-input values are published here, then their Float→Audio promotions
+		// are filled before any consumer runs. One execute per input: the main
+		// loop skips these operators so a concurrent set_value is sampled once.
+		for (int32_t h = 0; h < head_publish_count; h++) {
+			const int32_t op_index = head_publish_ops[h];
+			if (op_index < 0 || op_index >= operator_count || !operators[op_index]) {
+				continue;
+			}
+			operators[op_index]->activity = 1;
+			operators[op_index]->execute(p_num_frames);
 		}
+		if (promotion_head_count > 0) {
+			fill_promotions(0, promotion_head_count);
+		}
+
 		// Clear all trigger buffers at the start of each micro-block
 		for (int32_t i = 0; i < trigger_buffer_count; i++) {
 			trigger_buffers[i]->clear();
 		}
 		// Execute operators in topological order with silence propagation.
 		for (int32_t i = 0; i < operator_count; i++) {
+			if (was_published(i)) {
+				continue;
+			}
 			SymphonyOperator *op = operators[i];
 
 			if (op->skippable && audio_input_offsets) {
@@ -98,6 +138,9 @@ struct CompiledGraph {
 								memset(output_audio_buffers[b], 0, sizeof(float) * p_num_frames);
 							}
 							op->activity = 0;
+							if (promotions_after_offsets) {
+								fill_promotions(promotions_after_offsets[i], promotions_after_offsets[i + 1]);
+							}
 							continue;
 						}
 						// STATEFUL_TAIL with activity still set: fall through and execute.
@@ -121,6 +164,9 @@ struct CompiledGraph {
 				}
 			}
 #endif
+			if (promotions_after_offsets) {
+				fill_promotions(promotions_after_offsets[i], promotions_after_offsets[i + 1]);
+			}
 		}
 	}
 
@@ -171,6 +217,16 @@ struct CompiledGraph {
 			memdelete_arr(output_buffer_offsets);
 			output_buffer_offsets = nullptr;
 		}
+		if (promotions_after_offsets) {
+			memdelete_arr(promotions_after_offsets);
+			promotions_after_offsets = nullptr;
+		}
+		if (head_publish_ops) {
+			memdelete_arr(head_publish_ops);
+			head_publish_ops = nullptr;
+		}
+		head_publish_count = 0;
+		promotion_head_count = 0;
 		operators = nullptr;
 		operator_count = 0;
 		trigger_buffers = nullptr;
