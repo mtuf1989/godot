@@ -29,15 +29,22 @@ Status as of 2026-10-09. **P8b** and **P9** code gates are done. Designer listen
 |---|---|
 | State-in-locals + FeedbackPath zero-extra + compile cache | `test_symphony_p9.cpp` |
 
-## Deferred (listening / profiling)
+## Closed: denser lifetime + profile harness
+
+| Gate | Evidence |
+|---|---|
+| Lifetime T2/T4/T6–T9/T11/T13–T16 | `test_symphony_lifetime.cpp` |
+| Callback P50/P95/P99 smoke (44.1/48 kHz) | `test_symphony_profile.cpp` (3 s always) |
+| Full 30‑min gate | Optional: `SYMPHONY_PROFILE_SECONDS=1800` + prefer `template_release` |
+
+## Deferred (need human / Linux)
 
 | Gate | Why deferred |
 |---|---|
-| 30-minute release callback P50/P95/P99 at 44.1/48 kHz | Manual release profiling |
-| RTSan CI | Documented follow-up in `MIGRATION.md` (Linux LLVM ≥ 20) |
-| Designer listening / audition scene polish | Manual; not blocked on code |
-| Full stretch fixture matrix (tempo endpoints × ±6 st WAV renders) | Needs authored WAV assets + listening |
-| Lifetime denser cases T2/T4/… | Optional coverage (Progress notes) |
+| RTSan CI | Needs Linux LLVM ≥ 20 CI (documented in `MIGRATION.md`) |
+| Designer listening / audition scene polish | Manual |
+| Full stretch fixture matrix | Authored WAV assets + listening |
+| Accept 30‑min P99 gate numbers | Run harness above; human sign-off of capacity |
 
 ## How to re-run
 
@@ -45,6 +52,9 @@ Status as of 2026-10-09. **P8b** and **P9** code gates are done. Designer listen
 # Godot (from engine root)
 scons platform=macos target=editor arch=arm64 tests=yes module_raycast_enabled=no -j$(sysctl -n hw.ncpu)
 bin/godot.macos.editor.arm64 --headless --test --test-case='*Symphony*'
+
+# Optional 30-min callback profile (prefer template_release binary)
+SYMPHONY_PROFILE_SECONDS=1800 bin/godot.macos.editor.arm64 --headless --test --test-case='*Symphony*Profile*30*'
 
 # game-template
 node addons/agent_cli/gd.mjs test test/addons/symphony_audio/procedural_composer_test.gd

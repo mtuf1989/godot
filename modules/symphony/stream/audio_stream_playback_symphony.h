@@ -190,6 +190,8 @@ public:
 
 	// Test hook: seed the smoothed cost and mark the voice as freshly mixed.
 	void _test_set_cost_ewma(float p_pct);
+	// Test hook: apply one cost-sample through the spike clamp + asymmetric EWMA.
+	void _test_apply_cost_sample(float p_sample_pct, float p_deadline_s = 512.0f / 48000.0f);
 
 	~AudioStreamPlaybackSymphony();
 };

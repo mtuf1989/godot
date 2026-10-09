@@ -9,9 +9,9 @@
 | **As of** | 2026-10-09 |
 | **Branch** | `master` (ahead of `origin/master`; not pushed) |
 | **Done** | **P0–P9**, **P10**, music **N1–N3**, **G1–G2**, **MusicStream**, **V1** automated qualification; **S0 / N0** closed. |
-| **Next** | Listening / denser lifetime / 30‑min release profiling / RTSan CI (doc follow-up) as needed. |
-| **Stage** | S5 Qualification ✅ (automated + P8b/P9); listening / 30‑min profiling deferred |
-| **C++ tests** | 305/305 `*Symphony*` green on `bin/godot.macos.editor.arm64` |
+| **Next** | Designer listening / stretch fixtures / RTSan CI (Linux) / accept 30‑min profile numbers as needed. |
+| **Stage** | S5 Qualification ✅ (automated + P8b/P9 + denser lifetime + profile harness); listening / RTSan deferred |
+| **C++ tests** | 319/319 `*Symphony*` green on `bin/godot.macos.editor.arm64` |
 | **TSan** | `.san` after P1b: **1** warning (same as P0 `DynamicRangeHigh`); new Symphony-frame races = 0 |
 
 ### Commits
@@ -39,6 +39,7 @@
 | V1 | `b10b24d6ca` (+ gt `a700bb3a`) | Timing/callback/replace tests; DemoScoreFactory; 1000-seed batch; `QUALIFICATION.md` |
 | P8b | `7b5950da02` (+ gt `b6e4fc04`) | Category caps; shared `_admit` (N8); STEAL_QUIETEST (N12); GDScript admit tiers/caps |
 | P9 | `f5f378a49e` | State-in-locals; FeedbackPath zero-extra; flatten cache + arena freelist; `test_symphony_p9.cpp` |
+| Lifetime+Profile | *(this commit)* | Denser T2/T4/T6–T9/T11/T13–T16; `test_symphony_profile.cpp` harness |
 
 ### P1 leftovers (closed — optional coverage only)
 

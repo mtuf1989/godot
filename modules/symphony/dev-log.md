@@ -1,5 +1,9 @@
 # Dev Log — Symphony Audio System
 
+## Lifetime denser + profile harness (2026-10-09)
+
+Optional P1 lifetime cases T2/T4/T6–T9/T11/T13–T16 in `test_symphony_lifetime.cpp`. Callback profile harness `test_symphony_profile.cpp` (3 s smoke at 44.1/48 kHz; full 30 min via `SYMPHONY_PROFILE_SECONDS=1800`). Suite: 319/319. RTSan CI still deferred (no Linux).
+
 ## P9 (2026-10-09)
 
 State-in-locals on SVFilter/Oscillator/OnePole/Compressor/ADSR/FM/Clock/DelayLine (+ Biquad/DC already); FeedbackPath zero-extra pass-through (graph impulse = 1 micro-block); `AudioStreamSymphony` flatten plan cache + arena freelist; `test_symphony_p9.cpp`; user_guide Writing operators. Suite: 305/305. RTSan CI / 30‑min profiling remain deferred.

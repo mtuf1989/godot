@@ -218,6 +218,22 @@ void AudioStreamPlaybackSymphony::_test_set_cost_ewma(float p_pct) {
 	last_mix_seq.store(mgr ? mgr->get_callback_seq() : 0, std::memory_order_relaxed);
 }
 
+void AudioStreamPlaybackSymphony::_test_apply_cost_sample(float p_sample_pct, float p_deadline_s) {
+	float ewma = stat_cost_pct_ewma.load(std::memory_order_relaxed);
+	if (cost_ewma_reseed) {
+		cost_ewma_reseed = false;
+		ewma = p_sample_pct;
+	} else {
+		const float clamped = MIN(p_sample_pct, 3.0f * ewma + 0.5f);
+		const float tau = clamped > ewma ? 0.050f : 0.250f;
+		const float alpha = 1.0f - expf(-MAX(p_deadline_s, 1e-6f) / tau);
+		ewma += alpha * (clamped - ewma);
+	}
+	stat_cost_pct_ewma.store(ewma, std::memory_order_relaxed);
+	SymphonyVoiceManager *mgr = SymphonyVoiceManager::get_singleton();
+	last_mix_seq.store(mgr ? mgr->get_callback_seq() : 0, std::memory_order_relaxed);
+}
+
 void AudioStreamPlaybackSymphony::_sync_voice_lod() {
 	// Main thread: turn the manager's budget floor into a concrete LOD publish, once per tier.
 	const int32_t floor = budget_lod_floor.load(std::memory_order_acquire);
