@@ -30,7 +30,7 @@
 | P6 | `d6bfa4adfc` (+ game-template `8b1932bb`) | Shared FDN/ER cores; `AudioEffectSymphonyReverb`; ASP3D DRR; reverb pool SlotParams |
 | P7 | `1c50d03cf0` (+ game-template `29727941`) | Clock t=0 + bpm/phase; asymmetric RTPC; MusicStateGraph tempo validate |
 | P8a | `c0779edf40` (+ game-template `266c9f3d`) | `SoundEvent.tier` / VITAL; pool importance key; N13; removed stream `voice_priority` |
-| P10 | *(this commit)* (+ game-template presets/schema) | Resettable-state contract; ModalBank `pitch_ratio`/`root_hz`; migrate 11 PitchShifter presets |
+| P10 | `94748f2e00` (+ game-template `ed64b879`) | Resettable-state contract; ModalBank `pitch_ratio`/`root_hz`; migrate 11 PitchShifter presets |
 
 ### P1 leftovers (closed — optional coverage only)
 
