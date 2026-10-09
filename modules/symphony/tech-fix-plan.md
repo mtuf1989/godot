@@ -36,7 +36,7 @@
 | G1 | game-template `d574207b` | Typed score resources, bounded composer, offline ledger, batch seed tests |
 | MusicStream | `98a4231b9e` | `AudioStreamSymphonyMusic` + playback: scheduler, note pools, stretch, VITAL; `test_symphony_music_stream.cpp` |
 | G2 | game-template `4f002834` | `ProceduralMusicController`; MusicSystem `PROCEDURAL` + `load_score` / intensity / tempo / key |
-| V1 | *(pending)* (+ gt pending) | Timing/callback/replace tests; DemoScoreFactory; 1000-seed batch; `QUALIFICATION.md` |
+| V1 | `b10b24d6ca` (+ gt `a700bb3a`) | Timing/callback/replace tests; DemoScoreFactory; 1000-seed batch; `QUALIFICATION.md` |
 
 ### P1 leftovers (closed — optional coverage only)
 
