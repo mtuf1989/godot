@@ -9,7 +9,7 @@
 >   - the resettable-state contract and ModalBank `pitch_ratio` (P10);
 >   - music-safe voice budgeting (P8a).
 >
-> **Status (2026-10-09):** tech **P0–P8a** done; music **N0** (=S0) and **N1** (transport/scheduler/BeatClock/`trigger_at`) done. Resume at `tech-fix-plan.md` §Progress → **P10** then music **N2**.
+> **Status (2026-10-09):** tech **P0–P8a** and **P10** done; music **N0** (=S0) and **N1** (transport/scheduler/BeatClock/`trigger_at`) done. Resume at `tech-fix-plan.md` §Progress → music **N2**.
 
 ## 1. Goal and scope
 

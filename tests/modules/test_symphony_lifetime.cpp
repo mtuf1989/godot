@@ -230,8 +230,9 @@ TEST_CASE("[Symphony][Lifetime][H] T19 ModalBank flushes dead mode state") {
 	REQUIRE(bank != nullptr);
 
 	float excitation[SYMPHONY_MICRO_BLOCK_SIZE] = {};
+	float pitch_ratio[1] = { 1.0f };
 	float out[SYMPHONY_MICRO_BLOCK_SIZE] = {};
-	void *in_ptrs[1] = { excitation };
+	void *in_ptrs[2] = { excitation, pitch_ratio };
 	void *out_ptrs[1] = { out };
 	bank->bind_pins(in_ptrs, out_ptrs);
 
@@ -249,12 +250,14 @@ TEST_CASE("[Symphony][Lifetime][H] T19 ModalBank flushes dead mode state") {
 
 	uint8_t state[512];
 	const size_t n = bank->export_state(state, sizeof(state));
-	REQUIRE(n > sizeof(int32_t));
+	// Layout: num_modes (i32) + current_ratio (f32) + y1[max] + y2[max].
+	REQUIRE(n > sizeof(int32_t) + sizeof(float));
+	const size_t y_off = sizeof(int32_t) + sizeof(float);
 	// After activity=0, both y1 and y2 for the mode must be exact zeros (no subnormals).
 	float y1 = 0.0f;
 	float y2 = 0.0f;
-	memcpy(&y1, state + sizeof(int32_t), sizeof(float));
-	memcpy(&y2, state + sizeof(int32_t) + sizeof(float), sizeof(float));
+	memcpy(&y1, state + y_off, sizeof(float));
+	memcpy(&y2, state + y_off + sizeof(float), sizeof(float));
 	CHECK(y1 == 0.0f);
 	CHECK(y2 == 0.0f);
 }

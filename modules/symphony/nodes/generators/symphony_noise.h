@@ -78,6 +78,15 @@ public:
 		pink_index = state.index;
 	}
 
+	virtual void reseed(uint32_t p_seed) override {
+		seed = (p_seed == 0u) ? 1u : p_seed;
+		for (int i = 0; i < 8; i++) {
+			pink_rows[i] = 0.0f;
+		}
+		pink_running_sum = 0.0f;
+		pink_index = 0;
+	}
+
 	virtual void execute(int32_t p_num_frames) override {
 		if (mode == 0) {
 			for (int32_t i = 0; i < p_num_frames; i++) {

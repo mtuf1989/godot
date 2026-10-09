@@ -74,6 +74,10 @@ struct OperatorDescriptor {
 	bool nonlinear = false; // If true, this operator generates harmonics (saturators, waveshapers).
 	                        // Used by the graph compiler's anti-alias staircase pass (P1b).
 	SilenceBehavior silence_behavior = SilenceBehavior::STATEFUL_TAIL;
+	// P10: music note pools may reset this operator on the audio thread.
+	bool resettable = false;
+	// Upper bound on export_state() size (for arena pristine-blob planning). 0 = none.
+	size_t export_state_bytes = 0;
 
 	// Relative CPU cost units (plan §2). Ordinary ops use cost_per_sample * frames.
 	// Optional extra_cost_fn adds parameter-dependent per-block cost (FFT/granular).
@@ -97,9 +101,12 @@ public:
 	void register_operator(const OperatorDescriptor &p_desc);
 	void register_alias(const StringName &p_old_name, const StringName &p_current_name);
 	const OperatorDescriptor *find(const StringName &p_type_name) const;
+	OperatorDescriptor *find_mut(const StringName &p_type_name);
 	void get_registered_types(Vector<StringName> &r_types) const;
 	// Fills value types, units, enums, and parameters that graphs already store
 	// but the original descriptors omitted (trigger_name, ModalBank arrays).
 	void annotate_authoring_schema();
+	// P10: mark music-note-safe operators and set export_state_bytes upper bounds.
+	void mark_resettable_operators();
 	Dictionary get_operator_schema() const;
 };

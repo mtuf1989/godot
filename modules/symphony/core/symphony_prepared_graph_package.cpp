@@ -92,7 +92,14 @@ PreparedGraphPackage *PreparedGraphPackage::create_from_graph(CompiledGraph *p_g
 			fp.structural_hash = _structural_hash(fp.type_hash, state_bytes);
 			fp.exec_index = i;
 			pkg->fingerprints.push_back(fp);
+			if (state_bytes > pkg->migrate_scratch_bytes) {
+				pkg->migrate_scratch_bytes = state_bytes;
+			}
 		}
+	}
+
+	if (pkg->migrate_scratch_bytes > 0) {
+		pkg->migrate_scratch = (uint8_t *)memalloc(pkg->migrate_scratch_bytes);
 	}
 
 	pkg->param_routes.sort_custom<ParamRouteLess>();
@@ -105,6 +112,11 @@ void PreparedGraphPackage::destroy(PreparedGraphPackage *p_package) {
 	symphony_rt_note(SymphonyRTViolation::Free, "PreparedGraphPackage::destroy");
 	if (!p_package) {
 		return;
+	}
+	if (p_package->migrate_scratch) {
+		memfree(p_package->migrate_scratch);
+		p_package->migrate_scratch = nullptr;
+		p_package->migrate_scratch_bytes = 0;
 	}
 	if (p_package->graph) {
 		memdelete(p_package->graph);
@@ -119,7 +131,11 @@ void PreparedGraphPackage::migrate_compatible_state(const PreparedGraphPackage *
 	}
 	CompiledGraph *from_graph = p_from->graph;
 	CompiledGraph *to_graph = p_to->graph;
-	uint8_t state_buf[256];
+	uint8_t *scratch = p_to->migrate_scratch;
+	const size_t scratch_bytes = p_to->migrate_scratch_bytes;
+	if (!scratch || scratch_bytes == 0) {
+		return;
+	}
 
 	for (int i = 0; i < p_from->fingerprints.size(); i++) {
 		const OperatorFingerprint &src_fp = p_from->fingerprints[i];
@@ -144,17 +160,17 @@ void PreparedGraphPackage::migrate_compatible_state(const PreparedGraphPackage *
 		}
 
 		const size_t state_size = src_op->export_state(nullptr, 0);
-		// Skip empty or large histories (delay/granular/spectral leave via transition fade).
-		if (state_size == 0 || state_size > sizeof(state_buf)) {
+		// Skip empty or histories larger than the preallocated scratch (delay/spectral).
+		if (state_size == 0 || state_size > scratch_bytes) {
 			continue;
 		}
 		if (dst_op->export_state(nullptr, 0) != state_size) {
 			continue;
 		}
-		if (src_op->export_state(state_buf, sizeof(state_buf)) != state_size) {
+		if (src_op->export_state(scratch, scratch_bytes) != state_size) {
 			continue;
 		}
-		dst_op->import_state(state_buf, state_size);
+		dst_op->import_state(scratch, state_size);
 	}
 }
 

@@ -45,6 +45,59 @@ const OperatorDescriptor *OperatorRegistry::find(const StringName &p_type_name) 
 	return nullptr;
 }
 
+OperatorDescriptor *OperatorRegistry::find_mut(const StringName &p_type_name) {
+	auto it = descriptors.find(p_type_name);
+	if (it != descriptors.end()) {
+		return &it->value;
+	}
+	return nullptr;
+}
+
+void OperatorRegistry::mark_resettable_operators() {
+	// P10 initially-resettable set (tech-fix-plan). export_state_bytes is an upper bound
+	// for arena pristine planning; 0 means no pristine blob (stateless or empty export).
+	struct Entry {
+		const char *name;
+		size_t export_bytes;
+	};
+	static const Entry k_entries[] = {
+		{ "Oscillator", 8 },
+		{ "FMOscillator", 32 },
+		{ "FormantOsc", 32 },
+		{ "Noise", 44 },
+		{ "LFO", 16 },
+		{ "WavePlayer", 16 },
+		{ "ADSR", 16 },
+		{ "EnvelopeFloat", 16 },
+		{ "BiquadFilter", 56 },
+		{ "SVFilter", 32 },
+		{ "OnePole", 8 },
+		{ "DCBlocker", 8 },
+		{ "Saturator", 96 },
+		{ "Waveshaper", 96 },
+		{ "Gain", 0 },
+		{ "Constant", 0 },
+		{ "MathAdd", 0 },
+		{ "Mix", 0 },
+		{ "MapRange", 0 },
+		{ "SampleHold", 16 },
+		{ "RingMod", 0 },
+		{ "CrossFade", 0 },
+		{ "ParameterSmoother", 16 },
+		{ "EnvelopeFollower", 16 },
+		{ "FrequencyEnvelopeFollower", 64 },
+		// ModalBank sets resettable + export_state_bytes in its own register_operator.
+	};
+	for (const Entry &e : k_entries) {
+		if (OperatorDescriptor *desc = find_mut(StringName(e.name))) {
+			desc->resettable = true;
+			if (desc->export_state_bytes == 0) {
+				desc->export_state_bytes = e.export_bytes;
+			}
+		}
+	}
+}
+
 void OperatorRegistry::get_registered_types(Vector<StringName> &r_types) const {
 	for (const auto &E : descriptors) {
 		r_types.push_back(E.key);

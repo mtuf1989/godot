@@ -32,6 +32,24 @@ public:
 		output[0] = held_value;
 	}
 
+	virtual size_t export_state(uint8_t *p_buffer, size_t p_max_size) const override {
+		constexpr size_t needed = sizeof(float);
+		if (!p_buffer) {
+			return needed;
+		}
+		if (p_max_size < needed) {
+			return 0;
+		}
+		memcpy(p_buffer, &held_value, sizeof(float));
+		return needed;
+	}
+
+	virtual void import_state(const uint8_t *p_buffer, size_t p_size) override {
+		if (p_size >= sizeof(float)) {
+			memcpy(&held_value, p_buffer, sizeof(float));
+		}
+	}
+
 	static void register_operator() {
 		OperatorDescriptor desc;
 		desc.type_name = "SampleHold";

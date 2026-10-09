@@ -545,8 +545,9 @@ static float _modal_strike_peak(float p_frequency, float p_t60, float p_gain) {
 	REQUIRE(op != nullptr);
 
 	float in_buf[SYMPHONY_MICRO_BLOCK_SIZE] = {};
+	float ratio_buf[1] = { 1.0f };
 	float out_buf[SYMPHONY_MICRO_BLOCK_SIZE] = {};
-	void *inputs[] = { in_buf };
+	void *inputs[] = { in_buf, ratio_buf };
 	void *outputs[] = { out_buf };
 	op->bind_pins(inputs, outputs);
 	float peak = 0.0f;

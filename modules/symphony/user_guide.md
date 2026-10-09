@@ -567,10 +567,10 @@ Note that `LFO` and `Oscillator` number their waveforms differently.
 
 | Operator | Inputs → Outputs | Parameters |
 |----------|------------------|------------|
-| **ModalBank** | `excitation` → `audio_out` | `frequencies` (float array, Hz), `decay_times` (float array, s, time to −60 dB), `gains` (float array, strike amplitude per mode), `num_modes`, `max_modes` (≤ 64) |
+| **ModalBank** | `excitation`, `pitch_ratio` → `audio_out` | `frequencies` (float array, Hz), `decay_times` (float array, s, time to −60 dB), `gains` (float array, strike amplitude per mode), `num_modes`, `max_modes` (≤ 64), `root_hz` (authored fundamental for music: `ratio = note_hz / root_hz`) |
 | **GrainCloud** | `audio_in`, `trigger`, `grain_size_ms`, `density`, `position`, `pitch_range_st`, `scan_speed`, `amp_randomness`, `reverse_prob` → `audio_out` | same names as params, plus `position_randomness`, `window_shape` (hann/tukey/expodec/rexpodec), `overlap_normalize` (default on), `trigger_only`, `seed`, `capture_seconds`; size 2–500 ms, density ≤500/s, ≤32 grains |
 
-**ModalBank semantics.** Each mode is a damped sine. A unit impulse on `excitation` rings mode *k* as `gains[k] · e^(−6.91·t / decay_times[k]) · sin(2π · frequencies[k] · t)`, so `gains` is the strike amplitude of each mode, independent of its frequency and decay time. Write the material's relative partial amplitudes into `gains` and set the overall level with a `Gain` after the bank. All three arrays are required: if any is missing (for example `decay_times` misspelled as `decays`), the bank has zero modes and is silent. Longer or noisier excitation (a noise burst, a scrape) excites each mode by the energy near its frequency, so the output can exceed the sum of `gains`; check `peak` with `render_offline()`.
+**ModalBank semantics.** Each mode is a damped sine. A unit impulse on `excitation` rings mode *k* as `gains[k] · e^(−6.91·t / decay_times[k]) · sin(2π · frequencies[k] · pitch_ratio · t)`, so `gains` is the strike amplitude of each mode, independent of its frequency and decay time. Write the material's relative partial amplitudes into `gains` and set the overall level with a `Gain` after the bank. All three arrays are required: if any is missing (for example `decay_times` misspelled as `decays`), the bank has zero modes and is silent. Longer or noisier excitation (a noise burst, a scrape) excites each mode by the energy near its frequency, so the output can exceed the sum of `gains`; check `peak` with `render_offline()`. `pitch_ratio` (default 1, clamped 0.125–8) scales every mode frequency; modes that land at or above `0.45·sr` are muted. Prefer `pitch_ratio` over a post-bank PitchShifter for note or SFX pitch variation.
 
 ### Spectral
 
@@ -2062,6 +2062,12 @@ func _on_music_slider_changed(value: float):
 ---
 
 ## Changelog
+
+### P10 — Instrument readiness (2026-10-09)
+
+- **Resettable operators:** descriptors mark `resettable`; the compiler stores a pristine `export_state` blob; `reset_for_note(voice_seed)` restores it, clears large buffers, and reseeds RNGs. Hot-swap migrate scratch is sized to the largest operator state (no 256-byte stack limit).
+- **ModalBank:** FLOAT input `pitch_ratio` and param `root_hz`; authored frequency/decay/gain tables stay in the arena; coefficients recompute when the ratio moves >0.05%; modes above `0.45·sr` mute. Eleven SFX presets that used PitchShifter only for pitch now drive `pitch_ratio` instead.
+- **Conformance:** `test_symphony_operator_reset.cpp` — every registered type is resettable or allow-listed; reset ≡ fresh construct for flagged ops.
 
 ### Music N1 — Transport and scheduler (2026-10-09)
 

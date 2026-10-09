@@ -6,6 +6,7 @@
 #include "symphony_graph_package_retirement.h"
 #include "symphony_realtime_scope.h"
 #include "symphony_seed.h"
+#include "core/math/math_funcs.h"
 
 #include <cmath>
 #include <limits>
@@ -614,6 +615,22 @@ GraphCompiler::CompileResult GraphCompiler::compile(const GraphDescription &p_de
 				return plan_fail(vformat("Arena size overflow while planning extra buffers for '%s'.", String(desc->type_name)));
 			}
 		}
+		// P10: pristine export_state blob for note-voice reset (after create extras).
+		if (desc->resettable) {
+			size_t pristine = desc->export_state_bytes;
+			if (desc->type_name == StringName("ModalBank")) {
+				int32_t mm = desc_ref.nodes[node_idx].params.has("max_modes")
+						? (int32_t)(float)desc_ref.nodes[node_idx].params["max_modes"]
+						: 20;
+				mm = CLAMP(mm, 1, 64);
+				pristine = sizeof(int32_t) + sizeof(float) + sizeof(float) * (size_t)mm * 2;
+			}
+			if (pristine > 0) {
+				if (!SymphonyCheckedMath::bump(planned_offset, pristine, 8)) {
+					return plan_fail(vformat("Arena size overflow while planning pristine state for '%s'.", String(desc->type_name)));
+				}
+			}
+		}
 		for (int32_t p = 0; p < input_sources[node_idx].size(); p++) {
 			if (input_sources[node_idx][p].needs_promotion) {
 				if (!SymphonyCheckedMath::bump(planned_offset, sizeof(float) * SYMPHONY_MICRO_BLOCK_SIZE, 32)) {
@@ -793,6 +810,34 @@ GraphCompiler::CompileResult GraphCompiler::compile(const GraphDescription &p_de
 		}
 		compiled->operators[s] = op;
 		compiled->operator_count = s + 1;
+		op->graph_node_id = nd.id;
+		op->seed_authored = symphony_authored_seed(nd.params, 0);
+		op->seed_deterministic = symphony_deterministic_seed(nd.params);
+
+		// P10: snapshot pristine state for resettable note voices.
+		if (desc->resettable) {
+			const size_t state_bytes = op->export_state(nullptr, 0);
+			if (state_bytes > 0) {
+				if (desc->export_state_bytes > 0 && state_bytes > desc->export_state_bytes) {
+					result.errors.push_back(vformat("Operator '%s' export_state (%d) exceeds planned pristine bytes (%d).", String(desc->type_name), (int)state_bytes, (int)desc->export_state_bytes));
+					memdelete(compiled);
+					return result;
+				}
+				uint8_t *blob = (uint8_t *)compiled->arena.alloc(state_bytes, 8);
+				if (!blob) {
+					result.errors.push_back(vformat("Failed to allocate pristine state for '%s' (node %d).", String(desc->type_name), nd.id));
+					memdelete(compiled);
+					return result;
+				}
+				if (op->export_state(blob, state_bytes) != state_bytes) {
+					result.errors.push_back(vformat("Failed to export pristine state for '%s' (node %d).", String(desc->type_name), nd.id));
+					memdelete(compiled);
+					return result;
+				}
+				op->pristine_state = blob;
+				op->pristine_size = (uint32_t)state_bytes;
+			}
+		}
 
 		// Store the node ID + type for state migration matching (plan §4/§5).
 		compiled->node_ids[s] = nd.id;

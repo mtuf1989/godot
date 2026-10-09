@@ -191,19 +191,45 @@ public:
 	}
 
 	virtual size_t export_state(uint8_t *p_buffer, size_t p_max_size) const override {
-		constexpr size_t needed = 6 * sizeof(float); // delays + smoothed fc/q
+		// Delays, smoothed fc/q, last coeff targets, biquad coeffs, recalc counter.
+		// Full layout keeps reset_for_note bit-identical to a fresh construct.
+		constexpr size_t needed = 14 * sizeof(float);
 		if (!p_buffer) {
 			return needed;
 		}
-		if (p_max_size >= needed) {
-			float state[6] = { x1, x2, y1, y2, smoothed_cutoff, smoothed_q };
-			memcpy(p_buffer, state, needed);
+		if (p_max_size < needed) {
+			return 0;
 		}
+		float state[14] = {
+			x1, x2, y1, y2,
+			smoothed_cutoff, smoothed_q,
+			last_coeff_cutoff, last_coeff_q,
+			b0, b1, b2, a1, a2,
+			(float)samples_since_recalc
+		};
+		memcpy(p_buffer, state, needed);
 		return needed;
 	}
 
 	virtual void import_state(const uint8_t *p_buffer, size_t p_size) override {
-		if (p_size >= 6 * sizeof(float)) {
+		if (p_size >= 14 * sizeof(float)) {
+			float state[14];
+			memcpy(state, p_buffer, 14 * sizeof(float));
+			x1 = state[0];
+			x2 = state[1];
+			y1 = state[2];
+			y2 = state[3];
+			smoothed_cutoff = state[4];
+			smoothed_q = state[5];
+			last_coeff_cutoff = state[6];
+			last_coeff_q = state[7];
+			b0 = state[8];
+			b1 = state[9];
+			b2 = state[10];
+			a1 = state[11];
+			a2 = state[12];
+			samples_since_recalc = (int32_t)state[13];
+		} else if (p_size >= 6 * sizeof(float)) {
 			float state[6];
 			memcpy(state, p_buffer, 6 * sizeof(float));
 			x1 = state[0];
@@ -212,7 +238,7 @@ public:
 			y2 = state[3];
 			smoothed_cutoff = state[4];
 			smoothed_q = state[5];
-			last_coeff_cutoff = -1.0f; // force recalc
+			last_coeff_cutoff = -1.0f; // force recalc (legacy migrate blob)
 			samples_since_recalc = 16;
 		} else if (p_size >= 4 * sizeof(float)) {
 			float state[4];

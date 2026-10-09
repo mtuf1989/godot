@@ -1,6 +1,8 @@
 #pragma once
 
 #include "symphony_pin_types.h"
+#include "symphony_seed.h"
+#include "core/string/ustring.h"
 #include <cstdint>
 #include <cstring>
 
@@ -23,6 +25,13 @@ public:
 	// Consecutive inactive blocks for stateful-tail hysteresis (improve_plan §7).
 	uint8_t inactive_blocks = 0;
 
+	// P10: pristine export_state snapshot (arena) for note-voice reset.
+	const uint8_t *pristine_state = nullptr;
+	uint32_t pristine_size = 0;
+	int32_t graph_node_id = -1;
+	uint32_t seed_authored = 0;
+	bool seed_deterministic = false;
+
 	virtual ~SymphonyOperator() = default;
 
 	// Called by the compiler after construction to wire input/output pin pointers.
@@ -40,4 +49,19 @@ public:
 	// Returns the number of bytes written to p_buffer. If p_buffer is nullptr, returns required size.
 	virtual size_t export_state(uint8_t *p_buffer, size_t p_max_size) const { return 0; }
 	virtual void import_state(const uint8_t *p_buffer, size_t p_size) {}
+
+	// P10 note-voice reset: restore pristine state, clear delay/capture rings, reseed RNG.
+	virtual void clear_large_buffers() {}
+	virtual void reseed(uint32_t p_seed) { (void)p_seed; }
+
+	void reset_for_note(uint64_t p_voice_seed) {
+		if (pristine_state != nullptr && pristine_size > 0) {
+			import_state(pristine_state, pristine_size);
+		}
+		clear_large_buffers();
+		const StringName node_name(String::num_int64(graph_node_id));
+		reseed(symphony_node_seed(p_voice_seed, node_name, seed_authored, seed_deterministic));
+		activity = 1;
+		inactive_blocks = 0;
+	}
 };

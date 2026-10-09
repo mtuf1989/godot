@@ -1,5 +1,9 @@
 # Dev Log — Symphony Audio System
 
+## P10 (2026-10-09)
+
+Instrument readiness for music N2: `OperatorDescriptor.resettable`, pristine arena blobs, `reset_for_note` (import → clear_large_buffers → reseed via `symphony_node_seed`). Noise export/reseed; Biquad full-state export for bit-exact reset; ModalBank base tables + `pitch_ratio`/`root_hz` + Nyquist mute; migrate scratch >256. Tests: `test_symphony_operator_reset.cpp`. game-template: 11 ModalBank presets drop PitchShifter; operator-schema synced. Suite: 283/283.
+
 ## P7 (2026-10-09)
 
 SFX timing leftovers after N1: `SymphonyClock` fires its first tick at sample 0, takes FLOAT `bpm` (block-smoothed, phase-continuous) and TRIGGER `reset`, outputs AUDIO `phase`. RTPCEngine gains asymmetric `attack_ms`/`release_ms` via `set_parameter_smoothing`. MusicStateGraph.validate errors on missing/non-positive bpm or beats_per_bar; music_system.gd no longer defaults to 120/4. Tests: `test_symphony_p7_timing.cpp`. Suite: 275/275.

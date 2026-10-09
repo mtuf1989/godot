@@ -53,6 +53,10 @@ struct PreparedGraphPackage {
 	float estimated_cost_units = 0.0f;
 	int lod_tier = 0;
 
+	// Preallocated on main (create_from_graph); used by migrate_compatible_state on audio.
+	uint8_t *migrate_scratch = nullptr;
+	size_t migrate_scratch_bytes = 0;
+
 	// How the mixing thread adopts this package (immutable once published).
 	// Swap: graph hot-swap. Lod: LOD tier change. Restart: fresh state after stop/start.
 	enum class AdoptMode : uint8_t { Swap, Lod, Restart };
@@ -68,8 +72,8 @@ struct PreparedGraphPackage {
 	static PreparedGraphPackage *create_from_graph(CompiledGraph *p_graph, size_t p_arena_bytes = 0, size_t p_total_bytes = 0, int p_lod_tier = 0, float p_estimated_cost_units = 0.0f);
 	static void destroy(PreparedGraphPackage *p_package);
 
-	// Audio-thread: copy ≤256-byte compatible operator state from p_from → p_to.
-	// Matches node_id + type_hash + structural_hash; skips larger/incompatible histories.
+	// Audio-thread: copy compatible operator state from p_from → p_to using migrate_scratch.
+	// Matches node_id + type_hash + structural_hash; skips empty/incompatible histories.
 	static void migrate_compatible_state(const PreparedGraphPackage *p_from, PreparedGraphPackage *p_to);
 
 	[[nodiscard]] SymphonyGraphInput *find_param(const StringName &p_name) const;
