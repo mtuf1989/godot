@@ -8,10 +8,10 @@
 |---|---|
 | **As of** | 2026-10-09 |
 | **Branch** | `master` (ahead of `origin/master`; not pushed) |
-| **Done** | **P0**, **P1**, **P1b**, **S0 / N0** |
-| **Next** | **S1** — Lane A music N1 ‖ Lane B P3/P4/P2 ‖ Lane C P5 |
-| **Stage** | S0 Foundation closed; S1 Build-out next |
-| **C++ tests** | 219/219 `*Symphony*` green on `bin/godot.macos.editor.arm64` |
+| **Done** | **P0**, **P1**, **P1b**, **S0 / N0**, **P3** |
+| **Next** | **S1** — Lane A music N1 ‖ Lane B P4/P2 ‖ Lane C P5 |
+| **Stage** | S1 Build-out (P3 closed; P4/P2/P5/N1 remain) |
+| **C++ tests** | 230/230 `*Symphony*` green on `bin/godot.macos.editor.arm64` |
 | **TSan** | `.san` rebuilt after P1b; **1** warning (same as P0 `DynamicRangeHigh`); new Symphony-frame races = 0 |
 
 ### Commits
@@ -22,6 +22,7 @@
 | P1 | `d739292608` | Single-owner lifetime; denormal guard; RTPC atomics; LOD hysteresis; `test_symphony_lifetime.cpp` |
 | P1b | `c5d38b563b` | Promotion order, atomic-word SeqLock, per-voice seeds, `frames_rendered`, unresampled `render_offline` |
 | S0 gate | `81e362e111` (+ game-template `9ed46af4`) | TSan re-baseline (= P0 warning count); T3; parked-package docs; torch_fire GDScript N1 |
+| P3 | *(this commit)* | HIIR saturator OS, u-domain ADAA, waveshaper 3-way ADAA + foldback, FM Carson clamp, staircase/rate LPF, FormantOsc blend, DC R(sr), Biquad τ=5ms |
 
 ### P1 leftovers (S0 gate)
 
@@ -32,9 +33,10 @@
 
 ### How to resume next session
 
-1. Read this **Progress** block. S0 is closed; start **S1** (music N1 and/or P3/P4/P2/P5).
+1. Read this **Progress** block. P3 is closed; continue **S1** with P4 (then P2) and/or music N1 / P5.
 2. Build: `scons platform=macos target=editor arch=arm64 tests=yes module_raycast_enabled=no -j$(sysctl -n hw.ncpu)`
 3. Leave each phase green + committed on its own (plan convention).
+4. After P3/P4, re-run `preset_level_test` in game-template (level contract).
 
 ## Context
 
@@ -88,7 +90,7 @@ Policy (memory `symphony-presets-no-compat`): pre-production, no compatibility s
 | P1 | **Done** `d739292608` (polish open) | Voice/package lifetime + RT safety | N1, B, A, M, cross-thread fields, H, V, ModalBank flush | godot (+1 gd test pending) | P0 |
 | P1b | **Done** | Foundation extras (shared with music) | Float→Audio promotion order, SeqLock fix, G seeds, N10 frame counter, N16 `render_offline` | godot | P1 |
 | P2 | Pending | Quick audible wins | N2, N3 | both | P1 |
-| P3 | Pending | Nonlinear and anti-aliasing DSP | C, D, E, N6, N20, J, L, P, DC blocker, Biquad smoothing | godot | P0 |
+| P3 | **Done** | Nonlinear and anti-aliasing DSP | C, D, E, N6, N20, J, L, P, DC blocker, Biquad smoothing | godot | P0 |
 | P4 | Pending | Sampler and rate path | S (rate policy D), N18, N19, mix_rate clamp, Oscillator floor | godot | P0 |
 | P5 | Pending | Spectral and granular | F, N4, N5, N14, I/U removal, N7, N17, GrainCloud upgrade, stale comments | godot (+ skills docs) | P0 |
 | P6 | Pending | Spatial reverb rework | O, T, N15, W, uniformity, FDN AudioEffect, core DRR patch | both + Godot core | P1, P1b, P3 |
@@ -278,7 +280,7 @@ Risks:
 
 If decode fails, `ERR_PRINT_ONCE` with the resource path; never fail silently. Document this in user_guide (WavePlayer row). Tests: a QOA- and an 8-bit-sourced WavePlayer each render non-silent output whose RMS is within 1 dB of the PCM16 version.
 
-## P3: Nonlinear and anti-aliasing DSP
+## P3: Nonlinear and anti-aliasing DSP — **DONE**
 
 **C Saturator 2× half-band** (`nodes/filters/symphony_saturator.h:37-77`):
 - Replace it with a correct HIIR polyphase pair:

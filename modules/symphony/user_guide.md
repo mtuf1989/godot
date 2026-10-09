@@ -499,8 +499,8 @@ Parameter values are floats unless noted. Enum parameters take the integer index
 | **LFO** | `rate`, `amplitude` → `output` (float) | `rate` Hz, `amplitude`, `waveform` (0 sine, 1 triangle, 2 saw, 3 square) |
 | **Constant** | — → `output` | `value` |
 | **WavePlayer** | `gate` (trigger), `pitch` → `output`, `finished` (trigger) | `resource_path`, `bake_audio`, `loop_mode` (0 none, 1 forward, 2 ping-pong), `loop_start` / `loop_end` (samples; end 0 = file end), `pitch_scale`, `auto_play` |
-| **FMOscillator** | `carrier_freq`, `mod_freq`, `mod_index`, `mod_input` (audio) → `audio_out` | `carrier_freq` Hz, `mod_freq` Hz, `mod_index` (0–10) |
-| **FormantOsc** | `fundamental_freq`, `formant_freq`, `bandwidth` → `audio_out` | `fundamental_freq` Hz, `formant_freq` Hz, `bandwidth` Hz |
+| **FMOscillator** | `carrier_freq`, `mod_freq`, `mod_index`, `mod_input` (audio) → `audio_out` | `carrier_freq` Hz, `mod_freq` Hz, `mod_index` (0–10). Internal modulator is Carson-clamped so sidebands stay under ~0.45·sr; external `mod_input` is not clamped |
+| **FormantOsc** | `fundamental_freq`, `formant_freq`, `bandwidth` → `audio_out` | `fundamental_freq` Hz, `formant_freq` Hz, `bandwidth` Hz. Non-integer formant ratios blend harmonics `n` and `n+1` (no wrap click) |
 
 Note that `LFO` and `Oscillator` number their waveforms differently.
 
@@ -508,12 +508,12 @@ Note that `LFO` and `Oscillator` number their waveforms differently.
 
 | Operator | Inputs → Outputs | Parameters |
 |----------|------------------|------------|
-| **BiquadFilter** | `input`, `cutoff` (audio) → `output` | `mode` (0 LP, 1 HP, 2 BP, 3 Notch), `cutoff` Hz, `resonance` (Q, 0.1–20) |
+| **BiquadFilter** | `input`, `cutoff` (audio) → `output` | `mode` (0 LP, 1 HP, 2 BP, 3 Notch), `cutoff` Hz, `resonance` (Q, 0.1–20). AUDIO cutoff/Q smoothed with τ=5 ms; coefficients refresh every 16 samples when changed >0.1% |
 | **OnePole** | `input`, `cutoff` → `output` | `cutoff` Hz (6 dB/oct low-pass) |
 | **SVFilter** | `audio_in`, `cutoff`, `resonance` → `lp_out`, `hp_out`, `bp_out` | `cutoff` Hz, `resonance` (0–1) |
-| **DCBlocker** | `input` → `output` | — |
-| **Saturator** | `input`, `drive` → `output` | `drive` (0.1–20), `mode` (0 soft, 1 hard), `oversample` (0 off, 1 2×). ADAA anti-aliasing |
-| **Waveshaper** | `audio_in`, `drive` → `audio_out` | `drive`, `preset` (0 soft clip, 1 hard clip, 2 tube, 3 foldback, 4 Chebyshev 3rd, 5 Chebyshev 5th), `table_size`, optional `table_data` (float array, replaces `preset`). ADAA anti-aliasing |
+| **DCBlocker** | `input` → `output` | Pole tracks ~15 Hz: `R = exp(−2π·15/sr)` |
+| **Saturator** | `input`, `drive` → `output` | `drive` (0.1–20), `mode` (0 soft, 1 hard), `oversample` (0 off, 1 2× HIIR half-band). ADAA in the `u = x·drive` domain |
+| **Waveshaper** | `audio_in`, `drive` → `audio_out` | `drive`, `preset` (0 soft clip, 1 hard clip, 2 tube, 3 continuous foldback, 4 Chebyshev 3rd, 5 Chebyshev 5th), `table_size` (custom tables only), optional `table_data`. Preset f/F tables are shared; ADAA is quantization-aware |
 
 ### Envelopes and Dynamics
 
@@ -1567,7 +1567,7 @@ var metrics: Dictionary = SymphonyVoiceManager.get_debug_metrics()
 |-----------|-----------------|
 | Standard graph (10-15 nodes) | ~4-8 KB |
 | Saturator (with oversample=1) | +512 bytes (internal 2× buffer) |
-| Waveshaper (default 512 table) | ~4 KB (transfer + antiderivative tables) |
+| Waveshaper (preset) | 0 extra arena (shared f/F tables); custom `table_data` still allocates 2×`table_size` floats |
 | GrainCloud (live-input) | ~384 KB (capture buffer) |
 | GrainCloud (PCM source) | Shared via cache key |
 | FDNReverb | ~16 KB (delay lines) |
@@ -1813,13 +1813,13 @@ graph/nodes/3/params = {"drive": 8.0, "mode": 0, "oversample": 1}
 | `oversample` value | Behavior | Cost |
 |--------------------|----------|------|
 | `0` (default) | ADAA only | Baseline |
-| `1` | ADAA + 2× oversampling (IIR half-band filters) | ~6.7× per operator |
+| `1` | ADAA + 2× oversampling (HIIR polyphase half-band) | ~6.7× per operator |
 
 When `oversample = 0`, there is zero overhead from the oversampling code path. Use this only on critical solo sounds where extreme drive values (>8) push ADAA's limits.
 
 #### Anti-Alias Staircase (Opt-In per Graph)
 
-When a graph chains multiple nonlinear operators (e.g., `Saturator → Waveshaper → Saturator`), harmonics from each stage push the next stage's output higher and higher, causing cascading aliasing. The **anti-alias staircase** automatically inserts a lowpass filter (18 kHz) between consecutive nonlinear operators at compile time.
+When a graph chains multiple nonlinear operators (e.g., `Saturator → Waveshaper → Saturator`), harmonics from each stage push the next stage's output higher and higher, causing cascading aliasing. The **anti-alias staircase** automatically inserts a lowpass filter (`cutoff = min(18000, 0.4·sample_rate)`) between consecutive nonlinear operators at compile time.
 
 Enable it per graph:
 
@@ -1839,11 +1839,9 @@ graph/anti_alias_staircase = true
 
 **Cost:** ~160 extra CPU cycles per inserted filter per micro-block. A chain of 3 saturators inserts 2 filters — negligible.
 
-#### FMOscillator Output Filter
+#### FMOscillator Carson Clamp
 
-The `FMOscillator` includes an always-on one-pole lowpass at 18 kHz on its output. This attenuates above-Nyquist energy that would otherwise alias when using high modulation indices (`mod_index > 3`).
-
-This is transparent for normal use (inaudible below 16 kHz). At extreme settings, the filter prevents the worst digital artifacts while preserving the core FM timbre.
+`FMOscillator` no longer uses an output lowpass. For the **internal** sine modulator, `mod_index` is clamped with a Carson bandwidth limit so sidebands stay below ~0.45·sample_rate (`β ≤ max(0, (0.45·sr − fc)/fm − 3)`). An external `mod_input` is **not** clamped — keep that path below Nyquist yourself (or follow with a filter).
 
 #### Summary: What Requires User Action
 
@@ -1854,7 +1852,7 @@ This is transparent for normal use (inaudible below 16 kHz). At extreme settings
 | Saturator 2× oversample | Yes — opt-in | Set `oversample: 1` in node params |
 | Anti-alias staircase | Yes — opt-in per graph | Set `graph/anti_alias_staircase = true` |
 | Parameter smoothing | No — on by default | Opt-out with `graph/smooth_parameters = false` |
-| FM output filter | No — always on | Automatic |
+| FM Carson clamp (internal mod) | No — always on | Automatic; external `mod_input` uncapped |
 
 #### Parameter Smoothing (On by Default)
 
@@ -2061,6 +2059,16 @@ func _on_music_slider_changed(value: float):
 ---
 
 ## Changelog
+
+### P3 — Nonlinear and anti-aliasing DSP (2026-10-09)
+
+- **Saturator:** correct HIIR polyphase 2× half-band; ADAA runs in `u = x·drive` (eps 1e-3, midpoint fallback) so drive modulation does not spike.
+- **Waveshaper:** shared immutable preset tables; quantization-aware three-way ADAA; FOLDBACK is a continuous triangle fold; custom `table_data` still uses the arena.
+- **FMOscillator:** removed the 18 kHz output pole; internal `mod_index` is Carson-clamped; external `mod_input` is uncapped.
+- **Anti-alias staircase:** inserted LPF cutoff is `min(18000, 0.4·sr)`.
+- **FormantOsc:** blends harmonics `n` and `n+1` for non-integer formant ratios.
+- **DCBlocker:** `R = exp(−2π·15/sr)`; state export added.
+- **BiquadFilter:** 5 ms one-pole smoothing on cutoff/Q; coefficient recompute every 16 samples when moved >0.1%.
 
 ### P1b — Foundation extras (2026-10-09)
 

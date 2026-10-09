@@ -4,6 +4,7 @@
 #include "symphony_compiled_graph.h"
 #include "symphony_operator_registry.h"
 #include "core/string/ustring.h"
+#include "core/typedefs.h"
 #include "core/variant/dictionary.h"
 
 // Compiles a GraphDescription into a CompiledGraph ready for audio-thread execution.
@@ -42,4 +43,9 @@ public:
 	// p_voice_seed is mixed into per-node PRNG seeds (see symphony_seed.h).
 	// Offline renders pass the render seed; live voices pass the playback's seed.
 	static CompileResult compile(const GraphDescription &p_desc, float p_mix_rate, const String &p_resource_path = String(), uint64_t p_voice_seed = 0);
+
+	// Anti-alias staircase LPF cutoff used between consecutive nonlinear operators.
+	static inline float staircase_lpf_cutoff(float p_mix_rate) {
+		return MIN(18000.0f, 0.4f * p_mix_rate);
+	}
 };

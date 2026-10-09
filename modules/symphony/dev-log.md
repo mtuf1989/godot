@@ -1,5 +1,9 @@
 # Dev Log — Symphony Audio System
 
+## P3 (2026-10-09)
+
+Nonlinear / anti-alias DSP: Saturator uses a correct HIIR polyphase 2× half-band and u-domain ADAA (eps 1e-3, midpoint fallback; drive modulation no longer spikes). Waveshaper presets share immutable f/F tables; ADAA is three-way (same cell / adjacent / quadratic F); FOLDBACK is a continuous triangle fold. FMOscillator drops the 18 kHz pole and Carson-clamps internal `mod_index`. Anti-alias staircase LPF cutoff is `min(18000, 0.4·sr)`. FormantOsc blends `cos(nθ)`/`cos((n+1)θ)`. DCBlocker `R` tracks 15 Hz; Biquad smooths AUDIO cutoff (τ=5 ms, coeff refresh every 16 samples). Tests: `test_symphony_p3_dsp.cpp` (11 cases). Suite: 230/230.
+
 ## S0 closed (2026-10-09)
 
 TSan after P1b: 218 Symphony cases green, 1 warning (= P0 `DynamicRangeHigh` baseline; new Symphony-frame races = 0). Lifetime T3 added. game-template: fifty `torch_fire` play/stop asserts manager voice count and packages; `finite_oneshot_test` uses graph-rate frames from `render_offline`.

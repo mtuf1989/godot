@@ -6,7 +6,7 @@
 #include "../../core/symphony_fast_math.h"
 #include "core/math/math_funcs.h"
 
-// Phase Modulation (PM) oscillator with output anti-alias filter.
+// Phase Modulation (PM) oscillator.
 // PM is preferred over true FM for real-time parameter changes because the
 // modulation depth is independent of modulator frequency — no spectral blowup
 // when sweeping mod_freq.
@@ -17,12 +17,10 @@
 //   output = sin(2π * carrier_phase + mod_index * sin(2π * mod_phase))
 //
 // If mod_input is connected, uses the external audio signal as modulator
-// instead of the internal sine oscillator.
+// instead of the internal sine oscillator. External mod_input is not clamped.
 //
-// Anti-alias: A one-pole lowpass at 18 kHz is applied to the output.
-// At moderate mod_index this has negligible audible effect, but attenuates
-// the above-Nyquist energy that causes aliased inharmonic artifacts at
-// high modulation indices (mod_index > 3).
+// Internal-modulator index is Carson-clamped so sidebands stay below ~0.45·sr:
+//   β ≤ max(0, (0.45·sr − fc) / fm − 3)
 class SymphonyFMOscillator : public SymphonyOperator {
 private:
 	const float *SYMPHONY_RESTRICT carrier_freq_input = nullptr;
@@ -38,17 +36,10 @@ private:
 	float default_mod_freq = 440.0f;
 	float default_mod_index = 1.0f;
 
-	// Output anti-alias one-pole filter state and coefficient.
-	// y[n] = (1-a)*x[n] + a*y[n-1], a = exp(-2π * 18000 / sample_rate)
-	float lp_coeff = 0.0f;
-	float lp_prev = 0.0f;
-
-	// Fast polynomial sine approximation via shared helper.
 	static inline float fast_sine(float p_phase) {
 		return SymphonyFastMath::fast_sine(p_phase);
 	}
 
-	// Fast sine from arbitrary radian angle (for PM offset computation).
 	static inline float fast_sine_rad(float p_radians) {
 		float normalized = p_radians * (1.0f / (float)Math::TAU);
 		normalized -= floorf(normalized);
@@ -60,11 +51,7 @@ public:
 			: mix_rate(p_mix_rate),
 			  default_carrier_freq(p_carrier_freq),
 			  default_mod_freq(p_mod_freq),
-			  default_mod_index(p_mod_index) {
-		// Pre-compute one-pole coefficient for 18 kHz cutoff.
-		// At 48 kHz: coeff ≈ 0.095, giving -3dB at 18 kHz, -6dB/oct slope above.
-		lp_coeff = expf(-Math::TAU * 18000.0f / mix_rate);
-	}
+			  default_mod_index(p_mod_index) {}
 
 	virtual void bind_pins(void **p_input_ptrs, void **p_output_ptrs) override {
 		carrier_freq_input = (const float *)p_input_ptrs[0];
@@ -77,44 +64,42 @@ public:
 	virtual void execute(int32_t p_num_frames) override {
 		SYMPHONY_ASSUME_FRAMES(p_num_frames);
 
-		// FLOAT pins are single values (control-rate), read once per micro-block
 		float carrier_freq = carrier_freq_input ? *carrier_freq_input : default_carrier_freq;
 		float mod_freq = mod_freq_input ? *mod_freq_input : default_mod_freq;
 		float mod_index = mod_index_input ? *mod_index_input : default_mod_index;
 
+		const bool external_mod = mod_input != nullptr;
+		if (!external_mod) {
+			// Carson bandwidth ≈ 2(β+1)fm; keep upper sideband under 0.45·sr with margin 2.
+			float fm = MAX(fabsf(mod_freq), 1e-3f);
+			// Carson BW ≈ 2(β+1)fm; keep the upper edge under 0.45·sr.
+			// Margin 3 matches the plan (Carson + 2 extra sidebands beyond β+1).
+			float beta_max = MAX(0.0f, (0.45f * mix_rate - carrier_freq) / fm - 3.0f);
+			mod_index = MIN(mod_index, beta_max);
+		}
+
 		SYMPHONY_UNROLL
 		for (int32_t i = 0; i < p_num_frames; i++) {
-
-			// Advance modulator phase
 			mod_phase += mod_freq / mix_rate;
-			mod_phase -= floorf(mod_phase); // Branch-free wrap to [0, 1)
+			mod_phase -= floorf(mod_phase);
 
-			// Compute modulator signal
 			float modulator;
-			if (mod_input) {
-				// External modulator: already in [-1, 1] range
+			if (external_mod) {
 				modulator = mod_input[i];
 			} else {
-				// Internal sine modulator (polynomial approximation)
 				modulator = fast_sine(mod_phase);
 			}
 
-			// Advance carrier phase
 			carrier_phase += carrier_freq / mix_rate;
-			carrier_phase -= floorf(carrier_phase); // Branch-free wrap to [0, 1)
+			carrier_phase -= floorf(carrier_phase);
 
-			// Phase modulation: offset carrier phase by scaled modulator
 			float pm_offset = mod_index * modulator;
-			float raw = fast_sine_rad(carrier_phase * (float)Math::TAU + pm_offset);
-
-			// One-pole anti-alias lowpass (18 kHz)
-			lp_prev = (1.0f - lp_coeff) * raw + lp_coeff * lp_prev;
-			audio_out[i] = lp_prev;
+			audio_out[i] = fast_sine_rad(carrier_phase * (float)Math::TAU + pm_offset);
 		}
 	}
 
 	virtual size_t export_state(uint8_t *p_buffer, size_t p_max_size) const override {
-		constexpr size_t needed = sizeof(float) * 3; // carrier_phase + mod_phase + lp_prev
+		constexpr size_t needed = sizeof(float) * 2; // carrier_phase + mod_phase
 		if (!p_buffer) {
 			return needed;
 		}
@@ -123,21 +108,14 @@ public:
 		}
 		memcpy(p_buffer, &carrier_phase, sizeof(float));
 		memcpy(p_buffer + sizeof(float), &mod_phase, sizeof(float));
-		memcpy(p_buffer + sizeof(float) * 2, &lp_prev, sizeof(float));
 		return needed;
 	}
 
 	virtual void import_state(const uint8_t *p_buffer, size_t p_size) override {
-		constexpr size_t needed = sizeof(float) * 3;
+		constexpr size_t needed = sizeof(float) * 2;
 		if (p_size >= needed) {
 			memcpy(&carrier_phase, p_buffer, sizeof(float));
 			memcpy(&mod_phase, p_buffer + sizeof(float), sizeof(float));
-			memcpy(&lp_prev, p_buffer + sizeof(float) * 2, sizeof(float));
-		} else if (p_size >= sizeof(float) * 2) {
-			// Backward-compatible: old state without lp_prev
-			memcpy(&carrier_phase, p_buffer, sizeof(float));
-			memcpy(&mod_phase, p_buffer + sizeof(float), sizeof(float));
-			lp_prev = 0.0f;
 		}
 	}
 

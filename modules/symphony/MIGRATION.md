@@ -5,9 +5,10 @@ Update this file with each commit that changes a public API.
 
 ## Status
 
-- **Milestone:** M3 C++ complete. Tech-fix plan **P0 + P1 + P1b** landed; **S0 / music N0 closed**.
+- **Milestone:** M3 C++ complete. Tech-fix plan **P0 + P1 + P1b + P3** landed; **S0 / music N0 closed**; **S1** in progress.
 - **Branch:** `features/symphony_fixed`
-- **Tests:** 219 Symphony cases (2026-10-09). Editor TSan (`.san`) after P1b: 218/218 green at re-baseline time (T3 landed immediately after; same race profile) with **1** data-race warning — same count as the P0 baseline (`DynamicRangeHigh` global; frames unresolved; not a Symphony frame). **New Symphony-frame races vs P0 = 0.**
+- **Tests:** 230 Symphony cases (2026-10-09). Editor TSan (`.san`) after P1b: 218/218 green at re-baseline time (T3 landed immediately after; same race profile) with **1** data-race warning — same count as the P0 baseline (`DynamicRangeHigh` global; frames unresolved; not a Symphony frame). **New Symphony-frame races vs P0 = 0.**
+- **P3 DSP:** Saturator HIIR 2× half-band + u-domain ADAA; Waveshaper shared preset tables + 3-way ADAA + continuous foldback; FM Carson clamp (no output LPF); staircase LPF `min(18000, 0.4·sr)`; FormantOsc harmonic blend; DC blocker `R=exp(−2π·15/sr)`; Biquad 5 ms cutoff/Q smoothing.
 - **SeqLock** moved from `spatial/symphony_seqlock.h` to `core/symphony_seqlock.h`.
 - **PhaseVocoder** no longer has a `seed` parameter.
 - **Noise** gained `seed` and `deterministic_seed`. Seed parameters on Noise, GrainCloud and StochasticTrigger clamp to 16777215.

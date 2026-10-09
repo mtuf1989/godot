@@ -41,8 +41,8 @@ struct GraphDescription {
 
 	// --- Compile-time quality options ---
 
-	// When true, the compiler auto-inserts a 2nd-order lowpass filter (18 kHz, Q=0.707)
-	// between consecutive nonlinear operators (those with OperatorDescriptor::nonlinear == true).
+	// When true, the compiler auto-inserts a 2nd-order lowpass (cutoff min(18000, 0.4·sr),
+	// Q=0.707) between consecutive nonlinear operators (OperatorDescriptor::nonlinear).
 	// This prevents harmonic cascade aliasing in chains like Saturator → Waveshaper → Saturator.
 	// Default: false (opt-in per graph).
 	bool anti_alias_staircase = false;

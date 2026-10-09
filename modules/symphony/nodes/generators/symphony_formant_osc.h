@@ -110,11 +110,13 @@ public:
 			// exp(-beta² * phase²) where phase is in [-0.5, 0.5]
 			float envelope = Math::exp(neg_beta_sq * centered_phase * centered_phase);
 
-			// Cosine carrier at formant frequency, phase-aligned to fundamental
-			// This places spectral energy at formant_freq (as harmonics of fundamental)
-			float formant_carrier = Math::cos(carrier_phase * formant_ratio * (float)Math::TAU);
+			// Continuous harmonic blend at non-integer formant ratios avoids wrap clicks:
+			// θ = 2π·(carrier_phase − 0.5), out = env·((1−w)cos(nθ) + w·cos((n+1)θ))
+			float theta = (float)Math::TAU * centered_phase;
+			float n_f = floorf(formant_ratio);
+			float w = formant_ratio - n_f;
+			float formant_carrier = (1.0f - w) * Math::cos(n_f * theta) + w * Math::cos((n_f + 1.0f) * theta);
 
-			// Output: windowed cosine at formant frequency
 			audio_out[i] = formant_carrier * envelope;
 		}
 	}

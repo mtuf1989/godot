@@ -346,11 +346,12 @@ GraphCompiler::CompileResult GraphCompiler::compile(const GraphDescription &p_de
 			if (from_desc->outputs[conn.from_pin].type != SymphonyPinType::AUDIO) continue;
 
 			// Inject a synthetic BiquadFilter node.
+			// Cutoff tracks sample rate so low-rate graphs don't place the LPF past Nyquist.
 			NodeDesc lpf_node;
 			lpf_node.id = next_synth_id++;
 			lpf_node.type_name = StringName("BiquadFilter");
-			lpf_node.params.insert(StringName("mode"), 0.0f);    // LP
-			lpf_node.params.insert(StringName("cutoff"), 18000.0f);
+			lpf_node.params.insert(StringName("mode"), 0.0f); // LP
+			lpf_node.params.insert(StringName("cutoff"), GraphCompiler::staircase_lpf_cutoff(p_mix_rate));
 			lpf_node.params.insert(StringName("resonance"), 0.707f);
 			effective_desc.nodes.push_back(lpf_node);
 
