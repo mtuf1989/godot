@@ -32,7 +32,7 @@
 | P8a | `c0779edf40` (+ game-template `266c9f3d`) | `SoundEvent.tier` / VITAL; pool importance key; N13; removed stream `voice_priority` |
 | P10 | `94748f2e00` (+ game-template `ed64b879`) | Resettable-state contract; ModalBank `pitch_ratio`/`root_hz`; migrate 11 PitchShifter presets |
 | N2 | `db7f7ecb05` | `MusicNoteInput`, note pools, protected capacity, multi-track phrase + 44.1/48k tests |
-| N3 | *(this commit)* | Signalsmith Stretch 1.3.0 + Linear 0.1.2; stereo PCM cache; stretch pool/ownership; hybrid score test |
+| N3 | `e6dc62f583` | Signalsmith Stretch 1.3.0 + Linear 0.1.2; stereo PCM cache; stretch pool/ownership; hybrid score test |
 
 ### P1 leftovers (closed — optional coverage only)
 
