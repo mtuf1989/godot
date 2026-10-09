@@ -23,7 +23,7 @@
 | P1b | `c5d38b563b` | Promotion order, atomic-word SeqLock, per-voice seeds, `frames_rendered`, unresampled `render_offline` |
 | S0 gate | `81e362e111` (+ game-template `9ed46af4`) | TSan re-baseline (= P0 warning count); T3; parked-package docs; torch_fire GDScript N1 |
 | P3 | `dd19939a3a` | HIIR saturator OS, u-domain ADAA, waveshaper 3-way ADAA + foldback, FM Carson clamp, staircase/rate LPF, FormantOsc blend, DC R(sr), Biquad τ=5ms |
-| P4 | *(this commit)* | Rate policy helper; SFX mix_rate 48k default + clamp; WavePlayer loop-aware Hermite; OnePole/SVF open bypass; osc dt∈[0,0.49] |
+| P4 | `1a84c38e46` | Rate policy helper; SFX mix_rate 48k default + clamp; WavePlayer loop-aware Hermite; OnePole/SVF open bypass; osc dt∈[0,0.49] |
 
 ### P1 leftovers (S0 gate)
 
@@ -92,7 +92,7 @@ Policy (memory `symphony-presets-no-compat`): pre-production, no compatibility s
 | P1b | **Done** | Foundation extras (shared with music) | Float→Audio promotion order, SeqLock fix, G seeds, N10 frame counter, N16 `render_offline` | godot | P1 |
 | P2 | Pending | Quick audible wins | N2, N3 | both | P1 |
 | P3 | **Done** `dd19939a3a` | Nonlinear and anti-aliasing DSP | C, D, E, N6, N20, J, L, P, DC blocker, Biquad smoothing | godot | P0 |
-| P4 | **Done** | Sampler and rate path | S (rate policy D), N18, N19, mix_rate clamp, Oscillator floor | godot | P0 |
+| P4 | **Done** `1a84c38e46` | Sampler and rate path | S (rate policy D), N18, N19, mix_rate clamp, Oscillator floor | godot | P0 |
 | P5 | Pending | Spectral and granular | F, N4, N5, N14, I/U removal, N7, N17, GrainCloud upgrade, stale comments | godot (+ skills docs) | P0 |
 | P6 | Pending | Spatial reverb rework | O, T, N15, W, uniformity, FDN AudioEffect, core DRR patch | both + Godot core | P1, P1b, P3 |
 | P7 | Pending | SFX-side timing | N11 SymphonyClock, N21, asymmetric RTPC (BeatClock + R move to music N1) | both | P1 |
