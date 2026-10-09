@@ -9,35 +9,24 @@
 
 #include <cstdint>
 
-// PhaseVocoder: Real-time time-stretching and pitch-shifting via STFT.
+// PhaseVocoder: Real-time pitch-shifting via STFT (pitch only; no time-stretch).
 //
 // Algorithm:
 //   1. Accumulate input into a ring buffer.
-//   2. Every synthesis hop, perform analysis at time-stretched position:
-//      - Window → FFT → magnitude/phase → phase unwrap → pitch shift →
-//        phase accumulate → IFFT → window → overlap-add.
-//   3. Read output from the overlap-add buffer at normal rate.
+//   2. Every hop: window → FFT → unwrap → pitch remap (strongest-source phase) →
+//      accumulate → IFFT → window → overlap-add.
+//   3. Read output from the overlap-add buffer at the analysis rate.
 //
-// Time-stretch ratio controls output duration relative to input:
-//   time_stretch = 2.0 → output is 2× longer (half-speed playback).
-//   time_stretch = 0.5 → output is half as long (double-speed playback).
-//   time_stretch = 1.0 → normal speed.
-// This matches the DAW convention (Ableton, Pro Tools, etc.).
-//
-// Pitch-shift (in semitones) re-maps frequency bins before resynthesis.
-//
-// NOTE: PFFFT_Setup* is heap-allocated by pffft_new_setup() and cannot live in
-// the arena. It will leak when the arena is freed. This is acceptable because
-// graph destruction is infrequent and the setup is small (~few KB).
+// Pitch-shift (semitones) remaps bins before resynthesis. LOD migration is
+// excluded (export_state size 0): rings + phases exceed the 256-byte limit.
 class SymphonyPhaseVocoder : public SymphonyOperator {
 private:
 	// --- Pin pointers (bound by compiler) ---
 	const float *SYMPHONY_RESTRICT audio_in = nullptr;
-	const float *SYMPHONY_RESTRICT time_stretch_input = nullptr;
 	const float *SYMPHONY_RESTRICT pitch_shift_input = nullptr;
 	float *SYMPHONY_RESTRICT audio_out = nullptr;
 
-	// --- FFT setup (heap-allocated, see note above) ---
+	// --- FFT setup (heap; destroyed in cleanup()) ---
 	PFFFT_Setup *pffft_setup = nullptr;
 
 	// --- Arena-allocated buffers ---
@@ -61,7 +50,6 @@ private:
 	int32_t hop_size = 0;             // = fft_size / overlap (analysis & synthesis hop)
 	int32_t num_bins = 0;             // = fft_size / 2 + 1
 	float mix_rate = 44100.0f;
-	float default_time_stretch = 1.0f;
 	float default_pitch_shift = 0.0f;
 
 	// --- Processing state (absolute 64-bit timeline positions, plan §9) ---
@@ -75,20 +63,13 @@ private:
 
 	// --- Helpers ---
 
-	// Wrap phase to [-PI, PI]
+	// Wrap phase to [-PI, PI] without while-loops (N4).
 	inline float wrap_phase(float p_phase) const {
-		// Fast wrapping using fmod-like approach
-		while (p_phase > Math::PI) {
-			p_phase -= Math::TAU;
-		}
-		while (p_phase < -Math::PI) {
-			p_phase += Math::TAU;
-		}
-		return p_phase;
+		return p_phase - Math::TAU * Math::floor((p_phase + Math::PI) / Math::TAU);
 	}
 
 	// Process one full STFT analysis-modify-resynthesize frame
-	void process_frame(float p_time_stretch, float p_pitch_shift) {
+	void process_frame(float p_pitch_shift) {
 		if (!pffft_setup) {
 			return;
 		}
@@ -108,7 +89,7 @@ private:
 		}
 
 		const int32_t read_start = (int32_t)(analysis_abs % (uint64_t)ring_size);
-		analysis_abs += (uint64_t)MAX(1, (int32_t)Math::round((1.0f / p_time_stretch) * (float)hop_size));
+		analysis_abs += (uint64_t)hop_size;
 
 		for (int32_t i = 0; i < fft_size; i++) {
 			int32_t idx = (read_start + i) % ring_size;
@@ -161,36 +142,41 @@ private:
 		}
 
 		// --- Step 5: Pitch shifting (bin remapping) ---
-		// Clear shifted buffers
+		// Magnitudes accumulate; phase follows the strongest contributing source (F).
+		// Scratch: analysis_frame holds winner mag; fft_workspace holds winner src index.
+		float *winner_mag = analysis_frame;
+		float *winner_src = fft_workspace;
 		for (int32_t k = 0; k < num_bins; k++) {
 			shifted_mag[k] = 0.0f;
 			shifted_phase[k] = 0.0f;
+			winner_mag[k] = -1.0f;
+			winner_src[k] = 0.0f;
 		}
 
-		if (Math::abs(pitch_ratio - 1.0f) < 0.001f) {
-			// No pitch shift — copy directly
-			for (int32_t k = 0; k < num_bins; k++) {
-				shifted_mag[k] = magnitude_buf[k];
-				shifted_phase[k] = unwrapped_delta[k];
+		for (int32_t k_src = 0; k_src < num_bins; k_src++) {
+			const float dest_bin_f = (float)k_src * pitch_ratio;
+			const int32_t dest = (int32_t)(dest_bin_f + 0.5f);
+			if (dest < 0 || dest >= num_bins) {
+				continue;
 			}
-		} else {
-			// Pitch shift: bin k maps to destination bin k*pitch_ratio
-			for (int32_t k = 0; k < num_bins; k++) {
-				float dest_bin_f = (float)k * pitch_ratio;
-				int32_t dest_bin = (int32_t)(dest_bin_f + 0.5f);
-				if (dest_bin >= 0 && dest_bin < num_bins) {
-					shifted_mag[dest_bin] += magnitude_buf[k];
-					shifted_phase[dest_bin] = unwrapped_delta[k] * pitch_ratio;
-				}
+			const float mag = magnitude_buf[k_src];
+			shifted_mag[dest] += mag;
+			if (mag > winner_mag[dest]) {
+				winner_mag[dest] = mag;
+				winner_src[dest] = (float)k_src;
+				shifted_phase[dest] = unwrapped_delta[k_src];
 			}
 		}
 
-		// --- Step 6: Phase accumulation for synthesis ---
-		for (int32_t k = 0; k < num_bins; k++) {
-			float expected = (float)k * expected_phase_advance;
-			synth_phase[k] += expected + shifted_phase[k];
-			// Keep synth_phase bounded to avoid float precision loss over time
-			synth_phase[k] = wrap_phase(synth_phase[k]);
+		// --- Step 6: Phase accumulation (once per dest; no double-advance) ---
+		// synth_phase[dest] += ratio · (k_src · adv + Δφ_src)
+		for (int32_t dest = 0; dest < num_bins; dest++) {
+			if (winner_mag[dest] < 0.0f) {
+				continue;
+			}
+			const float k_src = winner_src[dest];
+			synth_phase[dest] += pitch_ratio * (k_src * expected_phase_advance + shifted_phase[dest]);
+			synth_phase[dest] = wrap_phase(synth_phase[dest]);
 		}
 
 		// --- Step 7: Convert back to interleaved complex ---
@@ -230,8 +216,7 @@ public:
 
 	virtual void bind_pins(void **p_input_ptrs, void **p_output_ptrs) override {
 		audio_in = (const float *)p_input_ptrs[0];
-		time_stretch_input = (const float *)p_input_ptrs[1];
-		pitch_shift_input = (const float *)p_input_ptrs[2];
+		pitch_shift_input = (const float *)p_input_ptrs[1];
 		audio_out = (float *)p_output_ptrs[0];
 	}
 
@@ -245,11 +230,7 @@ public:
 	virtual void execute(int32_t p_num_frames) override {
 		SYMPHONY_ASSUME_FRAMES(p_num_frames);
 
-		// Read control-rate parameters (once per micro-block)
-		float time_stretch = time_stretch_input ? *time_stretch_input : default_time_stretch;
 		float pitch_shift = pitch_shift_input ? *pitch_shift_input : default_pitch_shift;
-
-		time_stretch = CLAMP(time_stretch, 0.5f, 2.0f);
 		pitch_shift = CLAMP(pitch_shift, -12.0f, 12.0f);
 
 		const int32_t ring_in_size = fft_size * 2;
@@ -269,7 +250,7 @@ public:
 			synth_counter++;
 			if (primed && synth_counter >= hop_size) {
 				synth_counter = 0;
-				process_frame(time_stretch, pitch_shift);
+				process_frame(pitch_shift);
 			}
 
 			if (primed) {
@@ -282,77 +263,16 @@ public:
 		}
 	}
 
+	// LOD migration excluded: rings + phases exceed the 256-byte LOD state budget.
 	virtual size_t export_state(uint8_t *p_buffer, size_t p_max_size) const override {
-		struct StateHeader {
-			uint64_t input_abs_write;
-			uint64_t analysis_abs;
-			int32_t input_write_pos;
-			int32_t output_read_pos;
-			int32_t output_write_pos;
-			int32_t synth_counter;
-			int32_t primed;
-		};
-
-		size_t phase_bytes = sizeof(float) * num_bins;
-		size_t needed = sizeof(StateHeader) + phase_bytes * 2;
-		if (!p_buffer) {
-			return needed;
-		}
-		if (p_max_size < needed) {
-			return 0;
-		}
-
-		StateHeader hdr;
-		hdr.input_abs_write = input_abs_write;
-		hdr.analysis_abs = analysis_abs;
-		hdr.input_write_pos = input_write_pos;
-		hdr.output_read_pos = output_read_pos;
-		hdr.output_write_pos = output_write_pos;
-		hdr.synth_counter = synth_counter;
-		hdr.primed = primed ? 1 : 0;
-
-		size_t offset = 0;
-		memcpy(p_buffer + offset, &hdr, sizeof(StateHeader));
-		offset += sizeof(StateHeader);
-		memcpy(p_buffer + offset, prev_phase, phase_bytes);
-		offset += phase_bytes;
-		memcpy(p_buffer + offset, synth_phase, phase_bytes);
-		offset += phase_bytes;
-
-		return offset;
+		(void)p_buffer;
+		(void)p_max_size;
+		return 0;
 	}
 
 	virtual void import_state(const uint8_t *p_buffer, size_t p_size) override {
-		struct StateHeader {
-			uint64_t input_abs_write;
-			uint64_t analysis_abs;
-			int32_t input_write_pos;
-			int32_t output_read_pos;
-			int32_t output_write_pos;
-			int32_t synth_counter;
-			int32_t primed;
-		};
-
-		size_t phase_bytes = sizeof(float) * num_bins;
-		size_t needed = sizeof(StateHeader) + phase_bytes * 2;
-		if (p_size < needed) {
-			return;
-		}
-
-		StateHeader hdr;
-		memcpy(&hdr, p_buffer, sizeof(StateHeader));
-		input_abs_write = hdr.input_abs_write;
-		analysis_abs = hdr.analysis_abs;
-		input_write_pos = hdr.input_write_pos;
-		output_read_pos = hdr.output_read_pos;
-		output_write_pos = hdr.output_write_pos;
-		synth_counter = hdr.synth_counter;
-		primed = hdr.primed != 0;
-
-		size_t offset = sizeof(StateHeader);
-		memcpy(prev_phase, p_buffer + offset, phase_bytes);
-		offset += phase_bytes;
-		memcpy(synth_phase, p_buffer + offset, phase_bytes);
+		(void)p_buffer;
+		(void)p_size;
 	}
 
 	static void register_operator() {
@@ -360,12 +280,10 @@ public:
 		desc.type_name = "PhaseVocoder";
 		desc.category = "Spectral";
 		desc.inputs.push_back({ "audio_in", SymphonyPinType::AUDIO, false });
-		desc.inputs.push_back({ "time_stretch", SymphonyPinType::FLOAT, false });
 		desc.inputs.push_back({ "pitch_shift", SymphonyPinType::FLOAT, false });
 		desc.outputs.push_back({ "audio_out", SymphonyPinType::AUDIO, false });
 		desc.params.push_back({ "fft_size", 2048.0f, 256.0f, 8192.0f, 1.0f });
 		desc.params.push_back({ "overlap", 4.0f, 2.0f, 8.0f, 1.0f });
-		desc.params.push_back({ "time_stretch", 1.0f, 0.5f, 2.0f, 0.01f });
 		desc.params.push_back({ "pitch_shift", 0.0f, -12.0f, 12.0f, 0.01f });
 		desc.state_size = sizeof(SymphonyPhaseVocoder);
 		desc.state_align = alignof(SymphonyPhaseVocoder);
@@ -416,8 +334,6 @@ public:
 		pv->hop_size = pv->fft_size / pv->overlap;
 		pv->num_bins = pv->fft_size / 2 + 1;
 
-		pv->default_time_stretch = p_params.has("time_stretch") ? (float)p_params["time_stretch"] : 1.0f;
-		pv->default_time_stretch = CLAMP(pv->default_time_stretch, 0.5f, 2.0f);
 		pv->default_pitch_shift = p_params.has("pitch_shift") ? (float)p_params["pitch_shift"] : 0.0f;
 		pv->default_pitch_shift = CLAMP(pv->default_pitch_shift, -12.0f, 12.0f);
 

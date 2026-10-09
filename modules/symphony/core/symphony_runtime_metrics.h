@@ -19,6 +19,15 @@ inline void symphony_note_spectral_underflow() {
 	symphony_spectral_underflow_count().fetch_add(1, std::memory_order_relaxed);
 }
 
+inline std::atomic<uint64_t> &symphony_dropped_grains_count() {
+	static std::atomic<uint64_t> counter{ 0 };
+	return counter;
+}
+
+inline void symphony_note_dropped_grain() {
+	symphony_dropped_grains_count().fetch_add(1, std::memory_order_relaxed);
+}
+
 inline std::atomic<uint64_t> &symphony_packages_destroyed_count() {
 	static std::atomic<uint64_t> counter{ 0 };
 	return counter;

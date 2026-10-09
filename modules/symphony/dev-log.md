@@ -34,47 +34,31 @@ The following topics need proper user-facing documentation before the module is 
 - LOD tier 2 graphs should NOT use GrainCloud. Replace with Noise→Filter→Gain for distant voices.
 - Live-input granulation allocates 384KB per voice — budget accordingly.
 
-### GrainCloud Pin Evolution (S4.3)
-- GrainCloud grew from 5 to 8 input pins in S4.3: added `scan_speed`, `amp_randomness`, `pitch_tracking`.
-- Old `.tres` files with only 5 connections still load correctly — unconnected pins default to `nullptr` and parameter defaults are used (scan_speed=0, amp_randomness=0, pitch_tracking=0).
-- No migration action required. New pins are all `required = false`.
-- Pin layout: `audio_in`(0), `grain_size_ms`(1), `density`(2), `position`(3), `pitch_randomness`(4), `scan_speed`(5), `amp_randomness`(6), `pitch_tracking`(7).
+### GrainCloud Pin Evolution (P5)
+- Pins: `audio_in`(0), `trigger`(1), `grain_size_ms`(2), `density`(3), `position`(4), `pitch_range_st`(5), `scan_speed`(6), `amp_randomness`(7), `reverse_prob`(8).
+- Removed `pitch_tracking`. Legacy param `pitch_randomness` still accepted at create and maps to `pitch_range_st`.
+- Max 32 grains; windows hann/tukey/expodec/rexpodec; `overlap_normalize` default on.
+- RT metric: `get_dropped_grains_count()`.
 
 ### Virtualization & Memory
 - Connect to `SymphonyVoicePool.voice_virtualized` / `voice_devirtualized` signals.
 - On virtualize: call `player.stop()` to release graph memory.
 - On devirtualize: call `player.play()` to recompile. First ~50ms may be silent for live-input mode (masked by fade-in).
 
-### PhaseVocoder Time-Stretch
-- `time_stretch = 2.0` = output is 2× longer (half-speed). Matches DAW convention.
-- If using BeatClock's `calculate_time_stretch_for_alignment()` output, invert with `1.0 / stretch`.
-- Preferred: use `calculate_duration_stretch_for_alignment()` directly — it returns the reciprocal.
+### PhaseVocoder (P5)
+- Pitch-shift only — `time_stretch` removed. Use `pitch_scale` / sampler rate for time-scale.
+- Strongest-source phase remap; LOD `export_state` size 0.
 
-### Time-Stretch Convention: BeatClock vs PhaseVocoder
-
-Symphony uses two conventions for time-stretch values:
+### Time-Stretch Convention: BeatClock
 
 | API | Convention | >1.0 means |
 |-----|-----------|------------|
 | `BeatClock.calculate_time_stretch_for_alignment()` | Rate-based | Faster (compressed duration) |
 | `BeatClock.calculate_duration_stretch_for_alignment()` | Duration-based | Slower (longer output) |
-| `PhaseVocoder` time_stretch input | Duration-based | Slower (longer output) |
 | `AudioStreamPlayer.pitch_scale` | Rate-based | Faster/higher pitch |
 
-**Rule of thumb:**
-- Use `calculate_time_stretch_for_alignment()` when setting `pitch_scale` or playback rate.
-- Use `calculate_duration_stretch_for_alignment()` when feeding a PhaseVocoder node.
-
-Example (GDScript):
 ```gdscript
-# Align next bar to a gameplay event 3.2 seconds from now
-var target_time = 3.2
-
-# For AudioStreamPlayer (rate-based):
 player.pitch_scale = BeatClock.calculate_time_stretch_for_alignment(target_time)
-
-# For PhaseVocoder graph input (duration-based):
-playback.set_parameter("time_stretch", BeatClock.calculate_duration_stretch_for_alignment(target_time))
 ```
 
 ### TriggerInput One-Shots

@@ -32,6 +32,7 @@ void SymphonyVoiceManager::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_critical_threshold"), &SymphonyVoiceManager::get_critical_threshold);
 	ClassDB::bind_method(D_METHOD("process_deferred_lod"), &SymphonyVoiceManager::process_deferred_lod);
 	ClassDB::bind_method(D_METHOD("get_dropped_trigger_count"), &SymphonyVoiceManager::get_dropped_trigger_count);
+	ClassDB::bind_method(D_METHOD("get_dropped_grains_count"), &SymphonyVoiceManager::get_dropped_grains_count);
 	ClassDB::bind_method(D_METHOD("get_spectral_underflow_count"), &SymphonyVoiceManager::get_spectral_underflow_count);
 	ClassDB::bind_method(D_METHOD("get_crossfade_transition_count"), &SymphonyVoiceManager::get_crossfade_transition_count);
 	ClassDB::bind_method(D_METHOD("get_fallback_transition_count"), &SymphonyVoiceManager::get_fallback_transition_count);
@@ -214,6 +215,10 @@ uint64_t SymphonyVoiceManager::get_dropped_trigger_count() const {
 	return symphony_dropped_trigger_count().load(std::memory_order_relaxed);
 }
 
+uint64_t SymphonyVoiceManager::get_dropped_grains_count() const {
+	return symphony_dropped_grains_count().load(std::memory_order_relaxed);
+}
+
 uint64_t SymphonyVoiceManager::get_spectral_underflow_count() const {
 	return symphony_spectral_underflow_count().load(std::memory_order_relaxed);
 }
@@ -259,6 +264,7 @@ Dictionary SymphonyVoiceManager::get_debug_metrics() const {
 	d["average_voice_microseconds"] = get_average_voice_microseconds();
 	d["stolen_this_frame"] = get_stolen_this_frame();
 	d["dropped_trigger_count"] = (int64_t)get_dropped_trigger_count();
+	d["dropped_grains_count"] = (int64_t)get_dropped_grains_count();
 	d["spectral_underflow_count"] = (int64_t)get_spectral_underflow_count();
 	d["crossfade_transition_count"] = (int64_t)get_crossfade_transition_count();
 	d["fallback_transition_count"] = (int64_t)get_fallback_transition_count();

@@ -19,7 +19,7 @@ private:
 	// Pink noise state (Voss-McCartney, 8 octaves)
 	float pink_rows[8] = {};
 	float pink_running_sum = 0.0f;
-	int32_t pink_index = 0;
+	uint32_t pink_index = 0;
 
 	float white_sample() {
 		seed = seed * 1664525u + 1013904223u;
@@ -38,7 +38,7 @@ public:
 			uint32_t lcg;
 			float rows[8];
 			float sum;
-			int32_t index;
+			uint32_t index;
 		};
 		static_assert(sizeof(State) == 44, "Noise state layout must stay tightly packed");
 		if (!p_buffer) {
@@ -63,7 +63,7 @@ public:
 			uint32_t lcg;
 			float rows[8];
 			float sum;
-			int32_t index;
+			uint32_t index;
 		};
 		if (p_size < sizeof(State)) {
 			return;
@@ -85,8 +85,8 @@ public:
 			}
 		} else {
 			for (int32_t i = 0; i < p_num_frames; i++) {
-				// Voss-McCartney: update one row per sample based on trailing zeros
-				int32_t changed = symphony_ctz(pink_index + 1) & 7;
+				// Voss-McCartney: |0x80 keeps ctz defined when index+1 wraps to 0.
+				int32_t changed = symphony_ctz((pink_index + 1u) | 0x80u) & 7;
 				pink_running_sum -= pink_rows[changed];
 				pink_rows[changed] = white_sample();
 				pink_running_sum += pink_rows[changed];

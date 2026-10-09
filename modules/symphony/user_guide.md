@@ -568,7 +568,7 @@ Note that `LFO` and `Oscillator` number their waveforms differently.
 | Operator | Inputs → Outputs | Parameters |
 |----------|------------------|------------|
 | **ModalBank** | `excitation` → `audio_out` | `frequencies` (float array, Hz), `decay_times` (float array, s, time to −60 dB), `gains` (float array, strike amplitude per mode), `num_modes`, `max_modes` (≤ 64) |
-| **GrainCloud** | `audio_in`, `trigger`, `grain_size_ms`, `density`, `position`, `pitch_randomness`, `scan_speed`, `amp_randomness`, `pitch_tracking` → `audio_out` | the same names as params, plus `position_randomness`, `trigger_only`, `seed`, `capture_seconds` |
+| **GrainCloud** | `audio_in`, `trigger`, `grain_size_ms`, `density`, `position`, `pitch_range_st`, `scan_speed`, `amp_randomness`, `reverse_prob` → `audio_out` | same names as params, plus `position_randomness`, `window_shape` (hann/tukey/expodec/rexpodec), `overlap_normalize` (default on), `trigger_only`, `seed`, `capture_seconds`; size 2–500 ms, density ≤500/s, ≤32 grains |
 
 **ModalBank semantics.** Each mode is a damped sine. A unit impulse on `excitation` rings mode *k* as `gains[k] · e^(−6.91·t / decay_times[k]) · sin(2π · frequencies[k] · t)`, so `gains` is the strike amplitude of each mode, independent of its frequency and decay time. Write the material's relative partial amplitudes into `gains` and set the overall level with a `Gain` after the bank. All three arrays are required: if any is missing (for example `decay_times` misspelled as `decays`), the bank has zero modes and is silent. Longer or noisier excitation (a noise burst, a scrape) excites each mode by the energy near its frequency, so the output can exceed the sum of `gains`; check `peak` with `render_offline()`.
 
@@ -576,8 +576,8 @@ Note that `LFO` and `Oscillator` number their waveforms differently.
 
 | Operator | Inputs → Outputs | Parameters |
 |----------|------------------|------------|
-| **PhaseVocoder** | `audio_in`, `time_stretch`, `pitch_shift` → `audio_out` | `fft_size`, `overlap`, `time_stretch` (0.5–2, duration-based), `pitch_shift` (semitones) |
-| **SpectralGate** | `audio_in`, `threshold_db`, `reduction_db` → `audio_out` | `fft_size`, `overlap`, `threshold_db`, `reduction_db` |
+| **PhaseVocoder** | `audio_in`, `pitch_shift` → `audio_out` | `fft_size`, `overlap`, `pitch_shift` (semitones; pitch only — no time-stretch) |
+| **SpectralGate** | `audio_in`, `threshold_db`, `reduction_db` → `audio_out` | `fft_size`, `overlap`, `threshold_db` (dBFS), `reduction_db` |
 | **ResonatorAnalyzer** | `audio_in` → `band_0` … `band_31` (float) | `num_bands` (≤ 32), `responsiveness`, optional `frequencies` (float array, Hz; log-spaced when absent) |
 
 ### I/O (Graph Interface)
@@ -998,19 +998,15 @@ Symphony uses two conventions — be careful which API you use:
 |-----|-----------|------------|
 | `BeatClock.calculate_time_stretch_for_alignment()` | Rate-based | Faster |
 | `BeatClock.calculate_duration_stretch_for_alignment()` | Duration-based | Slower |
-| `PhaseVocoder` time_stretch input | Duration-based | Slower |
 | `AudioStreamPlayer.pitch_scale` | Rate-based | Faster |
 
 **Rule of thumb:**
 - Use `calculate_time_stretch_for_alignment()` for `pitch_scale` or playback rate
-- Use `calculate_duration_stretch_for_alignment()` for PhaseVocoder graphs
+- PhaseVocoder is pitch-shift only (no `time_stretch`); time-scale with sampler rate / `pitch_scale`
 
 ```gdscript
 # Rate-based (for AudioStreamPlayer):
 player.pitch_scale = BeatClock.calculate_time_stretch_for_alignment(target_time)
-
-# Duration-based (for PhaseVocoder graph input):
-playback.set_parameter("time_stretch", BeatClock.calculate_duration_stretch_for_alignment(target_time))
 ```
 
 ---
@@ -1682,9 +1678,10 @@ Mix balance between sounds belongs in `SoundEvent` volume and bus settings, not 
 - The capture buffer costs `capture_seconds × mix_rate × 4` bytes per voice: 384 KB at the 2 s default and 48 kHz. Budget for it.
 - **Never use GrainCloud in LOD 2 graphs** — replace with `Noise → Filter → Gain`.
 - The `source_pcm_cache_key` path in the C++ source is an engine-internal hook. Setting it in a `.tres` has no effect.
-- **Trigger input** (optional): connect a `Clock`, `StochasticTrigger`, or `TriggerInput` to spawn grains at exact sample positions.
+- **Trigger input** (optional): connect a `Clock`, `StochasticTrigger`, or `TriggerInput` to spawn grains at exact sample positions. Full pool: triggers steal the oldest grain; the Poisson scheduler increments `dropped_grains_count`.
 - **`trigger_only` = true**: disables internal Poisson scheduler — grains spawn ONLY from trigger events. Ideal for beat-synced granular textures.
-- When both density scheduling and trigger input are active (default), external triggers spawn additional grains on top of internal scheduling. Watch for MAX_GRAINS (8) saturation at very high density + trigger rates.
+- Up to **32** concurrent grains. `overlap_normalize` (default on) keeps loudness stable as density×size grows. Windows: `hann`, `tukey`, `expodec`, `rexpodec`.
+- Granular recipe presets: `granular_rain`, `granular_gravel`, `granular_debris`, `granular_fire_crackle` under `audio/presets/graphs/`.
 
 ### Clock Subdivision
 
@@ -1717,7 +1714,7 @@ graph/nodes/1/type = &"Noise"
 graph/nodes/1/params = {"mode": 1}
 graph/nodes/2/id = 2
 graph/nodes/2/type = &"GrainCloud"
-graph/nodes/2/params = {"grain_size_ms": 60.0, "trigger_only": 1.0, "position": 0.5, "pitch_randomness": 0.1}
+graph/nodes/2/params = {"grain_size_ms": 60.0, "trigger_only": 1.0, "position": 0.5, "pitch_range_st": 2.0}
 graph/nodes/3/id = 3
 graph/nodes/3/type = &"GraphOutput"
 graph/nodes/3/params = {}
@@ -2198,7 +2195,7 @@ External trigger-driven grain spawning with sample-accurate placement (block-spl
 
 **⚠️ Breaking change for custom graph compilers/tools:**
 GrainCloud input pin indices shifted by +1 (trigger inserted at index 1). Pin order is now:
-`[0] audio_in, [1] trigger, [2] grain_size_ms, [3] density, [4] position, [5] pitch_randomness, [6] scan_speed, [7] amp_randomness, [8] pitch_tracking`
+`[0] audio_in, [1] trigger, [2] grain_size_ms, [3] density, [4] position, [5] pitch_range_st, [6] scan_speed, [7] amp_randomness, [8] reverse_prob`
 
 Existing `.tres` graphs that connect to GrainCloud by **pin name** (the standard authoring method) are unaffected — the graph compiler resolves pins by name, not index. Only hand-crafted connections using raw pin indices need updating.
 

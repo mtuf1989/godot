@@ -6,6 +6,8 @@
 #include "core/math/math_funcs.h"
 #include "modules/symphony/thirdparty/pffft/pffft.h"
 
+#include <cstdint>
+
 // SpectralGate: Frequency-domain noise gate for noise suppression and spectral effects.
 //
 // Algorithm (pass-through spectral processor — no time-stretch or pitch-shift):
@@ -21,9 +23,7 @@
 //      h. Overlap-add to output ring buffer.
 //   3. Read from output ring buffer.
 //
-// NOTE: PFFFT_Setup* is heap-allocated by pffft_new_setup() and cannot live in
-// the arena. It will leak when the arena is freed. This is acceptable because
-// graph destruction is infrequent and the setup is small (~few KB).
+// Threshold compares bin magnitude in dBFS (normalized by Σw/2 of the analysis window).
 class SymphonySpectralGate : public SymphonyOperator {
 private:
 	// --- Pin pointers (bound by compiler) ---
@@ -32,7 +32,7 @@ private:
 	const float *SYMPHONY_RESTRICT reduction_db_input = nullptr;
 	float *SYMPHONY_RESTRICT audio_out = nullptr;
 
-	// --- FFT setup (heap-allocated, see note above) ---
+	// --- FFT setup (heap; destroyed in cleanup()) ---
 	PFFFT_Setup *pffft_setup = nullptr;
 
 	// --- Arena-allocated buffers ---
@@ -51,16 +51,20 @@ private:
 	int32_t hop_size = 0;             // = fft_size / overlap
 	float default_threshold_db = -40.0f;
 	float default_reduction_db = -40.0f;
+	float mag_norm = 1.0f; // Σw/2 — converts raw bin mag to ~FS amplitude
 
 	// --- Processing state ---
-	int32_t input_write_pos = 0;      // Write position in input_ring [0, fft_size*2)
-	int32_t input_samples_fed = 0;    // Total input samples written (monotonic counter)
-	int32_t output_read_pos = 0;      // Read position in output_ring [0, fft_size*2)
-	int32_t output_write_pos = 0;     // Write position in output_ring (where OLA writes)
-	int32_t hop_counter = 0;          // Counts input samples; triggers new frame at hop_size boundary
-	bool primed = false;              // True once we have at least fft_size input samples
+	int32_t input_write_pos = 0; // Write position in input_ring [0, fft_size*2)
+	uint64_t input_samples_fed = 0; // Total input samples written
+	int32_t output_read_pos = 0; // Read position in output_ring [0, fft_size*2)
+	int32_t output_write_pos = 0; // Write position in output_ring (where OLA writes)
+	int32_t hop_counter = 0; // Counts input samples; triggers new frame at hop_size boundary
+	bool primed = false; // True once we have at least fft_size input samples
 
-	// --- Helpers ---
+	inline float magnitude_dbfs(float p_mag) const {
+		const float norm = p_mag / mag_norm;
+		return (norm > 1e-10f) ? 20.0f * Math::log(norm) / Math::log(10.0f) : -200.0f;
+	}
 
 	// Process one full STFT analysis-gate-resynthesize frame
 	void process_frame(float p_threshold_db, float p_reduction_db) {
@@ -81,7 +85,7 @@ private:
 		// --- Step 2: Forward FFT ---
 		pffft_transform_ordered(pffft_setup, analysis_frame, fft_buffer, fft_workspace, PFFFT_FORWARD);
 
-		// --- Step 3: Spectral gating ---
+		// --- Step 3: Spectral gating (threshold in dBFS via Σw/2 normalization) ---
 		// pffft ordered output for PFFFT_REAL of size N:
 		//   fft_buffer[0] = DC (real), fft_buffer[1] = Nyquist (real)
 		//   fft_buffer[2k], fft_buffer[2k+1] = real, imag of bin k (k=1..N/2-1)
@@ -89,8 +93,7 @@ private:
 		// DC bin (index 0)
 		{
 			float mag = Math::abs(fft_buffer[0]);
-			float mag_db = (mag > 1e-10f) ? 20.0f * Math::log(mag) / Math::log(10.0f) : -200.0f;
-			if (mag_db < p_threshold_db) {
+			if (magnitude_dbfs(mag) < p_threshold_db) {
 				fft_buffer[0] *= reduction_linear;
 			}
 		}
@@ -98,8 +101,7 @@ private:
 		// Nyquist bin (index 1)
 		{
 			float mag = Math::abs(fft_buffer[1]);
-			float mag_db = (mag > 1e-10f) ? 20.0f * Math::log(mag) / Math::log(10.0f) : -200.0f;
-			if (mag_db < p_threshold_db) {
+			if (magnitude_dbfs(mag) < p_threshold_db) {
 				fft_buffer[1] *= reduction_linear;
 			}
 		}
@@ -111,10 +113,8 @@ private:
 			float im = fft_buffer[2 * k + 1];
 			float mag_sq = re * re + im * im;
 			// Denormal-safe sqrt: skip expensive sqrt for near-zero bins (silence).
-			// On x86 without FTZ/DAZ, sqrt of denormals incurs 10-100x penalty.
 			float mag = mag_sq > 1e-30f ? Math::sqrt(mag_sq) : 0.0f;
-			float mag_db = (mag > 1e-10f) ? 20.0f * Math::log(mag) / Math::log(10.0f) : -200.0f;
-			if (mag_db < p_threshold_db) {
+			if (magnitude_dbfs(mag) < p_threshold_db) {
 				fft_buffer[2 * k] *= reduction_linear;
 				fft_buffer[2 * k + 1] *= reduction_linear;
 			}
@@ -209,11 +209,11 @@ public:
 	virtual size_t export_state(uint8_t *p_buffer, size_t p_max_size) const override {
 		struct StateHeader {
 			int32_t input_write_pos;
-			int32_t input_samples_fed;
 			int32_t output_read_pos;
 			int32_t output_write_pos;
 			int32_t hop_counter;
 			int32_t primed;
+			uint64_t input_samples_fed;
 		};
 
 		size_t needed = sizeof(StateHeader);
@@ -226,11 +226,11 @@ public:
 
 		StateHeader hdr;
 		hdr.input_write_pos = input_write_pos;
-		hdr.input_samples_fed = input_samples_fed;
 		hdr.output_read_pos = output_read_pos;
 		hdr.output_write_pos = output_write_pos;
 		hdr.hop_counter = hop_counter;
 		hdr.primed = primed ? 1 : 0;
+		hdr.input_samples_fed = input_samples_fed;
 
 		memcpy(p_buffer, &hdr, sizeof(StateHeader));
 		return sizeof(StateHeader);
@@ -239,11 +239,11 @@ public:
 	virtual void import_state(const uint8_t *p_buffer, size_t p_size) override {
 		struct StateHeader {
 			int32_t input_write_pos;
-			int32_t input_samples_fed;
 			int32_t output_read_pos;
 			int32_t output_write_pos;
 			int32_t hop_counter;
 			int32_t primed;
+			uint64_t input_samples_fed;
 		};
 
 		if (p_size < sizeof(StateHeader)) {
@@ -254,11 +254,11 @@ public:
 		memcpy(&hdr, p_buffer, sizeof(StateHeader));
 
 		input_write_pos = hdr.input_write_pos;
-		input_samples_fed = hdr.input_samples_fed;
 		output_read_pos = hdr.output_read_pos;
 		output_write_pos = hdr.output_write_pos;
 		hop_counter = hdr.hop_counter;
 		primed = (hdr.primed != 0);
+		input_samples_fed = hdr.input_samples_fed;
 	}
 
 	static void register_operator() {
@@ -322,7 +322,6 @@ public:
 		sg->default_reduction_db = p_params.has("reduction_db") ? (float)p_params["reduction_db"] : -40.0f;
 		sg->default_reduction_db = CLAMP(sg->default_reduction_db, -96.0f, 0.0f);
 
-		// --- Create PFFFT setup (heap-allocated — small leak on arena free is acceptable) ---
 		sg->pffft_setup = pffft_new_setup(sg->fft_size, PFFFT_REAL);
 		if (!sg->pffft_setup) {
 			return nullptr;
@@ -357,11 +356,14 @@ public:
 		memset(sg->fft_buffer, 0, sizeof(float) * N);
 		memset(sg->ifft_buffer, 0, sizeof(float) * N);
 
-		// --- Precompute Hanning window ---
+		// --- Precompute Hanning window and Σw/2 magnitude normalizer (dBFS) ---
+		float sum_w = 0.0f;
 		for (int32_t i = 0; i < N; i++) {
 			float phase = (float)i / (float)(N - 1);
 			sg->window_lut[i] = 0.5f * (1.0f - Math::cos(Math::TAU * phase));
+			sum_w += sg->window_lut[i];
 		}
+		sg->mag_norm = MAX(sum_w * 0.5f, 1e-12f);
 
 		// COLA normalization: Σ w² over hop-aligned overlaps (same as PhaseVocoder).
 		for (int32_t i = 0; i < N; i++) {

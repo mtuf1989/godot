@@ -95,7 +95,7 @@ Policy (memory `symphony-presets-no-compat`): pre-production, no compatibility s
 | P2 | **Done** | Quick audible wins | N2, N3 | both | P1 |
 | P3 | **Done** `dd19939a3a` | Nonlinear and anti-aliasing DSP | C, D, E, N6, N20, J, L, P, DC blocker, Biquad smoothing | godot | P0 |
 | P4 | **Done** `1a84c38e46` | Sampler and rate path | S (rate policy D), N18, N19, mix_rate clamp, Oscillator floor | godot | P0 |
-| P5 | Pending | Spectral and granular | F, N4, N5, N14, I/U removal, N7, N17, GrainCloud upgrade, stale comments | godot (+ skills docs) | P0 |
+| P5 | **Done** (this commit) | Spectral and granular | F, N4, N5, N14, I/U removal, N7, N17, GrainCloud upgrade, stale comments | godot (+ skills docs) | P0 |
 | P6 | Pending | Spatial reverb rework | O, T, N15, W, uniformity, FDN AudioEffect, core DRR patch | both + Godot core | P1, P1b, P3 |
 | P7 | Pending | SFX-side timing | N11 SymphonyClock, N21, asymmetric RTPC (BeatClock + R move to music N1) | both | P1 |
 | P8a | Pending | Voice policy: music-critical part | N9, VITAL tier, N13 | both | P1 |

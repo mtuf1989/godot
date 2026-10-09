@@ -104,6 +104,7 @@ public:
 	[[nodiscard]] float get_average_voice_microseconds() const;
 	[[nodiscard]] int32_t get_stolen_this_frame() const;
 	[[nodiscard]] uint64_t get_dropped_trigger_count() const;
+	[[nodiscard]] uint64_t get_dropped_grains_count() const;
 	[[nodiscard]] uint64_t get_spectral_underflow_count() const;
 	[[nodiscard]] uint64_t get_crossfade_transition_count() const;
 	[[nodiscard]] uint64_t get_fallback_transition_count() const;

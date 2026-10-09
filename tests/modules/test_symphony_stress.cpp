@@ -330,7 +330,7 @@ TEST_CASE("[Symphony][Stress] GrainCloud cost units stay conservative vs measure
 		grain.type_name = "GrainCloud";
 		grain.params.insert("density", 50.0f);
 		grain.params.insert("grain_size_ms", 100.0f);
-		grain.params.insert("pitch_tracking", 1.0f);
+		grain.params.insert("pitch_range_st", 6.0f);
 		grain.params.insert("capture_seconds", 1.0f);
 		grain_desc.nodes.push_back(grain);
 		NodeDesc out;
