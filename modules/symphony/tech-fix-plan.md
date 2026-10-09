@@ -31,7 +31,7 @@
 | P7 | `1c50d03cf0` (+ game-template `29727941`) | Clock t=0 + bpm/phase; asymmetric RTPC; MusicStateGraph tempo validate |
 | P8a | `c0779edf40` (+ game-template `266c9f3d`) | `SoundEvent.tier` / VITAL; pool importance key; N13; removed stream `voice_priority` |
 | P10 | `94748f2e00` (+ game-template `ed64b879`) | Resettable-state contract; ModalBank `pitch_ratio`/`root_hz`; migrate 11 PitchShifter presets |
-| N2 | *(this commit)* | `MusicNoteInput`, note pools, protected capacity, multi-track phrase + 44.1/48k tests |
+| N2 | `db7f7ecb05` | `MusicNoteInput`, note pools, protected capacity, multi-track phrase + 44.1/48k tests |
 
 ### P1 leftovers (closed — optional coverage only)
 
