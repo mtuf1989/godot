@@ -33,6 +33,7 @@
 | P10 | `94748f2e00` (+ game-template `ed64b879`) | Resettable-state contract; ModalBank `pitch_ratio`/`root_hz`; migrate 11 PitchShifter presets |
 | N2 | `db7f7ecb05` | `MusicNoteInput`, note pools, protected capacity, multi-track phrase + 44.1/48k tests |
 | N3 | `e6dc62f583` | Signalsmith Stretch 1.3.0 + Linear 0.1.2; stereo PCM cache; stretch pool/ownership; hybrid score test |
+| G1 | game-template `d574207b` | Typed score resources, bounded composer, offline ledger, batch seed tests |
 
 ### P1 leftovers (closed — optional coverage only)
 
