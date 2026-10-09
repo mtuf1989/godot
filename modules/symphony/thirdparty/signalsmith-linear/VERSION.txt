@@ -1,0 +1,3 @@
+signalsmith-linear 0.1.2
+https://github.com/Signalsmith-Audio/linear/tree/0.1.2
+Pinned for signalsmith-stretch 1.3.0 (CMakeLists FetchContent GIT_TAG).

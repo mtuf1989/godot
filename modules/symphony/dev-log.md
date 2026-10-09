@@ -1,5 +1,9 @@
 # Dev Log — Symphony Audio System
 
+## Music N3 (2026-10-09)
+
+Recorded phrases: vendored Signalsmith Stretch 1.3.0 + Linear 0.1.2 (plan said 1.3.2; tag not published). `SymphonyMusicStereoCache` (interleaved stereo float, budget-charged). `SymphonyStretchContext`/`Pool` — presetDefault + splitComputation, seek/prime on main, process on audio, Returning reclaim. Tempo/transpose envelope clamps; common-latency hybrid synth+clip render. Tests: `test_symphony_music_n3.cpp`. Suite: 294/294.
+
 ## Music N2 (2026-10-09)
 
 `MusicNoteInput` hub (freq/vel/pitch_ratio/triggers/gate); `runtime/symphony_note_pool.h` — resettable graph validation, seeded `reset_for_note` voices, release deadlines, protected-track capacity. Scheduler-driven multi-track phrase render; 44.1k/48k tone-level equivalence. Tests: `test_symphony_music_n2.cpp`. Suite: 289/289. `AudioStreamSymphonyMusic` wiring deferred to G2.

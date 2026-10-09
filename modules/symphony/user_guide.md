@@ -2064,6 +2064,12 @@ func _on_music_slider_changed(value: float):
 
 ## Changelog
 
+### Music N3 — Recorded phrases (2026-10-09)
+
+- **Signalsmith Stretch 1.3.0** (+ Linear 0.1.2) vendored under `modules/symphony/thirdparty/` (MIT). Default preset with split computation; portable RealFFT (no Accelerate coupling).
+- **Stereo music PCM cache** separate from GrainCloud’s mono `SharedPCMCache`; decode/resample helpers target the music rate (policy D).
+- **Stretch contexts:** prepare/seek on main, exclusive audio ownership, return-ack reclaim; tempo 80–125% and ±6 semitone clamps; common latency aligns generated notes with stretched clips.
+
 ### Music N2 — Note pools (2026-10-09)
 
 - **MusicNoteInput:** one hub per instrument graph — `frequency`, `velocity`, `pitch_ratio` (`frequency/root_hz`), `note_on` / `note_off`, `gate`, and `adsr_trigger` (+1 / 0 for envelopes). Discrete note updates bypass automatic parameter smoothing.

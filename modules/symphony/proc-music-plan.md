@@ -9,7 +9,7 @@
 >   - the resettable-state contract and ModalBank `pitch_ratio` (P10);
 >   - music-safe voice budgeting (P8a).
 >
-> **Status (2026-10-09):** tech **P0–P8a** and **P10** done; music **N0–N2** done (`MusicNoteInput`, note pools). Resume at `tech-fix-plan.md` §Progress → music **N3** ‖ composer **G1**. `AudioStreamSymphonyMusic` stream wrapper still thin — wire in G2.
+> **Status (2026-10-09):** tech **P0–P8a** and **P10** done; music **N0–N3** done (stretch + stereo PCM). Resume at `tech-fix-plan.md` §Progress → composer **G1**. `AudioStreamSymphonyMusic` stream wrapper still thin — wire in G2.
 
 ## 1. Goal and scope
 
@@ -270,7 +270,7 @@ Before expanding playback (all delivered in **S0** by tech plan P1/P1b):
 | **N0 — Safety foundation** | S0 | Godot | **= tech P0 ✅ + P1 ✅ + P1b ✅** (no extra work) | Establish regression baselines; fix voice lifetime/locking and Float→Audio control ordering. Focused concurrency and control-timing tests pass. |
 | **N1 — Transport and scheduler** | S1 | Godot | S0; absorbs the tech P7 R + BeatClock specs; uses the P4 rate policy | **Done:** `symphony_music_transport.h` / `symphony_music_scheduler.h`; BeatClock rewrite; `trigger_at`; Interactive clip position; `test_symphony_music_n1.cpp`. `AudioStreamSymphonyMusic` stream wrapper deferred to N2. |
 | **N2 — Musical instruments** | S2 | Godot | **P10** (reset contract, ModalBank `pitch_ratio`), **P3** (waveshaper/saturator fixes) | **Done:** `MusicNoteInput`; `symphony_note_pool.h` (resettable validation, seeded voices, release deadlines, protected capacity); `test_symphony_music_n2.cpp` (multi-track phrase + 44.1/48k). Stream wrapper deferred to G2. |
-| **N3 — Recorded phrases** | S3 | Godot | P2 N3 (WAV decode path) | Pinned stretch backend, stereo PCM preparation, context ownership, markers, tempo/key adaptation, and common latency. A fixed hybrid score passes timing and listening checks. |
+| **N3 — Recorded phrases** | S3 | Godot | P2 N3 (WAV decode path) | **Done:** vendored Signalsmith Stretch **1.3.0** (+ Linear **0.1.2**; plan cited 1.3.2 — tag absent upstream); `SymphonyMusicStereoCache`; stretch pool ownership; tempo/transpose envelope; common-latency hybrid synth+clip test (`test_symphony_music_n3.cpp`). |
 | **G1 — Score authoring and composer** | S3 | Game template | P1b G (seed helper) | Typed resources, validation, locked regions, palettes, bounded transforms, stable seeds, and offline note ledgers. Batch-generation tests pass. |
 | **G2 — Adaptive integration** | S4 | Game template | **P8a** (VITAL music voice, aggregate cost) | Procedural MusicSystem mode, state/intensity controls, phrase preparation, pacing, fallback, and audition scene. Exploration→tension→combat works through one playback. |
 | **V1 — Qualification and documentation** | S5 | Both | P9 (perf convention), all phases | Regression suites, sanitizer runs, release profiling, audition review, resource examples, and public API/schema documentation. Acceptance gates below pass. |

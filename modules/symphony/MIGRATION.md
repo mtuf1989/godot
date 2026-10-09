@@ -5,9 +5,9 @@ Update this file with each commit that changes a public API.
 
 ## Status
 
-- **Milestone:** M3 C++ complete. Tech-fix plan **P0–P8a** + **P10** + music **N1–N2** landed; **S0 / music N0 closed**; **S3** next (music **N3** ‖ **G1**). P8b remains for S4.
+- **Milestone:** M3 C++ complete. Tech-fix plan **P0–P8a** + **P10** + music **N1–N3** landed; **S0 / music N0 closed**; **S3** next (composer **G1**). P8b remains for S4.
 - **Branch:** `master`
-- **Tests:** 289 Symphony cases (2026-10-09, +N2 note pools). Editor TSan (`.san`) after P1b: 218/218 green at re-baseline time (T3 landed immediately after; same race profile) with **1** data-race warning — same count as the P0 baseline (`DynamicRangeHigh` global; frames unresolved; not a Symphony frame). **New Symphony-frame races vs P0 = 0.**
+- **Tests:** 294 Symphony cases (2026-10-09, +N3 stretch/clips). Editor TSan (`.san`) after P1b: 218/218 green at re-baseline time (T3 landed immediately after; same race profile) with **1** data-race warning — same count as the P0 baseline (`DynamicRangeHigh` global; frames unresolved; not a Symphony frame). **New Symphony-frame races vs P0 = 0.**
 - **Music N1:** `symphony_music_transport.h` / `symphony_music_scheduler.h`; BeatClock incremental accumulator + `fire_ahead_s`; `trigger_at` + Interactive clip position. `beat_hit`/`bar_hit` now pass `(index, target_time)`.
 - **P2 audible:** WavePlayer decodes all `AudioStreamWAV` formats to PCM16 at create; spatial wrapper accepts any pathed WAV. game-template 3D pool: `attenuation_filter_db=0`, `max_db=24`.
 - **P3 DSP:** Saturator HIIR 2× half-band + u-domain ADAA; Waveshaper shared preset tables + 3-way ADAA + continuous foldback; FM Carson clamp (no output LPF); staircase LPF `min(18000, 0.4·sr)`; FormantOsc harmonic blend; DC blocker `R=exp(−2π·15/sr)`; Biquad 5 ms cutoff/Q smoothing.
@@ -18,6 +18,7 @@ Update this file with each commit that changes a public API.
 - **P8a voice policy (music-critical):** `SoundEvent.tier` (`Optional`/`Important`/`Vital`); importance = tier_band + priority×distance×weights; N13 resets slot position and uses distance_factor=1 for non-positional; CPU manager ranks by `get_voice_importance()` (ties → RMS) and never budget-steals VITAL (LOD demotion still allowed); removed `AudioStreamSymphony.voice_priority` — set importance/tier on the playback (VoicePool pushes when bound; MusicSystem marks Symphony music VITAL).
 - **P10 instrument readiness:** `OperatorDescriptor.resettable` + pristine `export_state` blob; `SymphonyOperator::reset_for_note(seed)` (import → `clear_large_buffers` → `reseed`); migrate scratch sized to max state (no 256-byte cap). ModalBank keeps authored base tables; FLOAT `pitch_ratio` (0.125–8) + param `root_hz`; modes ≥ 0.45·sr mute. Eleven PitchShifter+ModalBank presets drive `pitch_ratio` instead. Conformance: `test_symphony_operator_reset.cpp`.
 - **Music N2:** `MusicNoteInput` (frequency/velocity/pitch_ratio/note_on/note_off/gate/adsr_trigger); `SymphonyNotePool` validates resettable-only graphs, reseeds on NoteOn, retains releases, protects bass/perc capacity. Tests: `test_symphony_music_n2.cpp`.
+- **Music N3:** Vendored `thirdparty/signalsmith-stretch` **1.3.0** + `signalsmith-linear` **0.1.2** (MIT); `SymphonyMusicStereoCache`; `SymphonyStretchPool` (prepare on main, exclusive audio ownership, Returning→reclaim); clip tempo ratio 0.8–1.25 and ±6 st clamp; common latency for hybrid synth+clip. Tests: `test_symphony_music_n3.cpp`.
 - **SeqLock** moved from `spatial/symphony_seqlock.h` to `core/symphony_seqlock.h`.
 - **PhaseVocoder** no longer has a `seed` parameter.
 - **Noise** gained `seed` and `deterministic_seed`. Seed parameters on Noise, GrainCloud and StochasticTrigger clamp to 16777215.
