@@ -8,11 +8,11 @@
 |---|---|
 | **As of** | 2026-10-09 |
 | **Branch** | `master` (ahead of `origin/master`; not pushed) |
-| **Done** | **P0**, **P1**, **P1b** |
-| **Next** | S0 gate — TSan re-baseline + remaining P1 polish |
-| **Stage** | S0 Foundation: P0–P1b landed; TSan re-baseline still open |
-| **C++ tests** | 218/218 `*Symphony*` green on `bin/godot.macos.editor.arm64` |
-| **TSan** | `.san` rebuilt in P0; **1** baseline race. **P1 not yet re-run under TSan** — do that before closing S0. |
+| **Done** | **P0**, **P1**, **P1b**, **S0 / N0** |
+| **Next** | **S1** — Lane A music N1 ‖ Lane B P3/P4/P2 ‖ Lane C P5 |
+| **Stage** | S0 Foundation closed; S1 Build-out next |
+| **C++ tests** | 219/219 `*Symphony*` green on `bin/godot.macos.editor.arm64` |
+| **TSan** | `.san` rebuilt after P1b; **1** warning (same as P0 `DynamicRangeHigh`); new Symphony-frame races = 0 |
 
 ### Commits
 
@@ -22,19 +22,18 @@
 | P1 | `d739292608` | Single-owner lifetime; denormal guard; RTPC atomics; LOD hysteresis; `test_symphony_lifetime.cpp` |
 | P1b | `c5d38b563b` | Promotion order, atomic-word SeqLock, per-voice seeds, `frames_rendered`, unresampled `render_offline` |
 
-### P1 leftovers (do before or with S0 gate — not blockers for starting P1b)
+### P1 leftovers (S0 gate)
 
-- Re-run `use_tsan=yes` binary on `*Symphony*` and record “new races vs P0 baseline”.
-- GDScript: `audio_manager_behavior_test.gd` play/stop 50 `torch_fire` → `active_voice_count == 0` (in `game-template/`).
-- Optional lifetime cases still thin: T2 (AudioServer stream), T3, T4/T6–T9, T11, T13–T16.
-- Document parked-packages metric / main-thread-only playback assumption in `user_guide` or `MIGRATION.md` if not already clear.
+- ✅ Re-run `use_tsan=yes` on `*Symphony*`: 218 passed, 1 warning (= P0 baseline); new Symphony-frame races = 0.
+- ✅ GDScript: `audio_manager_behavior_test.gd` fifty `torch_fire` play/stop → `active_voice_count == 0` (and `packages_active == 0` after clearing player streams).
+- ✅ Documented `packages_parked` + main-thread-only playback in `user_guide` / `MIGRATION.md`.
+- ✅ Lifetime T3 added. Still optional later: T2, T4/T6–T9, T11, T13–T16.
 
 ### How to resume next session
 
-1. Read this **Progress** block. P1b has landed; the open S0 work is the TSan re-baseline and the P1 leftovers above.
+1. Read this **Progress** block. S0 is closed; start **S1** (music N1 and/or P3/P4/P2/P5).
 2. Build: `scons platform=macos target=editor arch=arm64 tests=yes module_raycast_enabled=no -j$(sysctl -n hw.ncpu)`
-3. Re-run `*Symphony*` on the `use_tsan=yes` binary and record new races against the P0 baseline before closing S0.
-4. Leave each phase green + committed on its own (plan convention).
+3. Leave each phase green + committed on its own (plan convention).
 
 ## Context
 
@@ -62,7 +61,7 @@ Policy (memory `symphony-presets-no-compat`): pre-production, no compatibility s
 ## Conventions for every phase
 
 - **Build:** `scons platform=macos target=editor arch=arm64 tests=yes module_raycast_enabled=no -j$(sysctl -n hw.ncpu)`
-- **C++ tests:** `bin/godot.macos.editor.arm64 --headless --test --test-case='*Symphony*'` (**218/218** as of P1b). New files under `tests/modules/` are auto-globbed. Shared helpers live in `tests/modules/symphony_test_helpers.h`.
+- **C++ tests:** `bin/godot.macos.editor.arm64 --headless --test --test-case='*Symphony*'` (**219/219** as of S0 close). New files under `tests/modules/` are auto-globbed. Shared helpers live in `tests/modules/symphony_test_helpers.h`.
 - **GDScript tests** (in `game-template/`): `node addons/agent_cli/gd.mjs test test/addons/symphony_audio`. Suites: preset_level, finite_oneshot, preset_render, audio_manager_behavior, reverb_routing, spatial_acoustics_integration, skill_handle.
 - **TSan:** `bin/godot.macos.editor.arm64.san` rebuilt in P0 (`use_tsan=yes`). P0 baseline: 1 warning. Re-baseline after P1 before closing S0.
 - **Operator template:** `nodes/filters/symphony_one_pole.h`.
@@ -102,8 +101,8 @@ Policy (memory `symphony-presets-no-compat`): pre-production, no compatibility s
 
 | Stage | Work | Gate to the next stage |
 |---|---|---|
-| **S0 Foundation** (= music **N0**) | P0 ✅ → P1 ✅ → P1b ✅ — **TSan re-baseline ← you are here** | TSan stress clean; N1 leak test green; promotion-order and seed tests green; frame counter exact over 10 min |
-| **S1 Build-out** (parallel lanes) | Lane A: music **N1** (transport, scheduler, BeatClock rework, sample-accurate events). Lane B: **P3**, **P4**, **P2**. Lane C: **P5** | N1 exact-timestamp tests; P3/P4 level contract green |
+| **S0 Foundation** (= music **N0**) | P0 ✅ → P1 ✅ → P1b ✅ → TSan re-baseline ✅ | TSan stress clean; N1 leak test green; promotion-order and seed tests green; frame counter exact over 10 min |
+| **S1 Build-out** (parallel lanes) ← **you are here** | Lane A: music **N1** (transport, scheduler, BeatClock rework, sample-accurate events). Lane B: **P3**, **P4**, **P2**. Lane C: **P5** | N1 exact-timestamp tests; P3/P4 level contract green |
 | **S2 Instruments** | **P10** → music **N2** (MusicNoteInput, note pools, releases) ‖ **P8a** | Reset conformance passes for every approved operator; an authored multi-track phrase renders correctly |
 | **S3 Recordings + composer** | Music **N3** (Signalsmith, stereo PCM) ‖ music **G1** (resources, composer) ‖ **P7** | Fixed hybrid score passes timing and listening checks; 1,000-seed batch passes |
 | **S4 Adaptive integration** | Music **G2** ‖ **P8b** ‖ **P6** | Exploration → tension → combat through one playback; DRR and reverb tests green |

@@ -5,13 +5,14 @@ Update this file with each commit that changes a public API.
 
 ## Status
 
-- **Milestone:** M3 C++ complete. Tech-fix plan **P0 + P1 + P1b** landed (shared helpers; voice lifetime / denormals / RTPC atomics / LOD hysteresis; promotion order, seqlock, per-voice seeds, frame counter, offline rate).
+- **Milestone:** M3 C++ complete. Tech-fix plan **P0 + P1 + P1b** landed; **S0 / music N0 closed**.
 - **Branch:** `features/symphony_fixed`
-- **Tests:** 218 Symphony cases (2026-10-09), including P1b. Editor TSan (`.san`) P0 baseline: suite green with **1** data-race warning. Re-run `.san` after P1 before closing S0.
+- **Tests:** 219 Symphony cases (2026-10-09). Editor TSan (`.san`) after P1b: 218/218 green at re-baseline time (T3 landed immediately after; same race profile) with **1** data-race warning — same count as the P0 baseline (`DynamicRangeHigh` global; frames unresolved; not a Symphony frame). **New Symphony-frame races vs P0 = 0.**
 - **SeqLock** moved from `spatial/symphony_seqlock.h` to `core/symphony_seqlock.h`.
 - **PhaseVocoder** no longer has a `seed` parameter.
 - **Noise** gained `seed` and `deterministic_seed`. Seed parameters on Noise, GrainCloud and StochasticTrigger clamp to 16777215.
 - **render_offline** writes graph-rate frames and does not follow the output device.
+- **Parked packages:** `get_debug_metrics()["packages_parked"]` counts stopped voices that still hold a package. Playbacks are main-thread only; package free runs on main.
 
 ## Completed
 
@@ -225,6 +226,14 @@ TSAN_OPTIONS="halt_on_error=0 print_stacktrace=1" bin/godot.macos.editor.arm64.s
 ```
 
 Result: 202/202 Symphony cases passed; `ThreadSanitizer: reported 1 warnings` (one data race; frames unresolved). Treat that count as the pre-P1 baseline so P1 can assert "new races = 0".
+
+TSan after P1+P1b (2026-10-09, macos arm64 editor `.san`, rebuilt with `use_tsan=yes`):
+
+```bash
+TSAN_OPTIONS="halt_on_error=0 print_stacktrace=1" bin/godot.macos.editor.arm64.san --headless --test --test-case='*Symphony*'
+```
+
+Result: 218/218 Symphony cases passed; `ThreadSanitizer: reported 1 warnings` — same single race on the global `DynamicRangeHigh` (unresolved frames). New Symphony-frame races vs P0 baseline: **0**. S0 gate met.
 
 ## Planned (from improve_plan_1_7.md)
 

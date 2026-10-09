@@ -1554,7 +1554,12 @@ var virtual: int = AudioManager.get_virtual_voice_count()
 var metrics: Dictionary = SymphonyVoiceManager.get_debug_metrics()
 # metrics["rt_violations"] must stay 0
 # metrics["dropped_trigger_count"], ["memory_global_used_bytes"], ["packages_active"], ...
+# metrics["packages_parked"]: stopped voices that still hold a graph package
+# (a script or player still has a Ref). Arena memory stays reserved until that
+# Ref drops and process_deferred_lod() reaps the voice on the main thread.
 ```
+
+`stop()` is a request: the voice goes silent and stays registered while any `Ref` remains. Playbacks are main-thread objects — do not create or resurrect them off the main thread. Package free and `GraphPackageRetirement::drain()` also run only on main.
 
 ### Memory Budget Guidelines
 

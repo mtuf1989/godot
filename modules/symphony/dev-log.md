@@ -1,5 +1,9 @@
 # Dev Log — Symphony Audio System
 
+## S0 closed (2026-10-09)
+
+TSan after P1b: 218 Symphony cases green, 1 warning (= P0 `DynamicRangeHigh` baseline; new Symphony-frame races = 0). Lifetime T3 added. game-template: fifty `torch_fire` play/stop asserts manager voice count and packages; `finite_oneshot_test` uses graph-rate frames from `render_offline`.
+
 ## P1b (2026-10-09)
 
 Float→Audio promotions copy after the producer (graph inputs at the top of the block). SeqLock stores atomic words and lives in `core/`. Each playback has one voice seed, reused for LOD recompiles; `render_offline` uses the render seed. Playback position is `frames_rendered / graph_rate`. Offline renders call the unresampled graph-rate mix.

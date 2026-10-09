@@ -72,6 +72,39 @@ TEST_CASE("[Symphony][Lifetime] T1 unit reap restores package counters") {
 	CHECK(GraphPackageRetirement::get_pending_count() == 0);
 }
 
+TEST_CASE("[Symphony][Lifetime] T3 external Ref keeps the voice parked until unref") {
+	SymphonyVoiceManager *mgr = SymphonyVoiceManager::get_singleton();
+	REQUIRE(mgr != nullptr);
+	mgr->process_deferred_lod();
+	GraphPackageRetirement::drain();
+	const int32_t retained_before = mgr->get_retained_voice_count();
+
+	Ref<AudioStreamSymphony> stream;
+	stream.instantiate();
+	stream->set_mix_rate(48000.0f);
+	stream->set_graph_description(make_sine_graph());
+	Ref<AudioStreamPlayback> base = stream->instantiate_playback();
+	Ref<AudioStreamPlaybackSymphony> playback = base;
+	REQUIRE(playback.is_valid());
+	playback->start();
+	playback->stop();
+	CHECK_FALSE(playback->is_playing());
+	CHECK(playback->is_registered_with_voice_manager());
+
+	// An external Ref keeps the manager entry parked.
+	Ref<AudioStreamPlaybackSymphony> hold = playback;
+	playback.unref();
+	base.unref();
+	mgr->process_deferred_lod();
+	CHECK(mgr->get_retained_voice_count() == retained_before + 1);
+	CHECK(hold->is_registered_with_voice_manager());
+
+	hold.unref();
+	mgr->process_deferred_lod();
+	GraphPackageRetirement::drain();
+	CHECK(mgr->get_retained_voice_count() == retained_before);
+}
+
 TEST_CASE("[Symphony][Lifetime] T5 stop then start produces audible RMS") {
 	Ref<AudioStreamSymphony> stream;
 	stream.instantiate();
