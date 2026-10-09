@@ -604,6 +604,8 @@ var health_handle: int = AudioManager.register_global_parameter(&"player_health"
 AudioManager.register_global_parameter(&"tension", 0.0, 50.0)
 AudioManager.register_global_parameter(&"speed", 0.0, 20.0)
 # Handles are cached inside AudioManager; later sets use RTPCEngine.set_parameter_target_by_handle.
+# Optional asymmetric smoothing (P7): fast rise, slow fall.
+RTPCEngine.set_parameter_smoothing(&"tension", 10.0, 200.0)  # attack_ms, release_ms
 
 # Update from gameplay code. Returns false if unregistered.
 AudioManager.set_global_parameter(&"player_health", player.health / player.max_health)
