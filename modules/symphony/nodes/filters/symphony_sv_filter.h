@@ -75,6 +75,31 @@ public:
 
 		float cutoff = cutoff_input ? *cutoff_input : default_cutoff;
 		float resonance = reso_input ? *reso_input : default_resonance;
+
+		// Wide-open spatial sentinel or at/above 0.45·sr → bypass (lp = input).
+		if (cutoff >= 0.45f * mix_rate || cutoff >= 20000.0f) {
+			float peak = 0.0f;
+			for (int32_t i = 0; i < p_num_frames; i++) {
+				float v0 = audio_in ? audio_in[i] : 0.0f;
+				lp_out[i] = v0;
+				hp_out[i] = 0.0f;
+				bp_out[i] = 0.0f;
+				peak = MAX(peak, Math::abs(v0));
+			}
+			ic1eq = 0.0f;
+			ic2eq = 0.0f;
+			if (peak < ACTIVITY_THRESHOLD) {
+				if (silent_blocks < 255) {
+					silent_blocks++;
+				}
+				activity = (silent_blocks >= 2) ? 0 : 1;
+			} else {
+				silent_blocks = 0;
+				activity = 1;
+			}
+			return;
+		}
+
 		update_coeffs(cutoff, resonance);
 
 		float peak = 0.0f;

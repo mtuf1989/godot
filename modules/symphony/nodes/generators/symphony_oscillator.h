@@ -74,11 +74,36 @@ public:
 		for (int32_t i = 0; i < p_num_frames; i++) {
 			float freq = freq_input ? freq_input[i] : default_freq;
 			float dt = freq / mix_rate;
-
-			// Clamp dt to avoid division issues at extreme frequencies
-			dt = dt < 0.0001f ? 0.0001f : (dt > 0.49f ? 0.49f : dt);
+			// Clamp to [0, 0.49]; dt == 0 is DC hold (no BLEP, phase frozen).
+			if (dt < 0.0f) {
+				dt = 0.0f;
+			} else if (dt > 0.49f) {
+				dt = 0.49f;
+			}
 
 			float sample = 0.0f;
+
+			if (dt == 0.0f) {
+				// Frequency floor: hold the current waveform value as DC.
+				switch (waveform) {
+					case 0:
+						sample = fast_sine(phase);
+						break;
+					case 1:
+						sample = 2.0f * phase - 1.0f;
+						break;
+					case 3:
+						sample = triangle_primed ? tri_integrator : naive_triangle(phase);
+						break;
+					default: {
+						float phase2 = phase + ((waveform == 4) ? pulse_width : 0.5f);
+						phase2 -= floorf(phase2);
+						sample = (2.0f * phase - 1.0f) - (2.0f * phase2 - 1.0f);
+					} break;
+				}
+				output[i] = sample;
+				continue;
+			}
 
 			switch (waveform) {
 				case 0: // Sine (polynomial approximation)

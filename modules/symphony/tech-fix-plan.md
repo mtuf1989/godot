@@ -8,10 +8,10 @@
 |---|---|
 | **As of** | 2026-10-09 |
 | **Branch** | `master` (ahead of `origin/master`; not pushed) |
-| **Done** | **P0**, **P1**, **P1b**, **S0 / N0**, **P3** |
-| **Next** | **S1** — Lane A music N1 ‖ Lane B P4/P2 ‖ Lane C P5 |
-| **Stage** | S1 Build-out (P3 closed; P4/P2/P5/N1 remain) |
-| **C++ tests** | 230/230 `*Symphony*` green on `bin/godot.macos.editor.arm64` |
+| **Done** | **P0**, **P1**, **P1b**, **S0 / N0**, **P3**, **P4** |
+| **Next** | **S1** — Lane A music N1 ‖ Lane B P2 ‖ Lane C P5 |
+| **Stage** | S1 Build-out (P3/P4 closed; P2/P5/N1 remain) |
+| **C++ tests** | 237/237 `*Symphony*` green on `bin/godot.macos.editor.arm64` |
 | **TSan** | `.san` rebuilt after P1b; **1** warning (same as P0 `DynamicRangeHigh`); new Symphony-frame races = 0 |
 
 ### Commits
@@ -23,6 +23,7 @@
 | P1b | `c5d38b563b` | Promotion order, atomic-word SeqLock, per-voice seeds, `frames_rendered`, unresampled `render_offline` |
 | S0 gate | `81e362e111` (+ game-template `9ed46af4`) | TSan re-baseline (= P0 warning count); T3; parked-package docs; torch_fire GDScript N1 |
 | P3 | `dd19939a3a` | HIIR saturator OS, u-domain ADAA, waveshaper 3-way ADAA + foldback, FM Carson clamp, staircase/rate LPF, FormantOsc blend, DC R(sr), Biquad τ=5ms |
+| P4 | *(this commit)* | Rate policy helper; SFX mix_rate 48k default + clamp; WavePlayer loop-aware Hermite; OnePole/SVF open bypass; osc dt∈[0,0.49] |
 
 ### P1 leftovers (S0 gate)
 
@@ -33,10 +34,10 @@
 
 ### How to resume next session
 
-1. Read this **Progress** block. P3 is closed; continue **S1** with P4 (then P2) and/or music N1 / P5.
+1. Read this **Progress** block. P3/P4 closed; continue **S1** with P2 and/or music N1 / P5.
 2. Build: `scons platform=macos target=editor arch=arm64 tests=yes module_raycast_enabled=no -j$(sysctl -n hw.ncpu)`
 3. Leave each phase green + committed on its own (plan convention).
-4. After P3/P4, re-run `preset_level_test` in game-template (level contract).
+4. Re-run `preset_level_test` in game-template after audible DSP changes (P3/P4).
 
 ## Context
 
@@ -91,7 +92,7 @@ Policy (memory `symphony-presets-no-compat`): pre-production, no compatibility s
 | P1b | **Done** | Foundation extras (shared with music) | Float→Audio promotion order, SeqLock fix, G seeds, N10 frame counter, N16 `render_offline` | godot | P1 |
 | P2 | Pending | Quick audible wins | N2, N3 | both | P1 |
 | P3 | **Done** `dd19939a3a` | Nonlinear and anti-aliasing DSP | C, D, E, N6, N20, J, L, P, DC blocker, Biquad smoothing | godot | P0 |
-| P4 | Pending | Sampler and rate path | S (rate policy D), N18, N19, mix_rate clamp, Oscillator floor | godot | P0 |
+| P4 | **Done** | Sampler and rate path | S (rate policy D), N18, N19, mix_rate clamp, Oscillator floor | godot | P0 |
 | P5 | Pending | Spectral and granular | F, N4, N5, N14, I/U removal, N7, N17, GrainCloud upgrade, stale comments | godot (+ skills docs) | P0 |
 | P6 | Pending | Spatial reverb rework | O, T, N15, W, uniformity, FDN AudioEffect, core DRR patch | both + Godot core | P1, P1b, P3 |
 | P7 | Pending | SFX-side timing | N11 SymphonyClock, N21, asymmetric RTPC (BeatClock + R move to music N1) | both | P1 |
@@ -321,7 +322,7 @@ Share the f/F tables across instances per preset: a static, immutable, built-onc
 - Test: a 200 Hz → 4 kHz sweep at Q 4 differs from per-sample-coefficient ground truth by < −50 dB.
 - Re-run `preset_level_test` for the 16 game-driven-cutoff graphs.
 
-## P4: Sampler and rate path
+## P4: Sampler and rate path — **DONE**
 
 **S Graph rate: policy D (hybrid allow-list).**
 - **SFX graphs:** set the `AudioStreamSymphony::mix_rate` default to **48000** (`stream/audio_stream_symphony.h:14`). All 93 shipped presets already set 48000, so this only affects new graphs. Make the setter clamp to [8000, 192000] (`audio_stream_symphony.cpp:445`); the spatial wrapper can pass WAV rates below 22050, so widen the hint to match.

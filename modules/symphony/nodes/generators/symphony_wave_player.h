@@ -6,6 +6,7 @@
 #include "../../core/symphony_trigger.h"
 #include "scene/resources/audio/audio_stream_wav.h"
 #include "core/io/resource_loader.h"
+#include <cmath>
 
 // Plays AudioStreamWAV samples with pitch control and loop points.
 // Two modes:
@@ -41,23 +42,77 @@ private:
 	int32_t loop_end = 0;    // In samples (0 = end of file)
 	bool auto_play = true;
 
-	inline float read_sample(int32_t pos) const {
+	inline float read_sample_raw(int32_t pos) const {
 		if (pos < 0 || pos >= pcm_length_samples) {
 			return 0.0f;
 		}
 		if (stereo) {
-			// Mix stereo to mono: (L + R) / 2
 			return ((float)pcm_data[pos * 2] + (float)pcm_data[pos * 2 + 1]) / 65536.0f;
 		}
 		return (float)pcm_data[pos] / 32768.0f;
 	}
 
-	inline float interpolate(double pos) const {
-		int32_t idx = (int32_t)pos;
-		float frac = (float)(pos - idx);
-		float s0 = read_sample(idx);
-		float s1 = read_sample(idx + 1);
-		return s0 + (s1 - s0) * frac;
+	// Map an absolute sample index into the active loop/region for interpolation taps.
+	inline int32_t map_loop_index(int32_t idx, int32_t p_loop_start, int32_t p_loop_end) const {
+		if (loop_mode == 0) {
+			return idx;
+		}
+		const int32_t start = p_loop_start;
+		const int32_t end = p_loop_end;
+		const int32_t len = end - start;
+		if (len <= 0) {
+			return CLAMP(idx, 0, MAX(0, pcm_length_samples - 1));
+		}
+		if (loop_mode == 1) {
+			// Forward wrap: past end → start + (i − end)
+			if (idx >= end) {
+				int32_t over = idx - end;
+				return start + (over % len);
+			}
+			if (idx < start) {
+				int32_t under = start - idx;
+				int32_t back = under % len;
+				return end - (back == 0 ? len : back);
+			}
+			return idx;
+		}
+		// Ping-pong: reflect across [start, end).
+		int32_t period = len * 2;
+		if (period <= 0) {
+			return start;
+		}
+		int32_t rel = idx - start;
+		// Bring rel into a non-negative range before mod.
+		rel %= period;
+		if (rel < 0) {
+			rel += period;
+		}
+		if (rel < len) {
+			return start + rel;
+		}
+		return end - 1 - (rel - len);
+	}
+
+	inline float fetch_looped(int32_t idx, int32_t p_loop_start, int32_t p_loop_end) const {
+		if (loop_mode == 0) {
+			return read_sample_raw(idx);
+		}
+		return read_sample_raw(map_loop_index(idx, p_loop_start, p_loop_end));
+	}
+
+	// 4-point Catmull-Rom (Hermite) with loop-aware taps.
+	inline float interpolate(double pos, int32_t p_loop_start, int32_t p_loop_end) const {
+		int32_t idx = (int32_t)std::floor(pos);
+		float frac = (float)(pos - (double)idx);
+		float ym1 = fetch_looped(idx - 1, p_loop_start, p_loop_end);
+		float y0 = fetch_looped(idx, p_loop_start, p_loop_end);
+		float y1 = fetch_looped(idx + 1, p_loop_start, p_loop_end);
+		float y2 = fetch_looped(idx + 2, p_loop_start, p_loop_end);
+		// Catmull-Rom: 0.5 * (2*y0 + (-ym1+y1)*t + (2*ym1-5*y0+4*y1-y2)*t^2 + (-ym1+3*y0-3*y1+y2)*t^3)
+		float t = frac;
+		float t2 = t * t;
+		float t3 = t2 * t;
+		return 0.5f * ((2.0f * y0) + (-ym1 + y1) * t + (2.0f * ym1 - 5.0f * y0 + 4.0f * y1 - y2) * t2 + (-ym1 + 3.0f * y0 - 3.0f * y1 + y2) * t3);
 	}
 
 public:
@@ -99,7 +154,7 @@ public:
 				continue;
 			}
 
-			output[i] = interpolate(read_pos);
+			output[i] = interpolate(read_pos, loop_start, effective_end);
 			read_pos += pitch * direction;
 
 			// Handle end/loop
@@ -114,16 +169,16 @@ public:
 						}
 						break;
 					case 1: // Forward loop
-						read_pos = loop_start + (read_pos - effective_end);
+						read_pos = (double)loop_start + (read_pos - (double)effective_end);
 						break;
 					case 2: // Ping-pong
-						read_pos = effective_end - (read_pos - effective_end);
+						read_pos = (double)effective_end - (read_pos - (double)effective_end);
 						direction = -1;
 						break;
 				}
 			} else if (direction < 0 && read_pos < loop_start) {
 				// Ping-pong reverse hit start
-				read_pos = loop_start + (loop_start - read_pos);
+				read_pos = (double)loop_start + ((double)loop_start - read_pos);
 				direction = 1;
 			}
 		}
@@ -184,10 +239,11 @@ public:
 			return wp; // No resource — will output silence
 		}
 
-		Ref<AudioStreamWAV> wav = ResourceLoader::load(path, "AudioStreamWAV");
+		// Prefer load_from_file for on-disk WAVs; ResourceLoader::load is for imported .res.
+		Dictionary options;
+		Ref<AudioStreamWAV> wav = AudioStreamWAV::load_from_file(path, options);
 		if (wav.is_null()) {
-			Dictionary options;
-			wav = AudioStreamWAV::load_from_file(path, options);
+			wav = ResourceLoader::load(path, "AudioStreamWAV");
 		}
 		if (wav.is_null()) {
 			return wp;

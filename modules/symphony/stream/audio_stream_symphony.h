@@ -11,7 +11,7 @@ class AudioStreamSymphony : public AudioStream {
 
 private:
 	friend class AudioStreamPlaybackSymphony;
-	float mix_rate = 44100.0f;
+	float mix_rate = 48000.0f; // SFX default (policy D); music uses symphony_select_music_rate.
 	// 0 keeps the graph running. A positive value ends playback after that many seconds of rendered time.
 	double duration_limit_seconds = 0.0;
 	// 0 = legacy graph resources (migration diagnostics). 2 = strict authoring schema.

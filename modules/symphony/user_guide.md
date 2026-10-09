@@ -2060,6 +2060,14 @@ func _on_music_slider_changed(value: float):
 
 ## Changelog
 
+### P4 — Sampler and rate path (2026-10-09)
+
+- **SFX mix_rate** defaults to 48000 Hz (was 44100); setter clamps to [8000, 192000] so spatial WAV wrappers can pass low rates.
+- **Music rate helper** `symphony_select_music_rate(device)` → 44100 or 48000 when the device matches, else 48000; offline always 48000. A driver rate change needs stop/reload.
+- **WavePlayer:** loop-aware 4-point Catmull-Rom interpolation; on-disk WAVs load via `load_from_file` first.
+- **Spatial open path:** OnePole/SVFilter pass through when cutoff ≥ 0.45·sr or ≥ 20 kHz (wide-open sentinel).
+- **Oscillator:** `dt` clamped to [0, 0.49]; frequency 0 holds DC without PolyBLEP.
+
 ### P3 — Nonlinear and anti-aliasing DSP (2026-10-09)
 
 - **Saturator:** correct HIIR polyphase 2× half-band; ADAA runs in `u = x·drive` (eps 1e-3, midpoint fallback) so drive modulation does not spike.

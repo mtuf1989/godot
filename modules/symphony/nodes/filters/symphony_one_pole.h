@@ -30,6 +30,14 @@ public:
 
 	virtual void execute(int32_t p_num_frames) override {
 		float cutoff = cutoff_input ? *cutoff_input : default_cutoff;
+		// Wide-open spatial sentinel (20 kHz) or at/above 0.45·sr → true bypass.
+		if (cutoff >= 0.45f * mix_rate || cutoff >= 20000.0f) {
+			for (int32_t i = 0; i < p_num_frames; i++) {
+				output[i] = input[i];
+			}
+			prev = p_num_frames > 0 ? input[p_num_frames - 1] : prev;
+			return;
+		}
 		float coeff = expf(-Math::TAU * cutoff / mix_rate);
 
 		for (int32_t i = 0; i < p_num_frames; i++) {

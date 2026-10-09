@@ -1,5 +1,9 @@
 # Dev Log — Symphony Audio System
 
+## P4 (2026-10-09)
+
+Sample-rate policy D: `core/symphony_rate_policy.h` (`symphony_select_music_rate`, `symphony_offline_rate`); SFX `AudioStreamSymphony::mix_rate` defaults to 48000 and clamps to [8000, 192000]. WavePlayer uses loop-aware 4-point Catmull-Rom and prefers `AudioStreamWAV::load_from_file` for on-disk WAVs. OnePole/SVFilter bypass when cutoff ≥ 0.45·sr or the 20 kHz spatial “open” sentinel. Oscillator clamps `dt` to [0, 0.49] with DC hold at 0. Tests: `test_symphony_p4_rate.cpp`. Suite: 237/237.
+
 ## P3 (2026-10-09)
 
 Nonlinear / anti-alias DSP: Saturator uses a correct HIIR polyphase 2× half-band and u-domain ADAA (eps 1e-3, midpoint fallback; drive modulation no longer spikes). Waveshaper presets share immutable f/F tables; ADAA is three-way (same cell / adjacent / quadratic F); FOLDBACK is a continuous triangle fold. FMOscillator drops the 18 kHz pole and Carson-clamps internal `mod_index`. Anti-alias staircase LPF cutoff is `min(18000, 0.4·sr)`. FormantOsc blends `cos(nθ)`/`cos((n+1)θ)`. DCBlocker `R` tracks 15 Hz; Biquad smooths AUDIO cutoff (τ=5 ms, coeff refresh every 16 samples). Tests: `test_symphony_p3_dsp.cpp` (11 cases). Suite: 230/230.
