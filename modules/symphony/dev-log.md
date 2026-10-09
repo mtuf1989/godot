@@ -1,5 +1,9 @@
 # Dev Log — Symphony Audio System
 
+## Music N2 (2026-10-09)
+
+`MusicNoteInput` hub (freq/vel/pitch_ratio/triggers/gate); `runtime/symphony_note_pool.h` — resettable graph validation, seeded `reset_for_note` voices, release deadlines, protected-track capacity. Scheduler-driven multi-track phrase render; 44.1k/48k tone-level equivalence. Tests: `test_symphony_music_n2.cpp`. Suite: 289/289. `AudioStreamSymphonyMusic` wiring deferred to G2.
+
 ## P10 (2026-10-09)
 
 Instrument readiness for music N2: `OperatorDescriptor.resettable`, pristine arena blobs, `reset_for_note` (import → clear_large_buffers → reseed via `symphony_node_seed`). Noise export/reseed; Biquad full-state export for bit-exact reset; ModalBank base tables + `pitch_ratio`/`root_hz` + Nyquist mute; migrate scratch >256. Tests: `test_symphony_operator_reset.cpp`. game-template: 11 ModalBank presets drop PitchShifter; operator-schema synced. Suite: 283/283.

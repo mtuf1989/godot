@@ -8,10 +8,10 @@
 |---|---|
 | **As of** | 2026-10-09 |
 | **Branch** | `master` (ahead of `origin/master`; not pushed) |
-| **Done** | **P0–P8a**, **P10**, music **N1**; **S0 / N0** closed. SFX lanes for S1–S4 prerequisites landed early (P5–P7, P8a). |
-| **Next** | **S2** — music **N2** (MusicNoteInput, note pools). Parallel optional: **P8b**. |
-| **Stage** | S2 Instruments (gate: authored multi-track phrase; reset conformance ✅) |
-| **C++ tests** | 283/283 `*Symphony*` green on `bin/godot.macos.editor.arm64` |
+| **Done** | **P0–P8a**, **P10**, music **N1** + **N2**; **S0 / N0** closed. SFX lanes for S1–S4 prerequisites landed early (P5–P7, P8a). |
+| **Next** | **S3** — music **N3** (recorded phrases) ‖ composer **G1**. Parallel optional: **P8b**, **P9**. |
+| **Stage** | S3 Recordings + composer (S2 instruments gate ✅) |
+| **C++ tests** | 289/289 `*Symphony*` green on `bin/godot.macos.editor.arm64` |
 | **TSan** | `.san` after P1b: **1** warning (same as P0 `DynamicRangeHigh`); new Symphony-frame races = 0 |
 
 ### Commits
@@ -31,6 +31,7 @@
 | P7 | `1c50d03cf0` (+ game-template `29727941`) | Clock t=0 + bpm/phase; asymmetric RTPC; MusicStateGraph tempo validate |
 | P8a | `c0779edf40` (+ game-template `266c9f3d`) | `SoundEvent.tier` / VITAL; pool importance key; N13; removed stream `voice_priority` |
 | P10 | `94748f2e00` (+ game-template `ed64b879`) | Resettable-state contract; ModalBank `pitch_ratio`/`root_hz`; migrate 11 PitchShifter presets |
+| N2 | *(this commit)* | `MusicNoteInput`, note pools, protected capacity, multi-track phrase + 44.1/48k tests |
 
 ### P1 leftovers (closed — optional coverage only)
 
@@ -38,7 +39,7 @@ S0 gate items are done (TSan re-baseline, torch_fire GDScript N1, parked-package
 
 ### How to resume next session
 
-1. Read this **Progress** block. Continue **S2** with music **N2**.
+1. Read this **Progress** block. Continue **S3** with music **N3** (or composer **G1** in game-template).
 2. Build: `scons platform=macos target=editor arch=arm64 tests=yes module_raycast_enabled=no -j$(sysctl -n hw.ncpu)`
 3. Leave each phase green + committed on its own (plan convention).
 4. Re-run `preset_level_test` in game-template after audible DSP changes.
@@ -111,7 +112,8 @@ Policy (memory `symphony-presets-no-compat`): pre-production, no compatibility s
 |---|---|---|
 | **S0 Foundation** (= music **N0**) | P0 ✅ → P1 ✅ → P1b ✅ → TSan re-baseline ✅ | TSan stress clean; N1 leak test green; promotion-order and seed tests green; frame counter exact over 10 min |
 | **S1 Build-out** (parallel lanes) | Lane A: music **N1** ✅. Lane B: **P3–P2** ✅. Lane C: **P5** ✅ | N1 exact-timestamp tests ✅; P5 green |
-| **S2 Instruments** ← **you are here** | music **N2** (MusicNoteInput, note pools, releases). **P10** ✅ / **P8a** ✅ | Reset conformance ✅; an authored multi-track phrase renders correctly |
+| **S2 Instruments** | music **N2** ✅. **P10** ✅ / **P8a** ✅ | Reset conformance ✅; multi-track phrase + 44.1/48k ✅ |
+| **S3 Recordings + composer** ← **you are here** | music **N3** ‖ **G1** | Stretch backend + hybrid score; typed score resources + offline ledgers |
 | **S3 Recordings + composer** | Music **N3** (Signalsmith, stereo PCM) ‖ music **G1** (resources, composer). **P7** ✅ (landed early) | Fixed hybrid score passes timing and listening checks; 1,000-seed batch passes |
 | **S4 Adaptive integration** | Music **G2** ‖ **P8b**. **P6** ✅ (landed early) | Exploration → tension → combat through one playback; DRR and reverb tests green |
 | **S5 Polish + qualification** | **P9** → music **V1** | All suites, sanitizers, 30-minute performance run, listening review |

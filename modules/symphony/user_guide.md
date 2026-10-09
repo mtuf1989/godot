@@ -588,6 +588,7 @@ Note that `LFO` and `Oscillator` number their waveforms differently.
 | **GraphInputAudio** | — → `output` (audio) | `parameter_name`, `sort_order`, `display_name`. Audio entry point of a graph used as a `SubGraph`; silent when standalone |
 | **GraphOutput** | `input` (audio), `finish` (trigger) → — | `pin_type`, `sort_order`, `display_name` |
 | **TriggerInput** | — → `output` (trigger) | `trigger_name`, `auto_trigger_on_play` (default 1) |
+| **MusicNoteInput** | — → `frequency`, `velocity`, `pitch_ratio`, `note_on`, `note_off`, `gate`, `adsr_trigger` | `root_hz` (authored fundamental; `pitch_ratio = frequency / root_hz`) |
 | **SubGraph** | dynamic → dynamic | `resource_path` (inner graph `.tres`) |
 
 ---
@@ -2062,6 +2063,12 @@ func _on_music_slider_changed(value: float):
 ---
 
 ## Changelog
+
+### Music N2 — Note pools (2026-10-09)
+
+- **MusicNoteInput:** one hub per instrument graph — `frequency`, `velocity`, `pitch_ratio` (`frequency/root_hz`), `note_on` / `note_off`, `gate`, and `adsr_trigger` (+1 / 0 for envelopes). Discrete note updates bypass automatic parameter smoothing.
+- **Note pools:** precompiled voices; NoteOn runs `reset_for_note(seed)`; graphs must be resettable (only `GraphOutput` may be non-resettable); protected tracks refuse to steal; releases keep ringing until silence or deadline.
+- **Rate policy:** instrument phrases pass 44.1 kHz / 48 kHz tone-level equivalence (±0.5 dB).
 
 ### P10 — Instrument readiness (2026-10-09)
 

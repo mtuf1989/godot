@@ -59,6 +59,7 @@
 #include "nodes/io/symphony_graph_input_audio.h"
 #include "nodes/io/symphony_graph_output.h"
 #include "nodes/io/symphony_trigger_input.h"
+#include "nodes/io/symphony_music_note_input.h"
 #include "nodes/io/symphony_subgraph.h"
 
 #include "spatial/acoustic_material.h"
@@ -160,6 +161,7 @@ void initialize_symphony_module(ModuleInitializationLevel p_level) {
 		SymphonyGraphInput::register_operator();
 		SymphonyGraphInputAudio::register_operator();
 		SymphonyTriggerInput::register_operator();
+		SymphonyMusicNoteInput::register_operator();
 		SymphonySubGraph::register_operator();
 		OperatorRegistry::get_singleton()->annotate_authoring_schema();
 		OperatorRegistry::get_singleton()->mark_resettable_operators();
