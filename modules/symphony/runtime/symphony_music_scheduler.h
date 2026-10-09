@@ -16,6 +16,7 @@ enum class SymphonyMusicEventKind : uint8_t {
 	NoteOn = 1,
 	TempoStep = 2,
 	TrackGain = 3,
+	ClipOn = 4, // note_id = clip instance; midi = transpose_st; velocity = tempo_ratio; payload = clip_index
 };
 
 struct SymphonyMusicEvent {

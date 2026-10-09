@@ -591,6 +591,25 @@ Note that `LFO` and `Oscillator` number their waveforms differently.
 | **MusicNoteInput** | — → `frequency`, `velocity`, `pitch_ratio`, `note_on`, `note_off`, `gate`, `adsr_trigger` | `root_hz` (authored fundamental; `pitch_ratio = frequency / root_hz`) |
 | **SubGraph** | dynamic → dynamic | `resource_path` (inner graph `.tres`) |
 
+### Procedural music stream (`AudioStreamSymphonyMusic`)
+
+Native music playback for hybrid scores. Configure tracks with instrument graphs (`set_track_instrument` from an `AudioStreamSymphony` that contains one `MusicNoteInput`), optionally `register_clip_pcm` for recorded phrases, then play via `AudioStreamPlayer`. The playback exposes:
+
+```gdscript
+playback.submit_phrase({
+    "start_tick": 0, "generation": 1,
+    "events": [
+        {"kind": "note_on", "tick": 0, "track": 0, "note_id": 1, "midi": 60, "velocity": 0.8, "duration_ticks": 480},
+        {"kind": "clip_on", "tick": 0, "note_id": 10, "clip_key": &"verse_a", "transpose": 0, "tempo_ratio": 1.0},
+    ],
+})
+playback.schedule_tempo(140.0, 960)  # tick, optional ramp_ticks
+var snap: Dictionary = playback.get_transport_snapshot()  # tick, frame, bpm, bar…
+var status: Array = playback.drain_status()
+```
+
+Ticks use 960 PPQN. Playback registers as a **VITAL** voice (never budget-stolen). Game-template `MusicSystem` PROCEDURAL mode wraps this stream.
+
 ---
 
 ## RTPC — Real-Time Parameter Control

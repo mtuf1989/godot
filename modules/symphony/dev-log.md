@@ -1,5 +1,9 @@
 # Dev Log — Symphony Audio System
 
+## MusicStream (2026-10-09)
+
+`AudioStreamSymphonyMusic` + `AudioStreamPlaybackSymphonyMusic`: track instruments from `AudioStreamSymphony`, stereo-clip registry, phrase Dictionary submit (`note_on`/`off`, `tempo`, `track_gain`, `clip_on`), `replace_future`, transport snapshot, status drain. Mix path drives scheduler → note pools + stretch pool with common-latency synth delay; registers as **VITAL** with the voice manager. Tests: `test_symphony_music_stream.cpp`. Suite: 297/297.
+
 ## Music N3 (2026-10-09)
 
 Recorded phrases: vendored Signalsmith Stretch 1.3.0 + Linear 0.1.2 (plan said 1.3.2; tag not published). `SymphonyMusicStereoCache` (interleaved stereo float, budget-charged). `SymphonyStretchContext`/`Pool` — presetDefault + splitComputation, seek/prime on main, process on audio, Returning reclaim. Tempo/transpose envelope clamps; common-latency hybrid synth+clip render. Tests: `test_symphony_music_n3.cpp`. Suite: 294/294.

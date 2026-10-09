@@ -10,6 +10,8 @@ def get_doc_classes():
     return [
         "AudioStreamSymphony",
         "AudioStreamPlaybackSymphony",
+        "AudioStreamSymphonyMusic",
+        "AudioStreamPlaybackSymphonyMusic",
         "AudioEffectSymphonyReverb",
         "SoundEvent",
         "SymphonyVoicePool",

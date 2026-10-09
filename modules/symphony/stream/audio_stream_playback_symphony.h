@@ -14,6 +14,7 @@
 class AudioStreamPlaybackSymphony : public AudioStreamPlaybackResampled {
 	GDCLASS(AudioStreamPlaybackSymphony, AudioStreamPlaybackResampled)
 	friend class AudioStreamSymphony;
+	friend class AudioStreamPlaybackSymphonyMusic;
 	friend class SymphonyVoiceManager;
 
 private:

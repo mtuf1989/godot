@@ -2,6 +2,8 @@
 
 #include "stream/audio_stream_symphony.h"
 #include "stream/audio_stream_playback_symphony.h"
+#include "stream/audio_stream_symphony_music.h"
+#include "stream/audio_stream_playback_symphony_music.h"
 #include "core/symphony_operator_registry.h"
 #include "core/symphony_memory_budget.h"
 #include "core/symphony_graph_package_retirement.h"
@@ -172,6 +174,8 @@ void initialize_symphony_module(ModuleInitializationLevel p_level) {
 		// Register Godot classes
 		GDREGISTER_CLASS(AudioStreamSymphony);
 		GDREGISTER_CLASS(AudioStreamPlaybackSymphony);
+		GDREGISTER_CLASS(AudioStreamSymphonyMusic);
+		GDREGISTER_CLASS(AudioStreamPlaybackSymphonyMusic);
 		GDREGISTER_CLASS(SymphonyVoiceManager);
 		GDREGISTER_CLASS(SoundEvent);
 		GDREGISTER_CLASS(MusicStateGraph);
