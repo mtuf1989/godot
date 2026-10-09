@@ -1,6 +1,6 @@
 # Symphony procedural music — V1 qualification
 
-Status as of 2026-10-09. Optional **P8b** / **P9** are deferred; this document records what V1 closes now vs what waits on those phases.
+Status as of 2026-10-09. **P8b** voice policy is done. Optional **P9** (perf convention / profiling / RTSan CI) and designer listening remain deferred.
 
 ## Automated gates (closed)
 
@@ -16,7 +16,14 @@ Status as of 2026-10-09. Optional **P8b** / **P9** are deferred; this document r
 | MusicSystem PROCEDURAL load + adaptive states | `procedural_music_g2_test.gd`, `procedural_music_v1_test.gd` |
 | TSan baseline | Progress: 1 warning (`DynamicRangeHigh`); no new Symphony-frame races after P1b |
 
-## Deferred with P8b / P9 / listening
+## Closed with P8b
+
+| Gate | Evidence |
+|---|---|
+| Category caps + N8 forced victim + N12 quietest | `test_symphony_voice.cpp` `[P8b]` |
+| GDScript admit tiers/caps | `audio_manager_behavior_test.gd` |
+
+## Deferred with P9 / listening
 
 | Gate | Why deferred |
 |---|---|

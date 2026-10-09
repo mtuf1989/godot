@@ -185,6 +185,7 @@ public:
 	void set_reference_distance(float p_dist);
 	float get_reference_distance() const;
 	void set_slot_category(int p_slot, int p_category);
+	int get_slot_category(int p_slot) const;
 	void set_slot_tier(int p_slot, int p_tier);
 	int get_slot_tier(int p_slot) const;
 	void set_slot_importance_weight(int p_slot, float p_weight);

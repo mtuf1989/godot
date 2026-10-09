@@ -1,9 +1,11 @@
 #include "event_dispatcher.h"
 #include "voice_manager.h"
+#include "core/config/project_settings.h"
 #include "core/object/class_db.h"
 #include "core/os/os.h"
 
 #include <cfloat>
+#include <cmath>
 #include <cstdint>
 
 SymphonyEventDispatcher *SymphonyEventDispatcher::singleton = nullptr;
@@ -34,7 +36,42 @@ int SymphonyEventDispatcher::dispatch(const Ref<SoundEvent> &p_event, PlayResult
 	return dispatch(p_event, r_result, unused_reason);
 }
 
-int SymphonyEventDispatcher::_select_steal_victim(uint64_t p_event_id, int p_incoming_priority, int p_incoming_tier, SoundEvent::StealMode p_mode, bool p_same_event_only, StringName &r_reason) const {
+int SymphonyEventDispatcher::_category_cap(int p_category) {
+	static const char *keys[5] = {
+		"audio/symphony/category_caps/sfx",
+		"audio/symphony/category_caps/music",
+		"audio/symphony/category_caps/ui",
+		"audio/symphony/category_caps/ambient",
+		"audio/symphony/category_caps/voice",
+	};
+	const int cat = CLAMP(p_category, 0, 4);
+	return MAX(0, (int)GLOBAL_GET(keys[cat]));
+}
+
+int SymphonyEventDispatcher::_count_category_voices(int p_category) const {
+	SymphonyVoicePool *pool = SymphonyVoicePool::get_singleton();
+	if (!pool) {
+		return 0;
+	}
+	int n = 0;
+	for (int i = 0; i < pool->get_pool_size(); i++) {
+		const SymphonyVoicePool::VoiceSlot *slot = pool->get_slot(i);
+		if (!slot) {
+			continue;
+		}
+		if (slot->state != SymphonyVoicePool::VOICE_PLAYING && slot->state != SymphonyVoicePool::VOICE_TO_PLAY &&
+				slot->state != SymphonyVoicePool::VOICE_VIRTUALIZING && slot->state != SymphonyVoicePool::VOICE_DEVIRTUALIZING &&
+				slot->state != SymphonyVoicePool::VOICE_VIRTUAL) {
+			continue;
+		}
+		if (slot->category == p_category) {
+			n++;
+		}
+	}
+	return n;
+}
+
+int SymphonyEventDispatcher::_select_steal_victim(uint64_t p_event_id, int p_incoming_priority, int p_incoming_tier, SoundEvent::StealMode p_mode, bool p_same_event_only, int p_category_filter, StringName &r_reason) const {
 	SymphonyVoicePool *pool = SymphonyVoicePool::get_singleton();
 	if (!pool) {
 		return -1;
@@ -45,6 +82,7 @@ int SymphonyEventDispatcher::_select_steal_victim(uint64_t p_event_id, int p_inc
 	float best_rms = FLT_MAX;
 	float best_dist = -1.0f;
 	float best_importance = FLT_MAX;
+	bool best_rms_valid = false;
 
 	Vector3 listener = pool->get_listener_position();
 
@@ -54,6 +92,9 @@ int SymphonyEventDispatcher::_select_steal_victim(uint64_t p_event_id, int p_inc
 			continue;
 		}
 		if (slot->state != SymphonyVoicePool::VOICE_PLAYING && slot->state != SymphonyVoicePool::VOICE_TO_PLAY) {
+			continue;
+		}
+		if (p_category_filter >= 0 && slot->category != p_category_filter) {
 			continue;
 		}
 		if (p_same_event_only) {
@@ -71,7 +112,6 @@ int SymphonyEventDispatcher::_select_steal_victim(uint64_t p_event_id, int p_inc
 
 		bool better = false;
 		float dist = listener.distance_to(slot->position);
-		float rms_metric = slot->rms_valid ? slot->rms : slot->importance;
 
 		if (best_idx < 0) {
 			better = true;
@@ -87,9 +127,21 @@ int SymphonyEventDispatcher::_select_steal_victim(uint64_t p_event_id, int p_inc
 					}
 					break;
 				case SoundEvent::STEAL_QUIETEST:
-					if (rms_metric < best_rms) {
+					// N12: compare like with like — prefer voices that have RMS;
+					// fall back to lowest importance when neither has RMS.
+					if (slot->rms_valid && !best_rms_valid) {
 						better = true;
-					} else if (rms_metric == best_rms) {
+					} else if (!slot->rms_valid && best_rms_valid) {
+						better = false;
+					} else if (slot->rms_valid && best_rms_valid) {
+						if (slot->rms < best_rms) {
+							better = true;
+						} else if (slot->rms == best_rms) {
+							if (slot->importance < best_importance || (slot->importance == best_importance && i < best_idx)) {
+								better = true;
+							}
+						}
+					} else {
 						if (slot->importance < best_importance || (slot->importance == best_importance && i < best_idx)) {
 							better = true;
 						}
@@ -110,7 +162,8 @@ int SymphonyEventDispatcher::_select_steal_victim(uint64_t p_event_id, int p_inc
 		if (better) {
 			best_idx = i;
 			best_start = slot->start_time;
-			best_rms = rms_metric;
+			best_rms = slot->rms_valid ? slot->rms : FLT_MAX;
+			best_rms_valid = slot->rms_valid;
 			best_dist = dist;
 			best_importance = slot->importance;
 		}
@@ -132,57 +185,7 @@ int SymphonyEventDispatcher::_select_steal_victim(uint64_t p_event_id, int p_inc
 	return best_idx;
 }
 
-int SymphonyEventDispatcher::_reclaim_player_victim(const Ref<SoundEvent> &p_event, int p_victim_slot, PlayResult &r_result, StringName &r_steal_reason) {
-	SymphonyVoicePool *pool = SymphonyVoicePool::get_singleton();
-	ERR_FAIL_NULL_V(pool, -1);
-	if (p_victim_slot < 0 || p_victim_slot >= pool->get_pool_size()) {
-		r_result = RESULT_REJECTED_VOICE_LIMIT;
-		r_steal_reason = StringName("player_pool");
-		return -1;
-	}
-	SymphonyVoicePool::VoiceSlot *victim = pool->get_slot(p_victim_slot);
-	if (!victim || (victim->state != SymphonyVoicePool::VOICE_PLAYING && victim->state != SymphonyVoicePool::VOICE_TO_PLAY && victim->state != SymphonyVoicePool::VOICE_VIRTUAL && victim->state != SymphonyVoicePool::VOICE_VIRTUALIZING && victim->state != SymphonyVoicePool::VOICE_DEVIRTUALIZING)) {
-		r_result = RESULT_REJECTED_VOICE_LIMIT;
-		r_steal_reason = StringName("player_pool");
-		return -1;
-	}
-
-	uint64_t event_id = p_event->get_instance_id();
-	uint64_t now = OS::get_singleton()->get_ticks_usec();
-	float cooldown_ms = p_event->get_cooldown_ms();
-	if (cooldown_ms > 0.0f && cooldown_map.has(event_id)) {
-		uint64_t elapsed_us = now - cooldown_map[event_id];
-		if (elapsed_us < (uint64_t)(cooldown_ms * 1000.0f)) {
-			r_result = RESULT_REJECTED_COOLDOWN;
-			r_steal_reason = StringName("cooldown");
-			return -1;
-		}
-	}
-
-	uint64_t victim_event = victim->event_id;
-	if (victim_event != 0) {
-		on_voice_stopped(victim_event);
-	}
-	r_steal_reason = StringName("player_pool");
-	pool->reclaim_slot(p_victim_slot, p_event->get_priority(), r_steal_reason);
-	cooldown_map[event_id] = now;
-	on_voice_started(event_id);
-
-	SymphonyVoicePool::VoiceSlot *vs = pool->get_slot(p_victim_slot);
-	if (vs) {
-		vs->event_id = event_id;
-		vs->priority = p_event->get_priority();
-		vs->tier = (int)p_event->get_tier();
-		vs->importance = SoundEvent::tier_band(p_event->get_tier()) +
-				(float)p_event->get_priority() * p_event->get_importance_weight();
-		vs->importance_weight = p_event->get_importance_weight();
-		vs->category = (int)p_event->get_category();
-	}
-	r_result = RESULT_STOLEN;
-	return p_victim_slot;
-}
-
-int SymphonyEventDispatcher::dispatch(const Ref<SoundEvent> &p_event, PlayResult &r_result, StringName &r_steal_reason) {
+int SymphonyEventDispatcher::_admit(const Ref<SoundEvent> &p_event, int p_forced_victim, PlayResult &r_result, StringName &r_steal_reason) {
 	ERR_FAIL_COND_V(p_event.is_null(), -1);
 	r_steal_reason = StringName();
 
@@ -195,13 +198,12 @@ int SymphonyEventDispatcher::dispatch(const Ref<SoundEvent> &p_event, PlayResult
 	}
 
 	float cooldown_ms = p_event->get_cooldown_ms();
-	if (cooldown_ms > 0.0f) {
-		if (cooldown_map.has(event_id)) {
-			uint64_t elapsed_us = now - cooldown_map[event_id];
-			if (elapsed_us < (uint64_t)(cooldown_ms * 1000.0f)) {
-				r_result = RESULT_REJECTED_COOLDOWN;
-				return -1;
-			}
+	if (cooldown_ms > 0.0f && cooldown_map.has(event_id)) {
+		uint64_t elapsed_us = now - cooldown_map[event_id];
+		if (elapsed_us < (uint64_t)(cooldown_ms * 1000.0f)) {
+			r_result = RESULT_REJECTED_COOLDOWN;
+			r_steal_reason = StringName("cooldown");
+			return -1;
 		}
 	}
 
@@ -210,42 +212,85 @@ int SymphonyEventDispatcher::dispatch(const Ref<SoundEvent> &p_event, PlayResult
 
 	const int incoming_priority = p_event->get_priority();
 	const int incoming_tier = (int)p_event->get_tier();
+	const int incoming_category = (int)p_event->get_category();
 	const int max_voices = p_event->get_max_voices();
 	const int current_event_voices = event_voice_counts.has(event_id) ? event_voice_counts[event_id] : 0;
 	const bool at_event_cap = max_voices > 0 && current_event_voices >= max_voices;
+	const int cat_cap = _category_cap(incoming_category);
+	const int cat_count = _count_category_voices(incoming_category);
+	const bool at_cat_cap = cat_cap > 0 && cat_count >= cat_cap;
 
 	int slot = -1;
 	bool stole = false;
 
-	if (at_event_cap) {
-		slot = _select_steal_victim(event_id, incoming_priority, incoming_tier, p_event->get_steal_mode(), true, r_steal_reason);
+	if (p_forced_victim >= 0) {
+		// N8: forced victim must still satisfy event/category/tier rules.
+		if (p_forced_victim >= pool->get_pool_size()) {
+			r_result = RESULT_REJECTED_VOICE_LIMIT;
+			r_steal_reason = StringName("player_pool");
+			return -1;
+		}
+		SymphonyVoicePool::VoiceSlot *victim = pool->get_slot(p_forced_victim);
+		if (!victim || (victim->state != SymphonyVoicePool::VOICE_PLAYING && victim->state != SymphonyVoicePool::VOICE_TO_PLAY &&
+								   victim->state != SymphonyVoicePool::VOICE_VIRTUAL && victim->state != SymphonyVoicePool::VOICE_VIRTUALIZING &&
+								   victim->state != SymphonyVoicePool::VOICE_DEVIRTUALIZING)) {
+			r_result = RESULT_REJECTED_VOICE_LIMIT;
+			r_steal_reason = StringName("player_pool");
+			return -1;
+		}
+		if (victim->tier > incoming_tier) {
+			r_result = RESULT_REJECTED_VOICE_LIMIT;
+			r_steal_reason = StringName("tier");
+			return -1;
+		}
+		if (at_event_cap && victim->event_id != event_id) {
+			r_result = RESULT_REJECTED_VOICE_LIMIT;
+			r_steal_reason = StringName("event_cap");
+			return -1;
+		}
+		if (at_cat_cap && victim->category != incoming_category) {
+			r_result = RESULT_REJECTED_VOICE_LIMIT;
+			r_steal_reason = StringName("category_cap");
+			return -1;
+		}
+		slot = p_forced_victim;
+		stole = true;
+		r_steal_reason = StringName("player_pool");
+	} else if (at_event_cap) {
+		slot = _select_steal_victim(event_id, incoming_priority, incoming_tier, p_event->get_steal_mode(), true, -1, r_steal_reason);
 		if (slot < 0) {
 			r_result = RESULT_REJECTED_VOICE_LIMIT;
 			return -1;
 		}
+		stole = true;
+	} else if (at_cat_cap) {
+		// Cap hit: steal within the same category only (or reject).
+		slot = _select_steal_victim(event_id, incoming_priority, incoming_tier, p_event->get_steal_mode(), false, incoming_category, r_steal_reason);
+		if (slot < 0) {
+			r_result = RESULT_REJECTED_VOICE_LIMIT;
+			r_steal_reason = StringName("category_cap");
+			return -1;
+		}
+		stole = true;
+	} else {
+		slot = pool->acquire_slot(incoming_priority);
+		if (slot < 0) {
+			slot = _select_steal_victim(event_id, incoming_priority, incoming_tier, p_event->get_steal_mode(), false, -1, r_steal_reason);
+			if (slot < 0) {
+				r_result = RESULT_REJECTED_VOICE_LIMIT;
+				return -1;
+			}
+			stole = true;
+		}
+	}
+
+	if (stole) {
 		SymphonyVoicePool::VoiceSlot *victim = pool->get_slot(slot);
 		uint64_t victim_event = victim ? victim->event_id : 0;
 		if (victim_event != 0) {
 			on_voice_stopped(victim_event);
 		}
 		pool->reclaim_slot(slot, incoming_priority, r_steal_reason);
-		stole = true;
-	} else {
-		slot = pool->acquire_slot(incoming_priority);
-		if (slot < 0) {
-			slot = _select_steal_victim(event_id, incoming_priority, incoming_tier, p_event->get_steal_mode(), false, r_steal_reason);
-			if (slot < 0) {
-				r_result = RESULT_REJECTED_VOICE_LIMIT;
-				return -1;
-			}
-			SymphonyVoicePool::VoiceSlot *victim = pool->get_slot(slot);
-			uint64_t victim_event = victim ? victim->event_id : 0;
-			if (victim_event != 0) {
-				on_voice_stopped(victim_event);
-			}
-			pool->reclaim_slot(slot, incoming_priority, r_steal_reason);
-			stole = true;
-		}
 	}
 
 	cooldown_map[event_id] = now;
@@ -259,11 +304,15 @@ int SymphonyEventDispatcher::dispatch(const Ref<SoundEvent> &p_event, PlayResult
 		vs->importance = SoundEvent::tier_band(p_event->get_tier()) +
 				(float)incoming_priority * p_event->get_importance_weight();
 		vs->importance_weight = p_event->get_importance_weight();
-		vs->category = (int)p_event->get_category();
+		vs->category = incoming_category;
 	}
 
 	r_result = stole ? RESULT_STOLEN : RESULT_PLAYED;
 	return slot;
+}
+
+int SymphonyEventDispatcher::dispatch(const Ref<SoundEvent> &p_event, PlayResult &r_result, StringName &r_steal_reason) {
+	return _admit(p_event, -1, r_result, r_steal_reason);
 }
 
 int SymphonyEventDispatcher::resolve_variation(const Ref<SoundEvent> &p_event) {
@@ -344,11 +393,7 @@ Dictionary SymphonyEventDispatcher::play_event(const Ref<SoundEvent> &p_event, c
 			pr = RESULT_REJECTED_NO_STREAMS;
 			stream_index = -1;
 		} else {
-			if (p_victim_slot >= 0) {
-				slot = _reclaim_player_victim(p_event, p_victim_slot, pr, steal_reason);
-			} else {
-				slot = dispatch(p_event, pr, steal_reason);
-			}
+			slot = _admit(p_event, p_victim_slot, pr, steal_reason);
 			if (slot >= 0) {
 				Vector2 vol_range = p_event->get_volume_range();
 				if (vol_range.x != vol_range.y) {

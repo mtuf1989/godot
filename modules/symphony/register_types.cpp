@@ -1,5 +1,7 @@
 #include "register_types.h"
 
+#include "core/config/project_settings.h"
+
 #include "stream/audio_stream_symphony.h"
 #include "stream/audio_stream_playback_symphony.h"
 #include "stream/audio_stream_symphony_music.h"
@@ -170,6 +172,13 @@ void initialize_symphony_module(ModuleInitializationLevel p_level) {
 		SymphonySubGraph::register_operator();
 		OperatorRegistry::get_singleton()->annotate_authoring_schema();
 		OperatorRegistry::get_singleton()->mark_resettable_operators();
+
+		// P8b: per-category voice caps (0 = unlimited).
+		GLOBAL_DEF(PropertyInfo(Variant::INT, "audio/symphony/category_caps/sfx", PROPERTY_HINT_RANGE, "0,256,1,or_greater"), 0);
+		GLOBAL_DEF(PropertyInfo(Variant::INT, "audio/symphony/category_caps/music", PROPERTY_HINT_RANGE, "0,256,1,or_greater"), 0);
+		GLOBAL_DEF(PropertyInfo(Variant::INT, "audio/symphony/category_caps/ui", PROPERTY_HINT_RANGE, "0,256,1,or_greater"), 0);
+		GLOBAL_DEF(PropertyInfo(Variant::INT, "audio/symphony/category_caps/ambient", PROPERTY_HINT_RANGE, "0,256,1,or_greater"), 0);
+		GLOBAL_DEF(PropertyInfo(Variant::INT, "audio/symphony/category_caps/voice", PROPERTY_HINT_RANGE, "0,256,1,or_greater"), 0);
 
 		// Register Godot classes
 		GDREGISTER_CLASS(AudioStreamSymphony);

@@ -1,5 +1,9 @@
 # Dev Log — Symphony Audio System
 
+## P8b (2026-10-09)
+
+Voice-policy remainder: `audio/symphony/category_caps/*` (0 = unlimited); shared `_admit` for dispatch + forced `victim_slot` (N8 event/category/tier); N12 `STEAL_QUIETEST` prefers valid RMS then quietest, else importance; GDScript `_admit_from` matches tiers/caps. Tests: `test_symphony_voice.cpp` P8b cases; `audio_manager_behavior_test.gd` tier/cap. Docs: `user_guide.md`, `QUALIFICATION.md`.
+
 ## V1 (2026-10-09)
 
 Automated qualification without P8b/P9: sample-accurate note offsets + callback envelope + replace_future (`test_symphony_music_v1.cpp`); `DemoScoreFactory` (bass/chords/melody/perc/bed, explore→tension→combat, locked/authored variants); 1000-seed compose batch; `QUALIFICATION.md` lists closed vs deferred gates. Suite: 300/300. game-template: `procedural_music_v1_test.gd` (4/4).

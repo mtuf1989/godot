@@ -1381,11 +1381,13 @@ Symphony manages a fixed pool of voice slots (default: 48) with importance-based
 
 When the pool is full and a new sound plays, `SymphonyVoicePool.acquire_slot()` does **not** steal. `SymphonyEventDispatcher` chooses a victim:
 
-1. If the same event is at its per-event cap, steal among that event's voices using its `steal_mode`
-2. Otherwise steal globally among voices whose `priority` is no greater than the incoming event
-3. Mode: `SoundEvent.STEAL_OLDEST`, `STEAL_QUIETEST`, or `STEAL_FARTHEST` (ties: lower importance, then slot index)
-4. Quietest falls back to importance when RMS is unknown (`set_slot_rms()`)
-5. `play_event()` returns `RESULT_STOLEN` (slot is still valid). The steal reason (`oldest` / `quietest` / `farthest`) is recorded in the voice-pool event log.
+1. If the same event is at its per-event `max_voices` cap, steal among that event's voices using its `steal_mode`
+2. Else if the category is at `audio/symphony/category_caps/<sfx|music|ui|ambient|voice>` (0 = unlimited), steal only within that category (or reject)
+3. Else acquire a free slot, or steal globally among voices whose `tier` and `priority` are no greater than the incoming event
+4. Mode: `SoundEvent.STEAL_OLDEST`, `STEAL_QUIETEST`, or `STEAL_FARTHEST` (ties: lower importance, then slot index)
+5. `STEAL_QUIETEST` compares like with like: prefer voices with valid RMS, then lowest RMS; if none have RMS, fall back to lowest importance
+6. GDScript `AudioManager` player-pool admission uses the same tier / category-cap / importance rules (forced `victim_slot` is re-validated in C++)
+7. `play_event()` returns `RESULT_STOLEN` (slot is still valid). The steal reason (`oldest` / `quietest` / `farthest` / `player_pool` / …) is recorded in the voice-pool event log.
 
 The stolen voice fades out over 64 samples (anti-click); the new voice takes the slot.
 

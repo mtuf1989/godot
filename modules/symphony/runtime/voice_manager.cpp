@@ -66,6 +66,7 @@ void SymphonyVoicePool::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_reference_distance", "distance"), &SymphonyVoicePool::set_reference_distance);
 	ClassDB::bind_method(D_METHOD("get_reference_distance"), &SymphonyVoicePool::get_reference_distance);
 	ClassDB::bind_method(D_METHOD("set_slot_category", "slot", "category"), &SymphonyVoicePool::set_slot_category);
+	ClassDB::bind_method(D_METHOD("get_slot_category", "slot"), &SymphonyVoicePool::get_slot_category);
 	ClassDB::bind_method(D_METHOD("set_slot_tier", "slot", "tier"), &SymphonyVoicePool::set_slot_tier);
 	ClassDB::bind_method(D_METHOD("get_slot_tier", "slot"), &SymphonyVoicePool::get_slot_tier);
 	ClassDB::bind_method(D_METHOD("set_slot_importance_weight", "slot", "weight"), &SymphonyVoicePool::set_slot_importance_weight);
@@ -404,6 +405,11 @@ void SymphonyVoicePool::set_slot_category(int p_slot, int p_category) {
 	slots[p_slot].category = CLAMP(p_category, 0, 4);
 }
 
+int SymphonyVoicePool::get_slot_category(int p_slot) const {
+	ERR_FAIL_INDEX_V(p_slot, pool_size, (int)SoundEvent::CATEGORY_SFX);
+	return slots[p_slot].category;
+}
+
 void SymphonyVoicePool::set_slot_tier(int p_slot, int p_tier) {
 	ERR_FAIL_INDEX(p_slot, pool_size);
 	slots[p_slot].tier = CLAMP(p_tier, 0, 2);
@@ -697,7 +703,8 @@ Dictionary SymphonyVoicePool::get_category_voice_counts() const {
 	int counts[5] = {0, 0, 0, 0, 0}; // SFX, Music, UI, Ambient, Voice
 	for (int i = 0; i < pool_size; i++) {
 		if (slots[i].state == VOICE_PLAYING || slots[i].state == VOICE_TO_PLAY ||
-				slots[i].state == VOICE_VIRTUALIZING || slots[i].state == VOICE_DEVIRTUALIZING) {
+				slots[i].state == VOICE_VIRTUALIZING || slots[i].state == VOICE_DEVIRTUALIZING ||
+				slots[i].state == VOICE_VIRTUAL) {
 			int cat = CLAMP(slots[i].category, 0, 4);
 			counts[cat]++;
 		}

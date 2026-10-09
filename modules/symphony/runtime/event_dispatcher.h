@@ -71,11 +71,16 @@ public:
 	~SymphonyEventDispatcher();
 
 private:
-	// Select a steal victim. same_event: only slots for p_event_id.
-	// Otherwise only slots with priority <= p_incoming_priority and tier <= incoming tier
+	// Select a steal victim.
+	// same_event: only slots for p_event_id.
+	// category_filter >= 0: only that SoundEvent::Category.
+	// Otherwise only slots with priority <= incoming and tier <= incoming
 	// (VITAL is never stolen by a lower tier — P8a).
-	int _select_steal_victim(uint64_t p_event_id, int p_incoming_priority, int p_incoming_tier, SoundEvent::StealMode p_mode, bool p_same_event_only, StringName &r_reason) const;
-	int _reclaim_player_victim(const Ref<SoundEvent> &p_event, int p_victim_slot, PlayResult &r_result, StringName &r_steal_reason);
+	int _select_steal_victim(uint64_t p_event_id, int p_incoming_priority, int p_incoming_tier, SoundEvent::StealMode p_mode, bool p_same_event_only, int p_category_filter, StringName &r_reason) const;
+	[[nodiscard]] static int _category_cap(int p_category);
+	[[nodiscard]] int _count_category_voices(int p_category) const;
+	// Shared admission: cooldown, event max_voices, category cap, acquire/steal, or forced victim (N8).
+	int _admit(const Ref<SoundEvent> &p_event, int p_forced_victim, PlayResult &r_result, StringName &r_steal_reason);
 };
 
 VARIANT_ENUM_CAST(SymphonyEventDispatcher::PlayResult);

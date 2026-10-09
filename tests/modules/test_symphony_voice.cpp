@@ -24,6 +24,7 @@ TEST_FORCE_LINK(test_symphony_voice)
 #include "modules/symphony/core/symphony_voice_manager.h"
 #include "scene/resources/audio/audio_stream_wav.h"
 #include "tests/modules/symphony_test_helpers.h"
+#include "core/config/project_settings.h"
 #include "core/os/os.h"
 
 namespace TestSymphonyVoice {
@@ -436,6 +437,221 @@ TEST_CASE("[Symphony][Voice][P8a] lower tier cannot steal VITAL slot") {
 	for (int i = 0; i < pool->get_pool_size(); i++) {
 		pool->release_slot(i, true);
 	}
+}
+
+TEST_CASE("[Symphony][Voice][P8b] category cap steals within category or rejects") {
+	SymphonyVoicePool *pool = SymphonyVoicePool::get_singleton();
+	SymphonyEventDispatcher *dispatcher = SymphonyEventDispatcher::get_singleton();
+	REQUIRE(pool != nullptr);
+	REQUIRE(dispatcher != nullptr);
+
+	for (int i = 0; i < pool->get_pool_size(); i++) {
+		pool->release_slot(i, true);
+	}
+
+	const int prev_sfx_cap = (int)ProjectSettings::get_singleton()->get_setting("audio/symphony/category_caps/sfx");
+	ProjectSettings::get_singleton()->set_setting("audio/symphony/category_caps/sfx", 2);
+
+	Ref<AudioStreamWAV> stream;
+	stream.instantiate();
+	TypedArray<AudioStream> streams;
+	streams.push_back(stream);
+
+	Ref<SoundEvent> sfx_a;
+	sfx_a.instantiate();
+	sfx_a->set_category(SoundEvent::CATEGORY_SFX);
+	sfx_a->set_priority(40);
+	sfx_a->set_max_voices(0);
+	sfx_a->set_steal_mode(SoundEvent::STEAL_OLDEST);
+	sfx_a->set_streams(streams);
+
+	Ref<SoundEvent> sfx_b;
+	sfx_b.instantiate();
+	sfx_b->set_category(SoundEvent::CATEGORY_SFX);
+	sfx_b->set_priority(40);
+	sfx_b->set_max_voices(0);
+	sfx_b->set_steal_mode(SoundEvent::STEAL_OLDEST);
+	sfx_b->set_streams(streams);
+
+	Ref<SoundEvent> ui_event;
+	ui_event.instantiate();
+	ui_event->set_category(SoundEvent::CATEGORY_UI);
+	ui_event->set_priority(40);
+	ui_event->set_max_voices(0);
+	ui_event->set_streams(streams);
+
+	SymphonyEventDispatcher::PlayResult pr;
+	StringName reason;
+	int s0 = dispatcher->dispatch(sfx_a, pr, reason);
+	int s1 = dispatcher->dispatch(sfx_b, pr, reason);
+	REQUIRE(s0 >= 0);
+	REQUIRE(s1 >= 0);
+	CHECK(s0 != s1);
+
+	int ui_slot = dispatcher->dispatch(ui_event, pr, reason);
+	REQUIRE(ui_slot >= 0);
+
+	// Cap=2: third SFX steals within SFX, not the UI voice.
+	int s2 = dispatcher->dispatch(sfx_a, pr, reason);
+	REQUIRE(s2 >= 0);
+	CHECK(pr == SymphonyEventDispatcher::RESULT_STOLEN);
+	CHECK(s2 != ui_slot);
+	CHECK((s2 == s0 || s2 == s1));
+
+	// Fill remaining free slots with UI so only UI (+ capped SFX) remain.
+	while (pool->acquire_slot(1) >= 0) {
+	}
+	// Mark fillers as UI category so they aren't same-category victims.
+	for (int i = 0; i < pool->get_pool_size(); i++) {
+		SymphonyVoicePool::VoiceSlot *vs = pool->get_slot(i);
+		if (!vs || (vs->state != SymphonyVoicePool::VOICE_PLAYING && vs->state != SymphonyVoicePool::VOICE_TO_PLAY)) {
+			continue;
+		}
+		if (vs->event_id == 0) {
+			vs->category = (int)SoundEvent::CATEGORY_UI;
+			vs->priority = 99;
+			vs->tier = (int)SoundEvent::TIER_IMPORTANT;
+		}
+	}
+
+	// Both SFX slots still at cap; steal one SFX again.
+	int s3 = dispatcher->dispatch(sfx_b, pr, reason);
+	REQUIRE(s3 >= 0);
+	CHECK(pool->get_slot(s3)->category == (int)SoundEvent::CATEGORY_SFX);
+
+	ProjectSettings::get_singleton()->set_setting("audio/symphony/category_caps/sfx", prev_sfx_cap);
+	for (int i = 0; i < pool->get_pool_size(); i++) {
+		pool->release_slot(i, true);
+	}
+	dispatcher->on_voice_stopped(sfx_a->get_instance_id());
+	dispatcher->on_voice_stopped(sfx_b->get_instance_id());
+	dispatcher->on_voice_stopped(ui_event->get_instance_id());
+}
+
+TEST_CASE("[Symphony][Voice][P8b] N8 forced victim honours event max_voices") {
+	SymphonyVoicePool *pool = SymphonyVoicePool::get_singleton();
+	SymphonyEventDispatcher *dispatcher = SymphonyEventDispatcher::get_singleton();
+	REQUIRE(pool != nullptr);
+	REQUIRE(dispatcher != nullptr);
+
+	for (int i = 0; i < pool->get_pool_size(); i++) {
+		pool->release_slot(i, true);
+	}
+
+	Ref<AudioStreamWAV> stream;
+	stream.instantiate();
+	TypedArray<AudioStream> streams;
+	streams.push_back(stream);
+
+	Ref<SoundEvent> limited;
+	limited.instantiate();
+	limited->set_max_voices(1);
+	limited->set_priority(50);
+	limited->set_streams(streams);
+
+	Ref<SoundEvent> other;
+	other.instantiate();
+	other->set_max_voices(0);
+	other->set_priority(10);
+	other->set_streams(streams);
+
+	SymphonyEventDispatcher::PlayResult pr;
+	StringName reason;
+	int limited_slot = dispatcher->dispatch(limited, pr, reason);
+	REQUIRE(limited_slot >= 0);
+	int other_slot = dispatcher->dispatch(other, pr, reason);
+	REQUIRE(other_slot >= 0);
+	REQUIRE(other_slot != limited_slot);
+
+	// At event cap: forced reclaim of a different event's slot must reject.
+	Dictionary rejected = dispatcher->play_event(limited, Vector3(), false, other_slot);
+	CHECK((int)rejected["slot"] == -1);
+	CHECK((int)rejected["result"] == (int)SymphonyEventDispatcher::RESULT_REJECTED_VOICE_LIMIT);
+	CHECK(StringName(rejected["steal_reason"]) == StringName("event_cap"));
+
+	// Same-event forced victim still steals.
+	Dictionary stolen = dispatcher->play_event(limited, Vector3(), false, limited_slot);
+	CHECK((int)stolen["slot"] == limited_slot);
+	CHECK((int)stolen["result"] == (int)SymphonyEventDispatcher::RESULT_STOLEN);
+
+	pool->release_slot(limited_slot, true);
+	pool->release_slot(other_slot, true);
+	dispatcher->on_voice_stopped(limited->get_instance_id());
+	dispatcher->on_voice_stopped(other->get_instance_id());
+}
+
+TEST_CASE("[Symphony][Voice][P8b] N12 STEAL_QUIETEST prefers valid RMS then quietest") {
+	SymphonyVoicePool *pool = SymphonyVoicePool::get_singleton();
+	SymphonyEventDispatcher *dispatcher = SymphonyEventDispatcher::get_singleton();
+	REQUIRE(pool != nullptr);
+	REQUIRE(dispatcher != nullptr);
+
+	for (int i = 0; i < pool->get_pool_size(); i++) {
+		pool->release_slot(i, true);
+	}
+
+	Ref<AudioStreamWAV> stream;
+	stream.instantiate();
+	TypedArray<AudioStream> streams;
+	streams.push_back(stream);
+
+	Ref<SoundEvent> loud;
+	loud.instantiate();
+	loud->set_priority(20);
+	loud->set_max_voices(0);
+	loud->set_importance_weight(1.0f);
+	loud->set_streams(streams);
+
+	Ref<SoundEvent> quiet;
+	quiet.instantiate();
+	quiet->set_priority(20);
+	quiet->set_max_voices(0);
+	quiet->set_importance_weight(1.0f);
+	quiet->set_streams(streams);
+
+	Ref<SoundEvent> no_rms;
+	no_rms.instantiate();
+	no_rms->set_priority(20);
+	no_rms->set_max_voices(0);
+	no_rms->set_importance_weight(0.1f); // lowest importance if RMS ignored
+	no_rms->set_streams(streams);
+
+	SymphonyEventDispatcher::PlayResult pr;
+	StringName reason;
+	int loud_slot = dispatcher->dispatch(loud, pr, reason);
+	int quiet_slot = dispatcher->dispatch(quiet, pr, reason);
+	int no_rms_slot = dispatcher->dispatch(no_rms, pr, reason);
+	REQUIRE(loud_slot >= 0);
+	REQUIRE(quiet_slot >= 0);
+	REQUIRE(no_rms_slot >= 0);
+
+	pool->set_slot_rms(loud_slot, 0.9f);
+	pool->set_slot_rms(quiet_slot, 0.1f);
+	// no_rms_slot left with rms_valid=false
+
+	while (pool->acquire_slot(1) >= 0) {
+	}
+
+	Ref<SoundEvent> incoming;
+	incoming.instantiate();
+	incoming->set_priority(50);
+	incoming->set_max_voices(0);
+	incoming->set_steal_mode(SoundEvent::STEAL_QUIETEST);
+	incoming->set_streams(streams);
+
+	int stolen = dispatcher->dispatch(incoming, pr, reason);
+	REQUIRE(stolen >= 0);
+	CHECK(stolen == quiet_slot);
+	CHECK(reason == StringName("quietest"));
+	CHECK(pr == SymphonyEventDispatcher::RESULT_STOLEN);
+
+	for (int i = 0; i < pool->get_pool_size(); i++) {
+		pool->release_slot(i, true);
+	}
+	dispatcher->on_voice_stopped(loud->get_instance_id());
+	dispatcher->on_voice_stopped(quiet->get_instance_id());
+	dispatcher->on_voice_stopped(no_rms->get_instance_id());
+	dispatcher->on_voice_stopped(incoming->get_instance_id());
 }
 
 TEST_CASE("[Symphony][Authoring] operator schema lists trigger names and modal arrays") {

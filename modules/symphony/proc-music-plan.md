@@ -9,7 +9,7 @@
 >   - the resettable-state contract and ModalBank `pitch_ratio` (P10);
 >   - music-safe voice budgeting (P8a).
 >
-> **Status (2026-10-09):** tech **P0–P8a** and **P10** done; music **N0–N3**, **G1–G2**, **MusicStream**, and **V1** automated qualification done. Optional **P8b**/**P9** + listening deferred — see `QUALIFICATION.md`.
+> **Status (2026-10-09):** tech **P0–P8b** and **P10** done; music **N0–N3**, **G1–G2**, **MusicStream**, and **V1** automated qualification done. Optional **P9** + listening deferred — see `QUALIFICATION.md`.
 
 ## 1. Goal and scope
 
