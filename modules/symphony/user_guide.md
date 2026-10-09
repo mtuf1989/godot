@@ -541,7 +541,7 @@ Note that `LFO` and `Oscillator` number their waveforms differently.
 
 | Operator | Inputs → Outputs | Parameters |
 |----------|------------------|------------|
-| **Clock** | — → `trigger` | `bpm`, `subdivision` (ticks per beat, 0.25–16) |
+| **Clock** | `bpm`, `reset` → `trigger`, `phase` | `bpm`, `subdivision` (ticks per beat, 0.25–16). First tick at sample 0; bpm input is block-smoothed with continuous phase; `phase` is AUDIO in [0,1) within the tick |
 | **TriggerDelay** | `trigger` → `trigger` | `delay_ms` |
 | **StochasticTrigger** | `density` → `trigger_out` | `density` (events/s), `seed` (0–16777215, mixed with the voice seed). `render_offline` uses its render seed as the voice seed, so the same seed repeats. |
 

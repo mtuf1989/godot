@@ -493,7 +493,7 @@ Risks:
 - **Surround modes** duplicate the FDN per channel pair. Process pair 0 only, or rotate the c vectors.
 - The DRR floor and r_ref are taste parameters, so they are exposed as settings.
 
-## P7: SFX-side timing (stage S3)
+## P7: SFX-side timing (stage S3) ✅
 
 > **Handed to music N1:** the **R** (sample-accurate triggers) and **N BeatClock** specs below are implemented as part of music milestone N1. The procedural transport becomes the timing authority, and BeatClock observes it in PROCEDURAL mode. The legacy-mode fixes below (loop wrap, crossed beats, `AudioStreamInteractive` position) are still part of N1's exit gate. They stay in this file as the spec. P7 itself only delivers N11, N21 and asymmetric RTPC smoothing.
 

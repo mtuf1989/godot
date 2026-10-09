@@ -39,6 +39,8 @@ void RTPCEngine::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_missing_handle_count"), &RTPCEngine::get_missing_handle_count);
 	ClassDB::bind_method(D_METHOD("set_default_smooth_time", "ms"), &RTPCEngine::set_default_smooth_time);
 	ClassDB::bind_method(D_METHOD("get_default_smooth_time"), &RTPCEngine::get_default_smooth_time);
+	ClassDB::bind_method(D_METHOD("set_parameter_smoothing", "name", "attack_ms", "release_ms"),
+			static_cast<bool (RTPCEngine::*)(const StringName &, float, float)>(&RTPCEngine::set_parameter_smoothing));
 	ClassDB::bind_method(D_METHOD("evaluate_curve", "curve", "input", "min_out", "max_out"), &RTPCEngine::evaluate_curve);
 
 	ClassDB::bind_method(D_METHOD("register_analysis", "name"), &RTPCEngine::register_analysis);
@@ -72,7 +74,8 @@ void RTPCEngine::_recompute_block_alphas(int p_num_frames) {
 	const int count = global_param_count.load(std::memory_order_acquire);
 	for (int i = 0; i < count; i++) {
 		if (global_params[i].active) {
-			global_params[i].block_alpha = _compute_block_alpha(global_params[i].smooth_time_ms, p_num_frames);
+			global_params[i].block_alpha_attack = _compute_block_alpha(global_params[i].attack_ms, p_num_frames);
+			global_params[i].block_alpha_release = _compute_block_alpha(global_params[i].release_ms, p_num_frames);
 		}
 	}
 	cached_mix_frames = p_num_frames;
@@ -95,7 +98,8 @@ void RTPCEngine::smooth_all(int p_num_frames) {
 		if (Math::abs(diff) < 1e-7f) {
 			param.current_value.store(target, std::memory_order_relaxed);
 		} else {
-			param.current_value.store(current + param.block_alpha * diff, std::memory_order_relaxed);
+			const float alpha = (diff > 0.0f) ? param.block_alpha_attack : param.block_alpha_release;
+			param.current_value.store(current + alpha * diff, std::memory_order_relaxed);
 		}
 	}
 }
@@ -112,14 +116,55 @@ RTPCEngine::Handle RTPCEngine::register_parameter(const StringName &p_name, floa
 	global_params[idx].name = p_name;
 	global_params[idx].current_value.store(p_default_value, std::memory_order_relaxed);
 	global_params[idx].target_value.store(p_default_value, std::memory_order_relaxed);
-	global_params[idx].smooth_time_ms = MAX(0.0f, p_smooth_time_ms);
-	global_params[idx].block_alpha = _compute_block_alpha(global_params[idx].smooth_time_ms, cached_mix_frames > 0 ? cached_mix_frames : SYMPHONY_MICRO_BLOCK_SIZE);
+	const float smooth = MAX(0.0f, p_smooth_time_ms);
+	global_params[idx].attack_ms = smooth;
+	global_params[idx].release_ms = smooth;
+	const int frames = cached_mix_frames > 0 ? cached_mix_frames : SYMPHONY_MICRO_BLOCK_SIZE;
+	global_params[idx].block_alpha_attack = _compute_block_alpha(smooth, frames);
+	global_params[idx].block_alpha_release = global_params[idx].block_alpha_attack;
 	global_params[idx].active = true;
 	global_param_index[p_name] = idx;
 	// Publish the slot before exposing the new count.
 	global_param_count.store(idx + 1, std::memory_order_release);
 	alphas_dirty.store(true, std::memory_order_release);
 	return idx;
+}
+
+bool RTPCEngine::set_parameter_smoothing(Handle p_handle, float p_attack_ms, float p_release_ms) {
+	const int count = global_param_count.load(std::memory_order_acquire);
+	if (p_handle < 0 || p_handle >= count || !global_params[p_handle].active) {
+		missing_handle_count.fetch_add(1, std::memory_order_relaxed);
+		return false;
+	}
+	global_params[p_handle].attack_ms = MAX(0.0f, p_attack_ms);
+	global_params[p_handle].release_ms = MAX(0.0f, p_release_ms);
+	alphas_dirty.store(true, std::memory_order_release);
+	return true;
+}
+
+bool RTPCEngine::set_parameter_smoothing(const StringName &p_name, float p_attack_ms, float p_release_ms) {
+	Handle h = find_parameter(p_name);
+	if (h == INVALID_HANDLE) {
+		missing_handle_count.fetch_add(1, std::memory_order_relaxed);
+		return false;
+	}
+	return set_parameter_smoothing(h, p_attack_ms, p_release_ms);
+}
+
+float RTPCEngine::get_attack_ms(Handle p_handle) const {
+	const int count = global_param_count.load(std::memory_order_acquire);
+	if (p_handle < 0 || p_handle >= count || !global_params[p_handle].active) {
+		return DEFAULT_SMOOTH_TIME_MS;
+	}
+	return global_params[p_handle].attack_ms;
+}
+
+float RTPCEngine::get_release_ms(Handle p_handle) const {
+	const int count = global_param_count.load(std::memory_order_acquire);
+	if (p_handle < 0 || p_handle >= count || !global_params[p_handle].active) {
+		return DEFAULT_SMOOTH_TIME_MS;
+	}
+	return global_params[p_handle].release_ms;
 }
 
 RTPCEngine::Handle RTPCEngine::find_parameter(const StringName &p_name) const {

@@ -1,5 +1,9 @@
 # Dev Log — Symphony Audio System
 
+## P7 (2026-10-09)
+
+SFX timing leftovers after N1: `SymphonyClock` fires its first tick at sample 0, takes FLOAT `bpm` (block-smoothed, phase-continuous) and TRIGGER `reset`, outputs AUDIO `phase`. RTPCEngine gains asymmetric `attack_ms`/`release_ms` via `set_parameter_smoothing`. MusicStateGraph.validate errors on missing/non-positive bpm or beats_per_bar; music_system.gd no longer defaults to 120/4. Tests: `test_symphony_p7_timing.cpp`. Suite: 275/275.
+
 ## P6 (2026-10-09)
 
 Spatial reverb rework: header-only `dsp/symphony_fdn_core.h` + `dsp/symphony_shoebox_er.h`; FDNReverb/EarlyReflections wrap the cores (fractional taps, ER A/B crossfade, always-write pre-delay). New `AudioEffectSymphonyReverb` (SeqLock params, ER+FDN, `process_silence=false`). Godot core: `AudioStreamPlayer3D.direct_volume_db` for DRR (send path excludes it). Reverb pool SlotParams → decay/absorption_high/hf_ratio/volume/dims/er_reflection/critical_distance; `reverb_level.h` DRR amount. GDScript: wet buses use Symphony reverb (`dry=0`,`wet=1`), proxy after apparent position, `get_emitter_reverb_amount` (no portal double-apply), volume stack split. FDN Mix presets retuned ~+6 dB. Tests: fdn_core, reverb_effect, early relative, spatial pool rewrite, ASP3D bind. Suite: 270/270.

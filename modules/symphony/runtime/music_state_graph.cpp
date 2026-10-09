@@ -122,6 +122,30 @@ bool MusicStateGraph::validate() const {
 		WARN_PRINT(vformat("MusicStateGraph: initial_state '%s' not found in states.", String(initial_state)));
 		return false;
 	}
+	// N21: every state must author bpm > 0 and beats_per_bar > 0 (no silent 120/4 fallback).
+	LocalVector<Variant> keys = states.get_key_list();
+	for (const Variant &k : keys) {
+		const StringName state_name = k;
+		const Dictionary state = states[state_name];
+		if (!state.has("bpm")) {
+			WARN_PRINT(vformat("MusicStateGraph: state '%s' is missing required 'bpm'.", String(state_name)));
+			return false;
+		}
+		const float bpm = (float)state["bpm"];
+		if (!(bpm > 0.0f)) {
+			WARN_PRINT(vformat("MusicStateGraph: state '%s' has invalid bpm %s (must be > 0).", String(state_name), rtos(bpm)));
+			return false;
+		}
+		if (!state.has("beats_per_bar")) {
+			WARN_PRINT(vformat("MusicStateGraph: state '%s' is missing required 'beats_per_bar'.", String(state_name)));
+			return false;
+		}
+		const int bpb = (int)state["beats_per_bar"];
+		if (bpb <= 0) {
+			WARN_PRINT(vformat("MusicStateGraph: state '%s' has invalid beats_per_bar %d (must be > 0).", String(state_name), bpb));
+			return false;
+		}
+	}
 	// Validate transitions reference existing states
 	for (int i = 0; i < transitions.size(); i++) {
 		Dictionary t = transitions[i];

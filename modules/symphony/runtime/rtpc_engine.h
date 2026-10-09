@@ -27,10 +27,12 @@ public:
 
 	struct alignas(CACHE_LINE_SIZE) RTPCParameter {
 		std::atomic<float> current_value{ 0.0f };
-		float block_alpha = 1.0f; // Audio-owned; recomputed when alphas_dirty
-		float smooth_time_ms = DEFAULT_SMOOTH_TIME_MS;
+		float block_alpha_attack = 1.0f; // Audio-owned; recomputed when alphas_dirty
+		float block_alpha_release = 1.0f;
+		float attack_ms = DEFAULT_SMOOTH_TIME_MS; // toward higher targets
+		float release_ms = DEFAULT_SMOOTH_TIME_MS; // toward lower targets
 		bool active = false;
-		char _pad[CACHE_LINE_SIZE - sizeof(std::atomic<float>) - sizeof(float) - sizeof(float) - sizeof(bool)];
+		char _pad[CACHE_LINE_SIZE - sizeof(std::atomic<float>) - sizeof(float) * 4 - sizeof(bool)];
 		std::atomic<float> target_value{ 0.0f };
 		StringName name;
 	};
@@ -70,11 +72,18 @@ public:
 	static RTPCEngine *get_singleton() { return singleton; }
 
 	// --- Main-thread registration (returns stable handle) ---
+	// p_smooth_time_ms sets both attack and release (symmetric default).
 	Handle register_parameter(const StringName &p_name, float p_default_value = 0.0f, float p_smooth_time_ms = DEFAULT_SMOOTH_TIME_MS);
 	Handle register_analysis_output(const StringName &p_name);
 
 	[[nodiscard]] Handle find_parameter(const StringName &p_name) const;
 	[[nodiscard]] Handle find_analysis_output(const StringName &p_name) const;
+
+	// Asymmetric smoothing (P7): release alpha applies when the value decreases.
+	bool set_parameter_smoothing(Handle p_handle, float p_attack_ms, float p_release_ms);
+	bool set_parameter_smoothing(const StringName &p_name, float p_attack_ms, float p_release_ms);
+	[[nodiscard]] float get_attack_ms(Handle p_handle) const;
+	[[nodiscard]] float get_release_ms(Handle p_handle) const;
 
 	// --- Handle-based access (audio-safe) ---
 	bool set_target(Handle p_handle, float p_value);
