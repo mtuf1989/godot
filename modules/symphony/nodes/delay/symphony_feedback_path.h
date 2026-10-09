@@ -5,16 +5,20 @@
 #include "../../core/symphony_arena_allocator.h"
 #include "../../core/symphony_pin_types.h"
 
-// FeedbackPath: enables cycles in the DSP graph.
-// Stores one micro-block of audio from the previous execution cycle.
-// On execute(), outputs the stored buffer, then copies input into storage.
-// This introduces exactly 1 micro-block of latency in the feedback loop.
+#include <cstring>
+
+// FeedbackPath: marks a feedback edge in the DSP graph.
+//
+// P9 zero-extra: this is a pass-through (copy input → output). The one-block
+// delay comes from the persistent pin buffer: the compiler schedules FeedbackPath
+// last among its non-feedback deps, so readers wired via is_feedback edges run
+// earlier in the same block and still see the previous block's output.
+// Bare feedback edges and FeedbackPath loops are exactly 1 micro-block
+// (64 native / 32 web). Short loops belong inside one operator.
 class SymphonyFeedbackPath : public SymphonyOperator {
 private:
 	const float *SYMPHONY_RESTRICT audio_in = nullptr;
 	float *SYMPHONY_RESTRICT audio_out = nullptr;
-
-	float *prev_block = nullptr; // Arena-allocated buffer for previous block
 
 public:
 	SymphonyFeedbackPath() {}
@@ -26,36 +30,27 @@ public:
 
 	virtual void execute(int32_t p_num_frames) override {
 		SYMPHONY_ASSUME_FRAMES(p_num_frames);
-
-		// Output the previous block's stored data
-		for (int32_t i = 0; i < p_num_frames; i++) {
-			audio_out[i] = prev_block[i];
+		if (!audio_out) {
+			return;
 		}
-
-		// Store current input for next cycle
 		if (audio_in) {
-			for (int32_t i = 0; i < p_num_frames; i++) {
-				prev_block[i] = audio_in[i];
+			if (audio_in != audio_out) {
+				memcpy(audio_out, audio_in, sizeof(float) * (size_t)p_num_frames);
 			}
 		} else {
-			for (int32_t i = 0; i < p_num_frames; i++) {
-				prev_block[i] = 0.0f;
-			}
+			memset(audio_out, 0, sizeof(float) * (size_t)p_num_frames);
 		}
 	}
 
 	virtual size_t export_state(uint8_t *p_buffer, size_t p_max_size) const override {
-		size_t needed = sizeof(float) * SYMPHONY_MICRO_BLOCK_SIZE;
-		if (!p_buffer) return needed;
-		if (p_max_size < needed) return 0;
-		memcpy(p_buffer, prev_block, needed);
-		return needed;
+		(void)p_buffer;
+		(void)p_max_size;
+		return 0;
 	}
 
 	virtual void import_state(const uint8_t *p_buffer, size_t p_size) override {
-		size_t needed = sizeof(float) * SYMPHONY_MICRO_BLOCK_SIZE;
-		if (p_size < needed) return;
-		memcpy(prev_block, p_buffer, needed);
+		(void)p_buffer;
+		(void)p_size;
 	}
 
 	static void register_operator() {
@@ -66,15 +61,17 @@ public:
 		desc.outputs.push_back({ "audio_out", SymphonyPinType::AUDIO, false });
 		desc.state_size = sizeof(SymphonyFeedbackPath);
 		desc.state_align = alignof(SymphonyFeedbackPath);
-		desc.extra_arena_bytes = sizeof(float) * SYMPHONY_MICRO_BLOCK_SIZE + 32; // prev_block buffer
+		desc.extra_arena_bytes = 0;
+		desc.resettable = true;
 		desc.create_fn = &SymphonyFeedbackPath::create;
+		desc.silence_behavior = SilenceBehavior::ALWAYS_PROCESS;
 		OperatorRegistry::get_singleton()->register_operator(desc);
 	}
 
 	static SymphonyOperator *create(ArenaAllocator &p_arena, const HashMap<StringName, Variant> &p_params, float p_mix_rate) {
+		(void)p_params;
+		(void)p_mix_rate;
 		void *mem = p_arena.alloc(sizeof(SymphonyFeedbackPath), alignof(SymphonyFeedbackPath));
-		SymphonyFeedbackPath *fb = new (mem) SymphonyFeedbackPath();
-		fb->prev_block = (float *)p_arena.alloc(sizeof(float) * SYMPHONY_MICRO_BLOCK_SIZE, 32);
-		return fb;
+		return new (mem) SymphonyFeedbackPath();
 	}
 };

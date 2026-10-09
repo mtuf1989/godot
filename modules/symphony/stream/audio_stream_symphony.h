@@ -5,6 +5,7 @@
 #include "../core/symphony_compiled_graph.h"
 
 class AudioStreamPlaybackSymphony;
+struct PreparedGraphPackage;
 
 class AudioStreamSymphony : public AudioStream {
 	GDCLASS(AudioStreamSymphony, AudioStream)
@@ -19,6 +20,22 @@ private:
 	GraphDescription graph_desc; // LOD 0 (full quality)
 	// When true, AudioStreamPlaybackSymphony clears is_playing after WavePlayer fires finished.
 	bool stop_on_source_finished = false;
+
+	// P9: cached flatten plan + small arena freelist (SFX re-compile on main).
+	mutable GraphDescription cached_flat_graph;
+	mutable bool cached_flat_valid = false;
+	mutable uint64_t plan_build_count = 0;
+	mutable uint64_t plan_cache_hits = 0;
+	struct RecycledArena {
+		uint8_t *raw = nullptr;
+		size_t capacity = 0;
+	};
+	static constexpr int MAX_ARENA_FREELIST = 4;
+	mutable Vector<RecycledArena> arena_freelist;
+
+	void _invalidate_compile_cache();
+	void _recycle_arena(uint8_t *p_raw, size_t p_capacity) const;
+	bool _take_recycled_arena(size_t p_needed, uint8_t *&r_raw, size_t &r_capacity) const;
 
 	// LOD system: simplified graph variants for distance/importance-based degradation.
 	// lod_graphs[0] = LOD 1 (simplified), lod_graphs[1] = LOD 2 (minimal).
@@ -69,6 +86,11 @@ public:
 
 	CompiledGraph *compile_graph(uint64_t p_voice_seed = 0) const;
 	CompiledGraph *compile_lod_graph(int p_lod_tier, uint64_t p_voice_seed = 0) const;
+	// P9 diagnostics (tests).
+	[[nodiscard]] uint64_t get_plan_build_count() const { return plan_build_count; }
+	[[nodiscard]] uint64_t get_plan_cache_hits() const { return plan_cache_hits; }
+	// Return a package's arena to the freelist when possible (main thread).
+	void recycle_package(PreparedGraphPackage *p_package) const;
 	[[nodiscard]] int get_lod_count() const; // Returns 1 if no LOD graphs, up to 3 (LOD 0 + 2 variants)
 	[[nodiscard]] int get_lod_variant_count() const { return lod_graphs.size(); }
 
@@ -101,4 +123,6 @@ public:
 	virtual Ref<AudioStreamPlayback> instantiate_playback() override;
 	virtual double get_length() const override;
 	virtual bool is_monophonic() const override;
+
+	~AudioStreamSymphony() { _invalidate_compile_cache(); }
 };

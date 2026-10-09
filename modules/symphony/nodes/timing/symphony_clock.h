@@ -94,29 +94,35 @@ public:
 		_apply_bpm(target_bpm, false);
 
 		const int32_t sub_int = MAX(1, (int32_t)subdivision);
+		// P9 state-in-locals
+		float l_counter = counter;
+		int32_t l_tick = tick_index;
+		const float spt = samples_per_tick;
 		for (int32_t i = 0; i < p_num_frames; i++) {
-			if (counter <= 0.0f) {
+			if (l_counter <= 0.0f) {
 				float value = 1.0f;
-				if (sub_int > 1 && tick_index != 0) {
-					value = (float)tick_index / subdivision;
+				if (sub_int > 1 && l_tick != 0) {
+					value = (float)l_tick / subdivision;
 				}
 				if (trigger_out && !trigger_out->push(i, value)) {
 					symphony_note_dropped_trigger();
 				}
-				tick_index++;
-				if (tick_index >= sub_int) {
-					tick_index = 0;
+				l_tick++;
+				if (l_tick >= sub_int) {
+					l_tick = 0;
 				}
-				counter += samples_per_tick;
+				l_counter += spt;
 			}
 			if (phase_out) {
-				const float phase = (samples_per_tick > 1.0f)
-						? CLAMP(1.0f - (counter / samples_per_tick), 0.0f, 1.0f)
+				const float phase = (spt > 1.0f)
+						? CLAMP(1.0f - (l_counter / spt), 0.0f, 1.0f)
 						: 0.0f;
 				phase_out[i] = phase;
 			}
-			counter -= 1.0f;
+			l_counter -= 1.0f;
 		}
+		counter = l_counter;
+		tick_index = l_tick;
 	}
 
 	virtual size_t export_state(uint8_t *p_buffer, size_t p_max_size) const override {

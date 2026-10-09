@@ -22,8 +22,8 @@ private:
 	uint8_t silent_blocks = 0;
 	static constexpr float ACTIVITY_THRESHOLD = 1e-12f; // energy ≈ (-120 dB)² scale
 
-	inline float read_hermite(float delay_samples) const {
-		float read_pos = (float)write_pos - delay_samples;
+	inline float read_hermite(float delay_samples, int32_t p_write_pos) const {
+		float read_pos = (float)p_write_pos - delay_samples;
 		if (read_pos < 0.0f) read_pos += (float)buffer_size;
 
 		int32_t idx = (int32_t)read_pos;
@@ -70,17 +70,22 @@ public:
 		if (delay_samples < 1.0f) delay_samples = 1.0f;
 		if (delay_samples > (float)(buffer_size - 2)) delay_samples = (float)(buffer_size - 2);
 
+		// P9 state-in-locals
+		int32_t l_write = write_pos;
+		float l_energy = ring_energy;
 		for (int32_t i = 0; i < p_num_frames; i++) {
 			float in_s = audio_in[i];
-			float old = buffer[write_pos];
-			ring_energy += in_s * in_s - old * old;
-			if (ring_energy < 0.0f) {
-				ring_energy = 0.0f;
+			float old = buffer[l_write];
+			l_energy += in_s * in_s - old * old;
+			if (l_energy < 0.0f) {
+				l_energy = 0.0f;
 			}
-			buffer[write_pos] = in_s;
-			audio_out[i] = read_hermite(delay_samples);
-			write_pos = (write_pos + 1) % buffer_size;
+			buffer[l_write] = in_s;
+			audio_out[i] = read_hermite(delay_samples, l_write);
+			l_write = (l_write + 1) % buffer_size;
 		}
+		write_pos = l_write;
+		ring_energy = l_energy;
 
 		if (ring_energy < ACTIVITY_THRESHOLD) {
 			if (silent_blocks < 255) {

@@ -1,5 +1,9 @@
 # Dev Log — Symphony Audio System
 
+## P9 (2026-10-09)
+
+State-in-locals on SVFilter/Oscillator/OnePole/Compressor/ADSR/FM/Clock/DelayLine (+ Biquad/DC already); FeedbackPath zero-extra pass-through (graph impulse = 1 micro-block); `AudioStreamSymphony` flatten plan cache + arena freelist; `test_symphony_p9.cpp`; user_guide Writing operators. Suite: 305/305. RTSan CI / 30‑min profiling remain deferred.
+
 ## P8b (2026-10-09)
 
 Voice-policy remainder: `audio/symphony/category_caps/*` (0 = unlimited); shared `_admit` for dispatch + forced `victim_slot` (N8 event/category/tier); N12 `STEAL_QUIETEST` prefers valid RMS then quietest, else importance; GDScript `_admit_from` matches tiers/caps. Tests: `test_symphony_voice.cpp` P8b cases; `audio_manager_behavior_test.gd` tier/cap. Docs: `user_guide.md`, `QUALIFICATION.md`.

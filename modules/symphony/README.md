@@ -117,7 +117,7 @@ modules/symphony/
 ├── stream/     AudioStreamSymphony + AudioStreamSymphonyMusic + playback
 ├── editor/     Graph editor (editor target only)
 ├── thirdparty/ pffft, signalsmith-stretch, signalsmith-linear
-├── QUALIFICATION.md   V1 gates (automated vs deferred P9 / listening)
+├── QUALIFICATION.md   V1 gates (automated vs deferred listening / profiling)
 └── tech-fix-plan.md / proc-music-plan.md
 ```
 

@@ -8,8 +8,8 @@
 |---|---|
 | **As of** | 2026-10-09 |
 | **Branch** | `master` (ahead of `origin/master`; not pushed) |
-| **Done** | **P0–P8b**, **P10**, music **N1–N3**, **G1–G2**, **MusicStream**, **V1** automated qualification; **S0 / N0** closed. Optional **P9** deferred. |
-| **Next** | Optional **P9** (state-in-locals, 30‑min profiling, RTSan CI doc); listening / denser lifetime as needed. |
+| **Done** | **P0–P9**, **P10**, music **N1–N3**, **G1–G2**, **MusicStream**, **V1** automated qualification; **S0 / N0** closed. |
+| **Next** | Listening / denser lifetime / 30‑min release profiling / RTSan CI (doc follow-up) as needed. |
 | **Stage** | S5 Qualification ✅ (automated); listening + P9 perf gates deferred |
 | **C++ tests** | 300/300 `*Symphony*` green on `bin/godot.macos.editor.arm64` |
 | **TSan** | `.san` after P1b: **1** warning (same as P0 `DynamicRangeHigh`); new Symphony-frame races = 0 |
@@ -44,7 +44,7 @@ S0 gate items are done (TSan re-baseline, torch_fire GDScript N1, parked-package
 
 ### How to resume next session
 
-1. Read this **Progress** block. Optional **P9** when ready; see `QUALIFICATION.md` for deferred gates.
+1. Read this **Progress** block. See `QUALIFICATION.md` for remaining listening / profiling gates.
 2. Build: `scons platform=macos target=editor arch=arm64 tests=yes module_raycast_enabled=no -j$(sysctl -n hw.ncpu)`
 3. Leave each phase green + committed on its own (plan convention).
 4. Re-run `preset_level_test` in game-template after audible DSP changes.
@@ -108,7 +108,7 @@ Policy (memory `symphony-presets-no-compat`): pre-production, no compatibility s
 | P7 | **Done** `1c50d03cf0` | SFX-side timing | N11 SymphonyClock, N21, asymmetric RTPC (BeatClock + R move to music N1) | both | P1 |
 | P8a | **Done** | Voice policy: music-critical part | N9, VITAL tier, N13 | both | P1 |
 | P8b | Done | Voice policy: the rest | Q tiers/caps, N8, N12 | both | P8a |
-| P9 | Pending | Performance and polish | state-in-locals convention, K, compile cache, RTSan CI | godot | P1–P5 |
+| P9 | Done | Performance and polish | state-in-locals, FeedbackPath zero-extra, compile cache; RTSan CI doc-only | godot | P1–P5 |
 | P10 | Done | Instrument readiness (shared with music) | resettable-state contract and conformance test, ModalBank `pitch_ratio`, music rate-policy helper | godot | P1b, P3 |
 
 ## Unified roadmap (technical phases + procedural music milestones)

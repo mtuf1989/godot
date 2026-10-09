@@ -807,8 +807,10 @@ void AudioStreamPlaybackSymphony::_reclaim_unreachable() {
 	DEV_ASSERT(mix_depth.load(std::memory_order_acquire) == 0);
 #endif
 	const bool on_main = Thread::is_main_thread();
-	auto dispose = [on_main](PreparedGraphPackage *p_package) {
-		if (on_main) {
+	auto dispose = [on_main, this](PreparedGraphPackage *p_package) {
+		if (on_main && stream.is_valid()) {
+			stream->recycle_package(p_package);
+		} else if (on_main) {
 			PreparedGraphPackage::destroy(p_package);
 		} else {
 			GraphPackageRetirement::retire(p_package);

@@ -42,7 +42,10 @@ public:
 	// p_resource_path: included in structured diagnostics. Empty for anonymous graphs.
 	// p_voice_seed is mixed into per-node PRNG seeds (see symphony_seed.h).
 	// Offline renders pass the render seed; live voices pass the playback's seed.
-	static CompileResult compile(const GraphDescription &p_desc, float p_mix_rate, const String &p_resource_path = String(), uint64_t p_voice_seed = 0);
+	// p_recycled_raw / p_recycled_capacity: optional P9 freelist arena. On success the
+	// compiler adopts it when capacity >= planned size (caller must not free). On failure
+	// or undersize the pointer is left unchanged for the caller to keep/recycle.
+	static CompileResult compile(const GraphDescription &p_desc, float p_mix_rate, const String &p_resource_path = String(), uint64_t p_voice_seed = 0, uint8_t **p_recycled_raw = nullptr, size_t *p_recycled_capacity = nullptr);
 
 	// Anti-alias staircase LPF cutoff used between consecutive nonlinear operators.
 	static inline float staircase_lpf_cutoff(float p_mix_rate) {

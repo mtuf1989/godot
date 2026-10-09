@@ -212,7 +212,7 @@ TEST_CASE("[Symphony][Operators][DelayLine] No NaN or Inf under modulation") {
 
 // --- S1.5: FeedbackPath Tests ---
 
-TEST_CASE("[Symphony][Operators][FeedbackPath] Outputs zeros on first block") {
+TEST_CASE("[Symphony][Operators][FeedbackPath] Pass-through copies input to output") {
 	ArenaAllocator arena;
 	arena.init(ARENA_SIZE);
 
@@ -223,60 +223,18 @@ TEST_CASE("[Symphony][Operators][FeedbackPath] Outputs zeros on first block") {
 	float out_buf[SYMPHONY_MICRO_BLOCK_SIZE];
 	for (int i = 0; i < SYMPHONY_MICRO_BLOCK_SIZE; i++) {
 		in_buf[i] = 1.0f;
+		out_buf[i] = -1.0f;
 	}
 	void *inputs[] = { in_buf };
 	void *outputs[] = { out_buf };
 	fb->bind_pins(inputs, outputs);
 
-	// First execute: output should be zeros (prev_block initialized to 0)
-	fb->execute(SYMPHONY_MICRO_BLOCK_SIZE);
-	for (int i = 0; i < SYMPHONY_MICRO_BLOCK_SIZE; i++) {
-		CHECK(out_buf[i] == 0.0f);
-	}
-
-	// Second execute: output should be the previous input (1.0)
+	// P9 zero-extra: standalone execute is a pass-through. One-block delay is a
+	// graph-buffer property (see FeedbackPath graph impulse test).
 	fb->execute(SYMPHONY_MICRO_BLOCK_SIZE);
 	for (int i = 0; i < SYMPHONY_MICRO_BLOCK_SIZE; i++) {
 		CHECK(out_buf[i] == 1.0f);
 	}
-
-	arena.free();
-}
-
-TEST_CASE("[Symphony][Operators][FeedbackPath] Energy decays with gain < 1") {
-	ArenaAllocator arena;
-	arena.init(ARENA_SIZE);
-
-	HashMap<StringName, Variant> params;
-	SymphonyFeedbackPath *fb = (SymphonyFeedbackPath *)SymphonyFeedbackPath::create(arena, params, MIX_RATE);
-
-	float buf[SYMPHONY_MICRO_BLOCK_SIZE];
-	float out_buf[SYMPHONY_MICRO_BLOCK_SIZE];
-	// Initial impulse
-	for (int i = 0; i < SYMPHONY_MICRO_BLOCK_SIZE; i++) {
-		buf[i] = 1.0f;
-	}
-	void *inputs[] = { buf };
-	void *outputs[] = { out_buf };
-	fb->bind_pins(inputs, outputs);
-
-	fb->execute(SYMPHONY_MICRO_BLOCK_SIZE); // First block: output 0, stores 1.0
-
-	// Now simulate feedback with gain 0.5
-	for (int b = 0; b < 20; b++) {
-		// Use output as next input (scaled by 0.5)
-		for (int i = 0; i < SYMPHONY_MICRO_BLOCK_SIZE; i++) {
-			buf[i] = out_buf[i] * 0.5f;
-		}
-		fb->execute(SYMPHONY_MICRO_BLOCK_SIZE);
-	}
-
-	// After 20 iterations with gain 0.5, energy should be near zero
-	float energy = 0.0f;
-	for (int i = 0; i < SYMPHONY_MICRO_BLOCK_SIZE; i++) {
-		energy += out_buf[i] * out_buf[i];
-	}
-	CHECK(energy < 0.0001f);
 
 	arena.free();
 }

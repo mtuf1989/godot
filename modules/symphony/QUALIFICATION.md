@@ -1,6 +1,6 @@
 # Symphony procedural music — V1 qualification
 
-Status as of 2026-10-09. **P8b** voice policy is done. Optional **P9** (perf convention / profiling / RTSan CI) and designer listening remain deferred.
+Status as of 2026-10-09. **P8b** and **P9** code gates are done. Designer listening, 30‑minute release profiling, and RTSan CI remain deferred.
 
 ## Automated gates (closed)
 
@@ -23,13 +23,18 @@ Status as of 2026-10-09. **P8b** voice policy is done. Optional **P9** (perf con
 | Category caps + N8 forced victim + N12 quietest | `test_symphony_voice.cpp` `[P8b]` |
 | GDScript admit tiers/caps | `audio_manager_behavior_test.gd` |
 
-## Deferred with P9 / listening
+## Closed with P9
+
+| Gate | Evidence |
+|---|---|
+| State-in-locals + FeedbackPath zero-extra + compile cache | `test_symphony_p9.cpp` |
+
+## Deferred (listening / profiling)
 
 | Gate | Why deferred |
 |---|---|
-| State-in-locals + FeedbackPath zero-extra + compile cache | **P9** |
-| 30-minute release callback P50/P95/P99 at 44.1/48 kHz | **P9** performance convention |
-| RTSan CI | **P9** (document-only follow-up) |
+| 30-minute release callback P50/P95/P99 at 44.1/48 kHz | Manual release profiling |
+| RTSan CI | Documented follow-up in `MIGRATION.md` (Linux LLVM ≥ 20) |
 | Designer listening / audition scene polish | Manual; not blocked on code |
 | Full stretch fixture matrix (tempo endpoints × ±6 st WAV renders) | Needs authored WAV assets + listening |
 | Lifetime denser cases T2/T4/… | Optional coverage (Progress notes) |

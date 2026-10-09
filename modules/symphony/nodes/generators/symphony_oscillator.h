@@ -70,6 +70,10 @@ public:
 		float pulse_width = pw_input ? *pw_input : default_pulse_width;
 		pulse_width = pulse_width < 0.01f ? 0.01f : (pulse_width > 0.99f ? 0.99f : pulse_width);
 
+		// P9 state-in-locals
+		float l_phase = phase, l_tri = tri_integrator;
+		bool l_primed = triangle_primed;
+
 		SYMPHONY_UNROLL
 		for (int32_t i = 0; i < p_num_frames; i++) {
 			float freq = freq_input ? freq_input[i] : default_freq;
@@ -87,18 +91,18 @@ public:
 				// Frequency floor: hold the current waveform value as DC.
 				switch (waveform) {
 					case 0:
-						sample = fast_sine(phase);
+						sample = fast_sine(l_phase);
 						break;
 					case 1:
-						sample = 2.0f * phase - 1.0f;
+						sample = 2.0f * l_phase - 1.0f;
 						break;
 					case 3:
-						sample = triangle_primed ? tri_integrator : naive_triangle(phase);
+						sample = l_primed ? l_tri : naive_triangle(l_phase);
 						break;
 					default: {
-						float phase2 = phase + ((waveform == 4) ? pulse_width : 0.5f);
+						float phase2 = l_phase + ((waveform == 4) ? pulse_width : 0.5f);
 						phase2 -= floorf(phase2);
-						sample = (2.0f * phase - 1.0f) - (2.0f * phase2 - 1.0f);
+						sample = (2.0f * l_phase - 1.0f) - (2.0f * phase2 - 1.0f);
 					} break;
 				}
 				output[i] = sample;
@@ -107,49 +111,49 @@ public:
 
 			switch (waveform) {
 				case 0: // Sine (polynomial approximation)
-					sample = fast_sine(phase);
+					sample = fast_sine(l_phase);
 					break;
 
 				case 1: // Saw (PolyBLEP)
-					sample = bl_saw(phase, dt);
+					sample = bl_saw(l_phase, dt);
 					break;
 
 				case 2: { // Square (two saws with 0.5 offset)
-					float saw1 = bl_saw(phase, dt);
-					float phase2 = phase + 0.5f;
+					float saw1 = bl_saw(l_phase, dt);
+					float phase2 = l_phase + 0.5f;
 					phase2 -= floorf(phase2);
 					float saw2 = bl_saw(phase2, dt);
 					sample = saw1 - saw2;
 				} break;
 
 				case 3: { // Triangle (integrated band-limited square)
-					float saw1 = bl_saw(phase, dt);
-					float phase2 = phase + 0.5f;
+					float saw1 = bl_saw(l_phase, dt);
+					float phase2 = l_phase + 0.5f;
 					phase2 -= floorf(phase2);
 					float saw2 = bl_saw(phase2, dt);
 					float sq = saw1 - saw2;
 					// Integrate square → triangle; 4*dt keeps the amplitude near 1.0.
-					if (!triangle_primed) {
+					if (!l_primed) {
 						// Start on the ideal curve for this phase and frequency so the
 						// first cycle does not overshoot.
-						float start_phase = phase + 0.5f * dt;
+						float start_phase = l_phase + 0.5f * dt;
 						start_phase -= floorf(start_phase);
-						tri_integrator = naive_triangle(start_phase);
-						triangle_primed = true;
+						l_tri = naive_triangle(start_phase);
+						l_primed = true;
 					}
-					tri_integrator += 4.0f * dt * sq;
+					l_tri += 4.0f * dt * sq;
 					// Pull toward the ideal shape instead of leaking toward zero,
 					// so low notes keep full amplitude and float error cannot drift.
 					// The integral of this step is centred half a sample ahead of phase.
-					float mid_phase = phase + 0.5f * dt;
+					float mid_phase = l_phase + 0.5f * dt;
 					mid_phase -= floorf(mid_phase);
-					tri_integrator += (naive_triangle(mid_phase) - tri_integrator) * TRIANGLE_PULL;
-					sample = tri_integrator;
+					l_tri += (naive_triangle(mid_phase) - l_tri) * TRIANGLE_PULL;
+					sample = l_tri;
 				} break;
 
 				case 4: { // PWM (two saws with variable offset)
-					float saw1 = bl_saw(phase, dt);
-					float phase2 = phase + pulse_width;
+					float saw1 = bl_saw(l_phase, dt);
+					float phase2 = l_phase + pulse_width;
 					phase2 -= floorf(phase2);
 					float saw2 = bl_saw(phase2, dt);
 					sample = saw1 - saw2;
@@ -158,9 +162,12 @@ public:
 
 			output[i] = sample;
 
-			phase += dt;
-			phase -= floorf(phase); // Branch-free wrap to [0, 1)
+			l_phase += dt;
+			l_phase -= floorf(l_phase); // Branch-free wrap to [0, 1)
 		}
+		phase = l_phase;
+		tri_integrator = l_tri;
+		triangle_primed = l_primed;
 	}
 
 	virtual size_t export_state(uint8_t *p_buffer, size_t p_max_size) const override {

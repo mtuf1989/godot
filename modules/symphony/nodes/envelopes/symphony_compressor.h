@@ -45,34 +45,36 @@ public:
 		// near 1.0 makes powf() produce gain > 1 above threshold.
 		float safe_ratio = ratio > 1.001f ? ratio : 1.001f;
 
-		// Peak-based compression
+		// Peak-based compression (P9 state-in-locals)
+		float l_env = envelope;
 		for (int32_t i = 0; i < p_num_frames; i++) {
 			float abs_in = fabsf(input[i]);
 
 			// Envelope follower (attack/release)
-			if (abs_in > envelope) {
-				envelope = attack_coeff * envelope + (1.0f - attack_coeff) * abs_in;
+			if (abs_in > l_env) {
+				l_env = attack_coeff * l_env + (1.0f - attack_coeff) * abs_in;
 			} else {
-				envelope = release_coeff * envelope + (1.0f - release_coeff) * abs_in;
+				l_env = release_coeff * l_env + (1.0f - release_coeff) * abs_in;
 			}
 
 			// Kill denormals: on x86 without FTZ/DAZ, decaying envelope produces
 			// denormalized floats that are 10-100x slower to process.
-			if (envelope < 1e-30f) {
-				envelope = 0.0f;
+			if (l_env < 1e-30f) {
+				l_env = 0.0f;
 			}
 
 			// Gain computation
 			float gain = 1.0f;
-			if (envelope > threshold_lin) {
+			if (l_env > threshold_lin) {
 				// Compress: reduce gain above threshold
-				float over = envelope / threshold_lin;
+				float over = l_env / threshold_lin;
 				float compressed = powf(over, 1.0f / safe_ratio - 1.0f);
 				gain = compressed;
 			}
 
 			output[i] = input[i] * gain * makeup_lin;
 		}
+		envelope = l_env;
 	}
 
 	virtual size_t export_state(uint8_t *p_buffer, size_t p_max_size) const override {

@@ -102,19 +102,23 @@ public:
 
 		update_coeffs(cutoff, resonance);
 
+		// P9 state-in-locals
+		float l_ic1 = ic1eq, l_ic2 = ic2eq;
+		const float la1 = a1, la2 = a2, la3 = a3, lk = k;
+
 		float peak = 0.0f;
 		SYMPHONY_UNROLL
 		for (int32_t i = 0; i < p_num_frames; i++) {
 			float v0 = audio_in ? audio_in[i] : 0.0f;
-			float v3 = v0 - ic2eq;
-			float v1 = a1 * ic1eq + a2 * v3;
-			float v2 = ic2eq + a2 * ic1eq + a3 * v3;
-			ic1eq = 2.0f * v1 - ic1eq;
-			ic2eq = 2.0f * v2 - ic2eq;
+			float v3 = v0 - l_ic2;
+			float v1 = la1 * l_ic1 + la2 * v3;
+			float v2 = l_ic2 + la2 * l_ic1 + la3 * v3;
+			l_ic1 = 2.0f * v1 - l_ic1;
+			l_ic2 = 2.0f * v2 - l_ic2;
 
 			float lp = v2;
 			float bp = v1;
-			float hp = v0 - k * v1 - v2;
+			float hp = v0 - lk * v1 - v2;
 
 			lp_out[i] = lp;
 			hp_out[i] = hp;
@@ -125,6 +129,8 @@ public:
 				peak = mag;
 			}
 		}
+		ic1eq = l_ic1;
+		ic2eq = l_ic2;
 
 		float state_mag = Math::abs(ic1eq) + Math::abs(ic2eq);
 		if (peak < ACTIVITY_THRESHOLD && state_mag < ACTIVITY_THRESHOLD) {

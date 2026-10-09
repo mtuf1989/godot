@@ -155,7 +155,7 @@ static bool _validate_graph_structure(const GraphDescription &p_desc, float p_mi
 	return r_result.errors.is_empty();
 }
 
-GraphCompiler::CompileResult GraphCompiler::compile(const GraphDescription &p_desc, float p_mix_rate, const String &p_resource_path, uint64_t p_voice_seed) {
+GraphCompiler::CompileResult GraphCompiler::compile(const GraphDescription &p_desc, float p_mix_rate, const String &p_resource_path, uint64_t p_voice_seed, uint8_t **p_recycled_raw, size_t *p_recycled_capacity) {
 	symphony_rt_note(SymphonyRTViolation::Compile, "GraphCompiler::compile");
 	CompileResult result;
 	const OperatorRegistry *registry = OperatorRegistry::get_singleton();
@@ -703,7 +703,15 @@ GraphCompiler::CompileResult GraphCompiler::compile(const GraphDescription &p_de
 		compiled->estimated_cost_units += operator_cost_units(node_descs[i], desc_ref.nodes[i].params, p_mix_rate);
 	}
 	result.estimated_cost_units = compiled->estimated_cost_units;
-	if (!compiled->arena.init(arena_size)) {
+	bool adopted = false;
+	if (p_recycled_raw && p_recycled_capacity && *p_recycled_raw && *p_recycled_capacity >= arena_size) {
+		adopted = compiled->arena.adopt(*p_recycled_raw, *p_recycled_capacity);
+		if (adopted) {
+			*p_recycled_raw = nullptr;
+			*p_recycled_capacity = 0;
+		}
+	}
+	if (!adopted && !compiled->arena.init(arena_size)) {
 		result.errors.push_back("Failed to allocate arena.");
 		memdelete(compiled);
 		return result;

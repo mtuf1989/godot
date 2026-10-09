@@ -550,7 +550,7 @@ Note that `LFO` and `Oscillator` number their waveforms differently.
 | Operator | Inputs → Outputs | Parameters |
 |----------|------------------|------------|
 | **DelayLine** | `audio_in`, `delay_time` → `audio_out` | `delay_ms`, `max_delay_ms`. No built-in feedback; route the output back through `FeedbackPath` |
-| **FeedbackPath** | `audio_in` → `audio_out` | — (marks a feedback edge; adds one micro-block of delay) |
+| **FeedbackPath** | `audio_in` → `audio_out` | — (marks a feedback edge; pass-through; the persistent pin buffer supplies exactly one micro-block of delay — 64 native / 32 web) |
 | **PitchShifter** | `audio_in`, `pitch_shift` → `audio_out` | `pitch_shift` (semitones, ±12), `buffer_ms` |
 | **FDNReverb** | `audio_in`, `room_size`, `decay_time`, `damping`, `pre_delay_ms` → `audio_out` | `num_lines` (4 or 8), `max_delay_ms`, `room_size` (0.01–1), `decay_time` s, `damping`, `pre_delay_ms`. Output is fully wet; blend with `Mix` |
 | **EarlyReflections** | `audio_in`, `room_width`, `room_height`, `room_depth`, `reflection` → `audio_out` | `max_room_dim`, `room_width` / `room_height` / `room_depth` (m), `reflection` (0–1) |
@@ -590,6 +590,12 @@ Note that `LFO` and `Oscillator` number their waveforms differently.
 | **TriggerInput** | — → `output` (trigger) | `trigger_name`, `auto_trigger_on_play` (default 1) |
 | **MusicNoteInput** | — → `frequency`, `velocity`, `pitch_ratio`, `note_on`, `note_off`, `gate`, `adsr_trigger` | `root_hz` (authored fundamental; `pitch_ratio = frequency / root_hz`) |
 | **SubGraph** | dynamic → dynamic | `resource_path` (inner graph `.tres`) |
+
+### Writing operators (P9 state-in-locals)
+
+In every per-sample `execute()` loop, load recurrent member state into locals before the loop, mutate only the locals inside the loop, and store them back once afterward. Keep the `switch` on mode/waveform as-is. Hot loops must stay bit-exact across this refactor (see `test_symphony_p9.cpp`). Do not apply ModalBank restrict/partial-sum rewrites.
+
+Bare feedback edges and `FeedbackPath` loops are exactly one micro-block of delay (64 native / 32 web); short delays belong inside a single operator.
 
 ### Procedural music stream (`AudioStreamSymphonyMusic`)
 

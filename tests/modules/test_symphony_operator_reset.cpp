@@ -27,7 +27,6 @@ static bool _type_in_allowlist(const StringName &p_type) {
 		"SpectralGate",
 		"GrainCloud",
 		"DelayLine",
-		"FeedbackPath",
 		"PitchShifter",
 		"FDNReverb",
 		"EarlyReflections",

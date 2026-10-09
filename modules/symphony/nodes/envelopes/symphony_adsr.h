@@ -27,37 +27,42 @@ private:
 	float release_inc = 0.0f;
 
 	void process_audio(int32_t p_from, int32_t p_to) {
+		// P9 state-in-locals (stored back before apply_trigger reads members)
+		State l_state = state;
+		float l_env = envelope_value;
 		for (int32_t i = p_from; i < p_to; i++) {
-			switch (state) {
+			switch (l_state) {
 				case IDLE:
-					envelope_value = 0.0f;
+					l_env = 0.0f;
 					break;
 				case ATTACK:
-					envelope_value += attack_inc;
-					if (envelope_value >= 1.0f) {
-						envelope_value = 1.0f;
-						state = DECAY;
+					l_env += attack_inc;
+					if (l_env >= 1.0f) {
+						l_env = 1.0f;
+						l_state = DECAY;
 					}
 					break;
 				case DECAY:
-					envelope_value -= decay_inc;
-					if (envelope_value <= sustain_level) {
-						envelope_value = sustain_level;
-						state = SUSTAIN;
+					l_env -= decay_inc;
+					if (l_env <= sustain_level) {
+						l_env = sustain_level;
+						l_state = SUSTAIN;
 					}
 					break;
 				case SUSTAIN:
 					break;
 				case RELEASE:
-					envelope_value -= release_inc;
-					if (envelope_value <= 0.0f) {
-						envelope_value = 0.0f;
-						state = IDLE;
+					l_env -= release_inc;
+					if (l_env <= 0.0f) {
+						l_env = 0.0f;
+						l_state = IDLE;
 					}
 					break;
 			}
-			output[i] = (input ? input[i] : 0.0f) * envelope_value;
+			output[i] = (input ? input[i] : 0.0f) * l_env;
 		}
+		state = l_state;
+		envelope_value = l_env;
 	}
 
 	void apply_trigger(const TriggerEvent &p_event) {

@@ -2,6 +2,8 @@
 #include "audio_stream_playback_symphony.h"
 #include "../core/symphony_graph_compiler.h"
 #include "../core/symphony_graph_flattener.h"
+#include "../core/symphony_graph_package_retirement.h"
+#include "../core/symphony_prepared_graph_package.h"
 #include "../core/symphony_operator_registry.h"
 #include "../core/symphony_memory_budget.h"
 #include "../core/symphony_render_seed.h"
@@ -413,7 +415,11 @@ bool AudioStreamSymphony::_set(const StringName &p_name, const Variant &p_value)
 	String name = String(p_name);
 
 	if (name.begins_with("graph/")) {
-		return _set_graph_property(name.substr(String("graph/").length()), graph_desc, p_value);
+		const bool ok = _set_graph_property(name.substr(String("graph/").length()), graph_desc, p_value);
+		if (ok) {
+			_invalidate_compile_cache();
+		}
+		return ok;
 	}
 	if (name == "lod/variant_count") {
 		int count = CLAMP((int)p_value, 0, 2);
@@ -453,8 +459,84 @@ float AudioStreamSymphony::get_mix_rate() const {
 	return mix_rate;
 }
 
+void AudioStreamSymphony::_invalidate_compile_cache() {
+	cached_flat_valid = false;
+	cached_flat_graph = GraphDescription();
+	for (RecycledArena &slot : arena_freelist) {
+		if (slot.raw) {
+			memfree(slot.raw);
+			slot.raw = nullptr;
+			slot.capacity = 0;
+		}
+	}
+	arena_freelist.clear();
+}
+
+void AudioStreamSymphony::_recycle_arena(uint8_t *p_raw, size_t p_capacity) const {
+	if (!p_raw || p_capacity == 0) {
+		return;
+	}
+	if (arena_freelist.size() >= MAX_ARENA_FREELIST) {
+		memfree(p_raw);
+		return;
+	}
+	RecycledArena slot;
+	slot.raw = p_raw;
+	slot.capacity = p_capacity;
+	arena_freelist.push_back(slot);
+}
+
+bool AudioStreamSymphony::_take_recycled_arena(size_t p_needed, uint8_t *&r_raw, size_t &r_capacity) const {
+	r_raw = nullptr;
+	r_capacity = 0;
+	int best = -1;
+	for (int i = 0; i < arena_freelist.size(); i++) {
+		if (arena_freelist[i].raw && arena_freelist[i].capacity >= p_needed) {
+			if (best < 0 || arena_freelist[i].capacity < arena_freelist[best].capacity) {
+				best = i;
+			}
+		}
+	}
+	if (best < 0) {
+		return false;
+	}
+	r_raw = arena_freelist[best].raw;
+	r_capacity = arena_freelist[best].capacity;
+	arena_freelist.write[best] = arena_freelist[arena_freelist.size() - 1];
+	arena_freelist.resize(arena_freelist.size() - 1);
+	return true;
+}
+
+void AudioStreamSymphony::recycle_package(PreparedGraphPackage *p_package) const {
+	if (!p_package) {
+		return;
+	}
+	CompiledGraph *graph = p_package->graph;
+	p_package->graph = nullptr;
+	if (graph) {
+		for (int32_t i = 0; i < graph->operator_count; i++) {
+			if (graph->operators[i]) {
+				graph->operators[i]->cleanup();
+			}
+		}
+		for (int32_t i = 0; i < graph->operator_count; i++) {
+			if (graph->operators[i]) {
+				graph->operators[i]->~SymphonyOperator();
+			}
+		}
+		graph->operators = nullptr;
+		graph->operator_count = 0;
+		size_t cap = 0;
+		uint8_t *raw = graph->arena.release_raw(cap);
+		memdelete(graph); // destroys heap metadata; arena already released
+		_recycle_arena(raw, cap);
+	}
+	PreparedGraphPackage::destroy(p_package);
+}
+
 void AudioStreamSymphony::set_graph_description(const GraphDescription &p_desc) {
 	graph_desc = p_desc;
+	_invalidate_compile_cache();
 }
 
 const GraphDescription &AudioStreamSymphony::get_graph_description() const {
@@ -494,17 +576,35 @@ void AudioStreamSymphony::set_graph_for_tier(int p_tier, const GraphDescription 
 }
 
 CompiledGraph *AudioStreamSymphony::compile_graph(uint64_t p_voice_seed) const {
-	// Pre-pass: flatten any SubGraph nodes into a single graph.
 	String owner_path = get_path();
-	GraphFlattener::FlattenResult flat = GraphFlattener::flatten(graph_desc, owner_path);
-	if (!flat.success()) {
-		for (const String &err : flat.errors) {
-			ERR_PRINT(vformat("Symphony flatten error: %s", err));
+	const GraphDescription *flat_graph = nullptr;
+	if (cached_flat_valid) {
+		flat_graph = &cached_flat_graph;
+		plan_cache_hits++;
+	} else {
+		GraphFlattener::FlattenResult flat = GraphFlattener::flatten(graph_desc, owner_path);
+		if (!flat.success()) {
+			for (const String &err : flat.errors) {
+				ERR_PRINT(vformat("Symphony flatten error: %s", err));
+			}
+			return nullptr;
 		}
-		return nullptr;
+		cached_flat_graph = flat.graph;
+		cached_flat_valid = true;
+		plan_build_count++;
+		flat_graph = &cached_flat_graph;
 	}
 
-	GraphCompiler::CompileResult result = GraphCompiler::compile(flat.graph, mix_rate, owner_path, p_voice_seed);
+	uint8_t *recycled_raw = nullptr;
+	size_t recycled_cap = 0;
+	// Peek freelist with a generous lower bound; compile adopts only if capacity fits.
+	_take_recycled_arena(1, recycled_raw, recycled_cap);
+
+	GraphCompiler::CompileResult result = GraphCompiler::compile(*flat_graph, mix_rate, owner_path, p_voice_seed, &recycled_raw, &recycled_cap);
+	if (recycled_raw) {
+		// Unused / undersized — put back.
+		_recycle_arena(recycled_raw, recycled_cap);
+	}
 	if (!result.success()) {
 		for (const String &err : result.errors) {
 			ERR_PRINT(vformat("Symphony compile error: %s", err));

@@ -28,6 +28,7 @@ public:
 	}
 
 	virtual void execute(int32_t p_num_frames) override {
+		// P9 state-in-locals
 		float r = R;
 		float xp = x_prev;
 		float yp = y_prev;

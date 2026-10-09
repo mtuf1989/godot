@@ -78,24 +78,29 @@ public:
 			mod_index = MIN(mod_index, beta_max);
 		}
 
+		// P9 state-in-locals
+		float l_mod_phase = mod_phase, l_carrier_phase = carrier_phase;
+
 		SYMPHONY_UNROLL
 		for (int32_t i = 0; i < p_num_frames; i++) {
-			mod_phase += mod_freq / mix_rate;
-			mod_phase -= floorf(mod_phase);
+			l_mod_phase += mod_freq / mix_rate;
+			l_mod_phase -= floorf(l_mod_phase);
 
 			float modulator;
 			if (external_mod) {
 				modulator = mod_input[i];
 			} else {
-				modulator = fast_sine(mod_phase);
+				modulator = fast_sine(l_mod_phase);
 			}
 
-			carrier_phase += carrier_freq / mix_rate;
-			carrier_phase -= floorf(carrier_phase);
+			l_carrier_phase += carrier_freq / mix_rate;
+			l_carrier_phase -= floorf(l_carrier_phase);
 
 			float pm_offset = mod_index * modulator;
-			audio_out[i] = fast_sine_rad(carrier_phase * (float)Math::TAU + pm_offset);
+			audio_out[i] = fast_sine_rad(l_carrier_phase * (float)Math::TAU + pm_offset);
 		}
+		mod_phase = l_mod_phase;
+		carrier_phase = l_carrier_phase;
 	}
 
 	virtual size_t export_state(uint8_t *p_buffer, size_t p_max_size) const override {

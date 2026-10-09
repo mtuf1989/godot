@@ -40,10 +40,13 @@ public:
 		}
 		float coeff = expf(-Math::TAU * cutoff / mix_rate);
 
+		// P9 state-in-locals
+		float l_prev = prev;
 		for (int32_t i = 0; i < p_num_frames; i++) {
-			prev = (1.0f - coeff) * input[i] + coeff * prev;
-			output[i] = prev;
+			l_prev = (1.0f - coeff) * input[i] + coeff * l_prev;
+			output[i] = l_prev;
 		}
+		prev = l_prev;
 		if (Math::abs(prev) < 1e-9f) {
 			prev = 0.0f;
 		} else {
