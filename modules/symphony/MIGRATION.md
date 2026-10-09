@@ -5,8 +5,8 @@ Update this file with each commit that changes a public API.
 
 ## Status
 
-- **Milestone:** M3 C++ complete. Tech-fix plan **P0–P8a** + music **N1** landed; **S0 / music N0 closed**; **S1** continues (P8b+).
-- **Branch:** `features/symphony_fixed`
+- **Milestone:** M3 C++ complete. Tech-fix plan **P0–P8a** + music **N1** landed; **S0 / music N0 closed**; **S2** next (**P10** → music **N2**). P8b remains for S4.
+- **Branch:** `master`
 - **Tests:** 279 Symphony cases (2026-10-09, +P8a voice policy). Editor TSan (`.san`) after P1b: 218/218 green at re-baseline time (T3 landed immediately after; same race profile) with **1** data-race warning — same count as the P0 baseline (`DynamicRangeHigh` global; frames unresolved; not a Symphony frame). **New Symphony-frame races vs P0 = 0.**
 - **Music N1:** `symphony_music_transport.h` / `symphony_music_scheduler.h`; BeatClock incremental accumulator + `fire_ahead_s`; `trigger_at` + Interactive clip position. `beat_hit`/`bar_hit` now pass `(index, target_time)`.
 - **P2 audible:** WavePlayer decodes all `AudioStreamWAV` formats to PCM16 at create; spatial wrapper accepts any pathed WAV. game-template 3D pool: `attenuation_filter_db=0`, `max_db=24`.

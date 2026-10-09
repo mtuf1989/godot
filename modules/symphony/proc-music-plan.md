@@ -9,7 +9,7 @@
 >   - the resettable-state contract and ModalBank `pitch_ratio` (P10);
 >   - music-safe voice budgeting (P8a).
 >
-> **Status (2026-10-09):** tech **P0–P4** done; music **N0** (=S0) and **N1** (transport/scheduler/BeatClock/`trigger_at`) done. Resume at `tech-fix-plan.md` §Progress → **P5** or music **N2** (needs P10).
+> **Status (2026-10-09):** tech **P0–P8a** done; music **N0** (=S0) and **N1** (transport/scheduler/BeatClock/`trigger_at`) done. Resume at `tech-fix-plan.md` §Progress → **P10** then music **N2**.
 
 ## 1. Goal and scope
 
@@ -267,7 +267,7 @@ Before expanding playback (all delivered in **S0** by tech plan P1/P1b):
 
 | Milestone | Stage | Repository | Prerequisites (tech plan) | Deliverable and exit gate |
 |---|---|---|---|---|
-| **N0 — Safety foundation** | S0 | Godot | **= tech P0 ✅ + P1 ✅ + P1b ← next** (no extra work) | Establish regression baselines; fix voice lifetime/locking and Float→Audio control ordering. Focused concurrency and control-timing tests pass. |
+| **N0 — Safety foundation** | S0 | Godot | **= tech P0 ✅ + P1 ✅ + P1b ✅** (no extra work) | Establish regression baselines; fix voice lifetime/locking and Float→Audio control ordering. Focused concurrency and control-timing tests pass. |
 | **N1 — Transport and scheduler** | S1 | Godot | S0; absorbs the tech P7 R + BeatClock specs; uses the P4 rate policy | **Done:** `symphony_music_transport.h` / `symphony_music_scheduler.h`; BeatClock rewrite; `trigger_at`; Interactive clip position; `test_symphony_music_n1.cpp`. `AudioStreamSymphonyMusic` stream wrapper deferred to N2. |
 | **N2 — Musical instruments** | S2 | Godot | **P10** (reset contract, ModalBank `pitch_ratio`), **P3** (waveshaper/saturator fixes) | `MusicNoteInput`, approved reset contracts, seeded note pools, release handling, and protected capacity. An authored multi-track phrase renders correctly; 44.1k/48k equivalence test passes. |
 | **N3 — Recorded phrases** | S3 | Godot | P2 N3 (WAV decode path) | Pinned stretch backend, stereo PCM preparation, context ownership, markers, tempo/key adaptation, and common latency. A fixed hybrid score passes timing and listening checks. |

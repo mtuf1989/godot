@@ -8,11 +8,11 @@
 |---|---|
 | **As of** | 2026-10-09 |
 | **Branch** | `master` (ahead of `origin/master`; not pushed) |
-| **Done** | **P0**, **P1**, **P1b**, **S0 / N0**, **P2**, **P3**, **P4**, music **N1** |
-| **Next** | **S1** — Lane C **P5** (spectral/granular) |
-| **Stage** | S1 Build-out (P2–P4 + N1 closed; P5 remain) |
-| **C++ tests** | 250/250 `*Symphony*` green on `bin/godot.macos.editor.arm64` |
-| **TSan** | `.san` rebuilt after P1b; **1** warning (same as P0 `DynamicRangeHigh`); new Symphony-frame races = 0 |
+| **Done** | **P0–P8a**, music **N1**; **S0 / N0** closed. SFX lanes for S1–S4 prerequisites landed early (P5–P7, P8a). |
+| **Next** | **S2** — **P10** (instrument readiness) → music **N2**. Parallel optional: **P8b**. |
+| **Stage** | S2 Instruments (gate: reset conformance + authored multi-track phrase) |
+| **C++ tests** | 279/279 `*Symphony*` green on `bin/godot.macos.editor.arm64` |
+| **TSan** | `.san` after P1b: **1** warning (same as P0 `DynamicRangeHigh`); new Symphony-frame races = 0 |
 
 ### Commits
 
@@ -26,20 +26,21 @@
 | P4 | `1a84c38e46` | Rate policy helper; SFX mix_rate 48k default + clamp; WavePlayer loop-aware Hermite; OnePole/SVF open bypass; osc dt∈[0,0.49] |
 | P2 | `554859a7d4` (+ game-template `b9e17326`) | N2 3D filter/max_db; N3 WavePlayer multi-format decode; `test_symphony_p2_wave.cpp` |
 | N1 | `5aeed32bce` | Music transport/scheduler; BeatClock rewrite; `trigger_at`; Interactive position; `test_symphony_music_n1.cpp` |
+| P5 | `78ea215b35` | PhaseVocoder pitch-only; SpectralGate; GrainCloud upgrade |
+| P6 | `d6bfa4adfc` (+ game-template `8b1932bb`) | Shared FDN/ER cores; `AudioEffectSymphonyReverb`; ASP3D DRR; reverb pool SlotParams |
+| P7 | `1c50d03cf0` (+ game-template `29727941`) | Clock t=0 + bpm/phase; asymmetric RTPC; MusicStateGraph tempo validate |
+| P8a | `c0779edf40` (+ game-template `266c9f3d`) | `SoundEvent.tier` / VITAL; pool importance key; N13; removed stream `voice_priority` |
 
-### P1 leftovers (S0 gate)
+### P1 leftovers (closed — optional coverage only)
 
-- ✅ Re-run `use_tsan=yes` on `*Symphony*`: 218 passed, 1 warning (= P0 baseline); new Symphony-frame races = 0.
-- ✅ GDScript: `audio_manager_behavior_test.gd` fifty `torch_fire` play/stop → `active_voice_count == 0` (and `packages_active == 0` after clearing player streams).
-- ✅ Documented `packages_parked` + main-thread-only playback in `user_guide` / `MIGRATION.md`.
-- ✅ Lifetime T3 added. Still optional later: T2, T4/T6–T9, T11, T13–T16.
+S0 gate items are done (TSan re-baseline, torch_fire GDScript N1, parked-package docs, lifetime T3). Remaining lifetime cases **T2, T4/T6–T9, T11, T13–T16** are optional denser coverage, not a stage blocker.
 
 ### How to resume next session
 
-1. Read this **Progress** block. P2–P4 + music N1 closed; continue **S1** with **P5**.
+1. Read this **Progress** block. Continue **S2** with **P10** (then music **N2**).
 2. Build: `scons platform=macos target=editor arch=arm64 tests=yes module_raycast_enabled=no -j$(sysctl -n hw.ncpu)`
 3. Leave each phase green + committed on its own (plan convention).
-4. Re-run `preset_level_test` in game-template after audible DSP changes (P3/P4).
+4. Re-run `preset_level_test` in game-template after audible DSP changes.
 
 ## Context
 
@@ -90,7 +91,7 @@ Policy (memory `symphony-presets-no-compat`): pre-production, no compatibility s
 | Phase | Status | Theme | Fixes | Repo | Depends on |
 |---|---|---|---|---|---|
 | P0 | **Done** `26b1e645be` | Test infrastructure | helpers, alias/spectral asserts, TSan rebuild | godot | — |
-| P1 | **Done** `d739292608` (polish open) | Voice/package lifetime + RT safety | N1, B, A, M, cross-thread fields, H, V, ModalBank flush | godot (+1 gd test pending) | P0 |
+| P1 | **Done** `d739292608` | Voice/package lifetime + RT safety | N1, B, A, M, cross-thread fields, H, V, ModalBank flush | godot | P0 |
 | P1b | **Done** | Foundation extras (shared with music) | Float→Audio promotion order, SeqLock fix, G seeds, N10 frame counter, N16 `render_offline` | godot | P1 |
 | P2 | **Done** | Quick audible wins | N2, N3 | both | P1 |
 | P3 | **Done** `dd19939a3a` | Nonlinear and anti-aliasing DSP | C, D, E, N6, N20, J, L, P, DC blocker, Biquad smoothing | godot | P0 |
@@ -108,10 +109,10 @@ Policy (memory `symphony-presets-no-compat`): pre-production, no compatibility s
 | Stage | Work | Gate to the next stage |
 |---|---|---|
 | **S0 Foundation** (= music **N0**) | P0 ✅ → P1 ✅ → P1b ✅ → TSan re-baseline ✅ | TSan stress clean; N1 leak test green; promotion-order and seed tests green; frame counter exact over 10 min |
-| **S1 Build-out** (parallel lanes) ← **you are here** | Lane A: music **N1** ✅. Lane B: **P3–P2** ✅. Lane C: **P5** | N1 exact-timestamp tests ✅; P5 remain |
-| **S2 Instruments** | **P10** → music **N2** (MusicNoteInput, note pools, releases) ‖ **P8a** | Reset conformance passes for every approved operator; an authored multi-track phrase renders correctly |
-| **S3 Recordings + composer** | Music **N3** (Signalsmith, stereo PCM) ‖ music **G1** (resources, composer) ‖ **P7** | Fixed hybrid score passes timing and listening checks; 1,000-seed batch passes |
-| **S4 Adaptive integration** | Music **G2** ‖ **P8b** ‖ **P6** | Exploration → tension → combat through one playback; DRR and reverb tests green |
+| **S1 Build-out** (parallel lanes) | Lane A: music **N1** ✅. Lane B: **P3–P2** ✅. Lane C: **P5** ✅ | N1 exact-timestamp tests ✅; P5 green |
+| **S2 Instruments** ← **you are here** | **P10** → music **N2** (MusicNoteInput, note pools, releases). **P8a** ✅ (landed early) | Reset conformance passes for every approved operator; an authored multi-track phrase renders correctly |
+| **S3 Recordings + composer** | Music **N3** (Signalsmith, stereo PCM) ‖ music **G1** (resources, composer). **P7** ✅ (landed early) | Fixed hybrid score passes timing and listening checks; 1,000-seed batch passes |
+| **S4 Adaptive integration** | Music **G2** ‖ **P8b**. **P6** ✅ (landed early) | Exploration → tension → combat through one playback; DRR and reverb tests green |
 | **S5 Polish + qualification** | **P9** → music **V1** | All suites, sanitizers, 30-minute performance run, listening review |
 
 Rules:
@@ -130,9 +131,9 @@ Rules:
    - `alias_ratio_db(buf, sr, f0, harmonics)`: energy off the harmonic grid relative to energy on it.
 3. ✅ Rebuild `bin/godot.macos.editor.arm64.san` (`use_tsan=yes`) and record the baseline in `MIGRATION.md` (1 TSan warning at P0 baseline).
 
-## P1: Voice and package lifetime + RT safety (N1, B, A, M, H, V) — **DONE** (`d739292608`, polish open)
+## P1: Voice and package lifetime + RT safety (N1, B, A, M, H, V) — **DONE** (`d739292608`)
 
-> Implementation landed. See **Progress → P1 leftovers** for TSan re-run, GDScript zombie case, and optional T2–T16 coverage. Spec below remains the source of truth for any follow-up.
+> Implementation landed. S0 leftovers closed (TSan, torch_fire GDScript, T3). Optional denser lifetime cases T2/T4/T6–T9/T11/T13–T16 remain available later. Spec below is the source of truth for any follow-up.
 
 **Lifetime model: single-owner hand-off.** This replaces the ad-hoc stop paths and the release-grace counters. Invariants:
 - **I1.** While a voice is reachable by any mixer, only the *mixing thread* writes `current_package`, `current_graph`, `graph_output_node`, `outgoing_package`, `incoming_package`, `transition_*` and `holds_crossfade_token`.
@@ -617,7 +618,7 @@ Keep the `switch` as is (≤ 10% gain). Hot loops must be bit-exact before and a
    - Every new test listed per phase must pass, and the total goes up from the 182 baseline.
    - The P1 lifetime and stress cases must also pass on the `.san` binary with no reports in Symphony frames.
 3. **GDScript** (in `game-template/`): `node addons/agent_cli/gd.mjs test test/addons/symphony_audio`. Every suite stays green; the level contract is re-tuned where output intentionally changed (P3 Biquad, P5 GrainCloud, P6 FDN presets, P10 ModalBank migration).
-4. **Leak check (N1):** the headless repro from the verification session (play and stop 8 `torch_fire` players, then free them) reports `active_voice_count == 0` and `packages_active == 0`. Copy `zombie.gd` from the scratchpad into `game-template/test/` as a permanent test.
+4. **Leak check (N1):** `audio_manager_behavior_test.gd` `test_fifty_torch_fire_play_stop_leaves_no_manager_voices` — `active_voice_count == 0` and `packages_active == 0` after the batch.
 5. **Listening pass** (manual, in a test scene). Check each of these:
    - stopping and fading voices no longer produces a low-pass sweep (N2);
    - layered noise ambiences sound wider and not phasey (G);
