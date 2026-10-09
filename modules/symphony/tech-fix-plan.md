@@ -24,7 +24,7 @@
 | S0 gate | `81e362e111` (+ game-template `9ed46af4`) | TSan re-baseline (= P0 warning count); T3; parked-package docs; torch_fire GDScript N1 |
 | P3 | `dd19939a3a` | HIIR saturator OS, u-domain ADAA, waveshaper 3-way ADAA + foldback, FM Carson clamp, staircase/rate LPF, FormantOsc blend, DC R(sr), Biquad τ=5ms |
 | P4 | `1a84c38e46` | Rate policy helper; SFX mix_rate 48k default + clamp; WavePlayer loop-aware Hermite; OnePole/SVF open bypass; osc dt∈[0,0.49] |
-| P2 | _(pending commit)_ | N2 3D filter/max_db; N3 WavePlayer multi-format decode; `test_symphony_p2_wave.cpp` |
+| P2 | `554859a7d4` (+ game-template `b9e17326`) | N2 3D filter/max_db; N3 WavePlayer multi-format decode; `test_symphony_p2_wave.cpp` |
 
 ### P1 leftovers (S0 gate)
 
