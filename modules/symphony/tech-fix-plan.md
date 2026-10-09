@@ -34,7 +34,7 @@
 | N2 | `db7f7ecb05` | `MusicNoteInput`, note pools, protected capacity, multi-track phrase + 44.1/48k tests |
 | N3 | `e6dc62f583` | Signalsmith Stretch 1.3.0 + Linear 0.1.2; stereo PCM cache; stretch pool/ownership; hybrid score test |
 | G1 | game-template `d574207b` | Typed score resources, bounded composer, offline ledger, batch seed tests |
-| MusicStream | *(pending commit)* | `AudioStreamSymphonyMusic` + playback: scheduler, note pools, stretch, VITAL; `test_symphony_music_stream.cpp` |
+| MusicStream | `98a4231b9e` | `AudioStreamSymphonyMusic` + playback: scheduler, note pools, stretch, VITAL; `test_symphony_music_stream.cpp` |
 
 ### P1 leftovers (closed — optional coverage only)
 
