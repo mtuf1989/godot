@@ -21,10 +21,13 @@ TEST_FORCE_LINK(test_symphony_stress)
 #include "core/os/os.h"
 #include "core/os/thread.h"
 #include "core/templates/vector.h"
+#include "tests/modules/symphony_test_helpers.h"
 
 #include <atomic>
 
 namespace TestSymphonyStress {
+
+using SymphonyTestHelpers::execute_mix_frames;
 
 struct BudgetGuard {
 	SymphonyMemoryBudget *budget = nullptr;
@@ -121,13 +124,6 @@ static uint64_t _p99_limit_us(uint64_t p_baseline) {
 	const uint64_t pct = (p_baseline * 110ull + 99ull) / 100ull; // ceil(+10%)
 	const uint64_t abs = p_baseline + 5ull;
 	return pct > abs ? pct : abs;
-}
-
-static void _execute_mix_frames(PreparedGraphPackage *p_pkg, AudioFrame *p_buf, int p_frames) {
-	for (int off = 0; off < p_frames; off += SYMPHONY_MICRO_BLOCK_SIZE) {
-		p_pkg->graph_output->set_output(p_buf, off);
-		p_pkg->graph->execute(SYMPHONY_MICRO_BLOCK_SIZE);
-	}
 }
 
 TEST_CASE("[Symphony][Stress] Global memory budget rejects without leaking reservation") {
@@ -408,7 +404,7 @@ TEST_CASE("[Symphony][Stress] Mix timing median/p99 for 10/30/50-node graphs") {
 
 		for (int i = 0; i < warmup; i++) {
 			for (int r = 0; r < reps_per_sample; r++) {
-				_execute_mix_frames(pkg, buf, frames);
+				execute_mix_frames(pkg, buf, frames);
 			}
 		}
 
@@ -423,7 +419,7 @@ TEST_CASE("[Symphony][Stress] Mix timing median/p99 for 10/30/50-node graphs") {
 			for (int i = 0; i < samples; i++) {
 				const uint64_t t0 = symphony_time_usec();
 				for (int r = 0; r < reps_per_sample; r++) {
-					_execute_mix_frames(pkg, buf, frames);
+					execute_mix_frames(pkg, buf, frames);
 				}
 				const uint64_t t1 = symphony_time_usec();
 				times_us.write[i] = t1 >= t0 ? (t1 - t0) : 0;

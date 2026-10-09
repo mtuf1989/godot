@@ -18,10 +18,16 @@ TEST_FORCE_LINK(test_symphony_compiler)
 #include "modules/symphony/nodes/delay/symphony_delay_line.h"
 #include "modules/symphony/nodes/io/symphony_graph_output.h"
 #include "scene/resources/audio/audio_stream.h"
+#include "tests/modules/symphony_test_helpers.h"
 
 #include <cmath>
 
 namespace TestSymphonyCompiler {
+
+using SymphonyTestHelpers::alias_ratio_db;
+using SymphonyTestHelpers::make_sine_graph;
+using SymphonyTestHelpers::render_graph;
+using SymphonyTestHelpers::tone_level_db;
 
 TEST_CASE("[Symphony][Compiler] Oscillator descriptor pin counts match bind_pins") {
 	const OperatorDescriptor *desc = OperatorRegistry::get_singleton()->find("Oscillator");
@@ -509,6 +515,24 @@ TEST_CASE("[Symphony][Compiler] Silence skip does not latch stateless nodes") {
 	Dictionary rendered = stream->render_offline(0.4, 1, Dictionary(), triggers, String());
 	REQUIRE(bool(rendered["ok"]));
 	CHECK(float(rendered["peak"]) > 0.5f);
+}
+
+TEST_CASE("[Symphony][Compiler] Shared helpers render_graph / tone_level / alias_ratio") {
+	const float sr = 48000.0f;
+	const int frames = 4096;
+	// Exact DFT bin: 32 cycles → 375 Hz, so the fundamental lands on-grid.
+	const float f0 = 32.0f * sr / (float)frames;
+	Vector<float> buf = render_graph(make_sine_graph(f0), frames, sr);
+	REQUIRE(buf.size() == frames);
+
+	const float tone_db = tone_level_db(buf, sr, f0);
+	const float noise_db = tone_level_db(buf, sr, f0 * 2.5f);
+	CHECK(tone_db > -6.0f); // near 0 dBFS for unit sine
+	CHECK(noise_db < tone_db - 20.0f);
+
+	// Pure sine: off-grid energy should be well below the fundamental.
+	const float alias_db = alias_ratio_db(buf, sr, f0, 1);
+	CHECK(alias_db < -20.0f);
 }
 
 } // namespace TestSymphonyCompiler

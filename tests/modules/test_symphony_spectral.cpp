@@ -15,27 +15,17 @@ TEST_FORCE_LINK(test_symphony_spectral)
 #include "modules/symphony/core/symphony_runtime_metrics.h"
 #include "modules/symphony/nodes/spectral/symphony_phase_vocoder.h"
 #include "modules/symphony/nodes/spectral/symphony_spectral_gate.h"
+#include "tests/modules/symphony_test_helpers.h"
 
 #include <cmath>
 
 namespace TestSymphonySpectral {
 
+using SymphonyTestHelpers::db_ratio;
+using SymphonyTestHelpers::rms;
+
 static constexpr float MIX_RATE = 48000.0f;
 static constexpr size_t SPECTRAL_ARENA = 512 * 1024;
-
-static float _rms(const float *p_data, int p_count) {
-	double sum = 0.0;
-	for (int i = 0; i < p_count; i++) {
-		sum += (double)p_data[i] * (double)p_data[i];
-	}
-	return (float)Math::sqrt(sum / (double)MAX(1, p_count));
-}
-
-static float _db_ratio(float p_num, float p_den) {
-	const float n = MAX(p_num, 1e-12f);
-	const float d = MAX(p_den, 1e-12f);
-	return 20.0f * Math::log(n / d) / Math::log(10.0f);
-}
 
 TEST_CASE("[Symphony][Spectral] PhaseVocoder stretch=1 unity gain within 0.5 dB") {
 	ArenaAllocator arena;
@@ -89,9 +79,9 @@ TEST_CASE("[Symphony][Spectral] PhaseVocoder stretch=1 unity gain within 0.5 dB"
 
 	const int cmp_count = total_samples - latency - fft_size;
 	REQUIRE(cmp_count > 256);
-	const float dry_rms = _rms(dry.ptr() + latency, cmp_count);
-	const float wet_rms = _rms(wet.ptr() + latency, cmp_count);
-	const float err_db = Math::abs(_db_ratio(wet_rms, dry_rms));
+	const float dry_rms = rms(dry.ptr() + latency, cmp_count);
+	const float wet_rms = rms(wet.ptr() + latency, cmp_count);
+	const float err_db = Math::abs(db_ratio(wet_rms, dry_rms));
 	CHECK(err_db <= 0.5f);
 
 	pv->cleanup();
@@ -268,9 +258,9 @@ TEST_CASE("[Symphony][Spectral] SpectralGate open threshold unity gain within 0.
 
 	const int cmp_count = total_samples - latency - fft_size;
 	REQUIRE(cmp_count > 256);
-	const float dry_rms = _rms(dry.ptr() + latency, cmp_count);
-	const float wet_rms = _rms(wet.ptr() + latency, cmp_count);
-	const float err_db = Math::abs(_db_ratio(wet_rms, dry_rms));
+	const float dry_rms = rms(dry.ptr() + latency, cmp_count);
+	const float wet_rms = rms(wet.ptr() + latency, cmp_count);
+	const float err_db = Math::abs(db_ratio(wet_rms, dry_rms));
 	CHECK(err_db <= 0.5f);
 
 	sg->cleanup();

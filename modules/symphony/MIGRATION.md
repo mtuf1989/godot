@@ -5,9 +5,9 @@ Update this file with each commit that changes a public API.
 
 ## Status
 
-- **Milestone:** M3 C++ complete. Game Audio Layer (`game-template/addons/symphony_audio`) migrated (RTPC handles, `play_event` Dictionary, `trigger()`, LOD poll removed).
+- **Milestone:** M3 C++ complete. Game Audio Layer (`game-template/addons/symphony_audio`) migrated (RTPC handles, `play_event` Dictionary, `trigger()`, LOD poll removed). Tech-fix plan P0 landed (shared test helpers).
 - **Branch:** `features/symphony_fixed`
-- **Tests:** 55 Symphony cases; editor TSan (`.san`) reported no data races (2026-08-13).
+- **Tests:** 202 Symphony cases (2026-10-09). Editor TSan (`.san`) rebuilt same day — suite green; **1 baseline data-race warning** (stacks stripped/`<null>` under TSan). P1 exit gate: new Symphony-frame races = 0 vs this baseline.
 
 ## Completed
 
@@ -212,6 +212,15 @@ TSAN_OPTIONS="halt_on_error=1 print_stacktrace=1" bin/godot.macos.editor.arm64.s
 ```
 
 TSan (2026-08-13, macos arm64 editor `.san`): no data-race reports on the Symphony suite. Concurrent mix + swap/parameter/trigger/LOD/drain/stop is included. GrainCloud µs/unit and release mix-timing gates are skipped or unenforced under sanitizers (instrumentation distorts timings).
+
+TSan P0 baseline (2026-10-09, macos arm64 editor `.san`, rebuilt with `use_tsan=yes`):
+
+```bash
+scons platform=macos target=editor arch=arm64 tests=yes use_tsan=yes module_raycast_enabled=no -j$(sysctl -n hw.ncpu)
+TSAN_OPTIONS="halt_on_error=0 print_stacktrace=1" bin/godot.macos.editor.arm64.san --headless --test --test-case='*Symphony*'
+```
+
+Result: 202/202 Symphony cases passed; `ThreadSanitizer: reported 1 warnings` (one data race; frames unresolved). Treat that count as the pre-P1 baseline so P1 can assert "new races = 0".
 
 ## Planned (from improve_plan_1_7.md)
 
