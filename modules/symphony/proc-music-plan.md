@@ -8,6 +8,8 @@
 >   - the sample-rate policy (P4);
 >   - the resettable-state contract and ModalBank `pitch_ratio` (P10);
 >   - music-safe voice budgeting (P8a).
+>
+> **Status (2026-10-09):** tech **P0 + P1 done**; **N0 / S0 incomplete** until **P1b** lands. Resume at `tech-fix-plan.md` §Progress → implement P1b.
 
 ## 1. Goal and scope
 
@@ -254,18 +256,18 @@ Failure behavior:
 
 Before expanding playback (all delivered in **S0** by tech plan P1/P1b):
 
-- Remove the blocking mutex from Symphony’s audio-thread voice-budget traversal. *(P1 `try_lock`.)*
-- Retain playback/package ownership until audio readers have finished and acknowledged removal. *(P1 single-owner hand-off: the mixing thread owns package pointers while the voice is reachable; main reclaims only when the refcount proves the voice is unreachable.)*
-- Destroy graphs, PCM, resources, and processor contexts off the audio thread. *(P1 invariant I5: free only on main.)*
+- ✅ Remove the blocking mutex from Symphony’s audio-thread voice-budget traversal. *(P1 `try_lock`.)*
+- ✅ Retain playback/package ownership until audio readers have finished and acknowledged removal. *(P1 single-owner hand-off: the mixing thread owns package pointers while the voice is reachable; main reclaims only when the refcount proves the voice is unreachable.)*
+- ✅ Destroy graphs, PCM, resources, and processor contexts off the audio thread. *(P1 invariant I5: free only on main.)*
 - Use bounded SPSC commands and coherent status snapshots.
-- For transport snapshots, use the P1b-fixed SeqLock (`core/symphony_seqlock.h`), which uses atomic payload words with correct fences and is TSan-clean, or a double-buffered snapshot. Never use a plain-`memcpy` payload.
+- For transport snapshots, use the P1b-fixed SeqLock (`core/symphony_seqlock.h`), which uses atomic payload words with correct fences and is TSan-clean, or a double-buffered snapshot. Never use a plain-`memcpy` payload. *(P1b — pending.)*
 - Keep resource reads, dictionaries, signals, compilation, decoding, and logging outside rendering.
 
 ## 4. Implementation milestones
 
 | Milestone | Stage | Repository | Prerequisites (tech plan) | Deliverable and exit gate |
 |---|---|---|---|---|
-| **N0 — Safety foundation** | S0 | Godot | **= tech P0 + P1 + P1b** (no extra work) | Establish regression baselines; fix voice lifetime/locking and Float→Audio control ordering. Focused concurrency and control-timing tests pass. |
+| **N0 — Safety foundation** | S0 | Godot | **= tech P0 ✅ + P1 ✅ + P1b ← next** (no extra work) | Establish regression baselines; fix voice lifetime/locking and Float→Audio control ordering. Focused concurrency and control-timing tests pass. |
 | **N1 — Transport and scheduler** | S1 | Godot | S0; absorbs the tech P7 R + BeatClock specs; uses the P4 rate policy | Continuous tempo/meter mapping, event splitting, bounded phrase handoff, status observation, and BeatClock integration (including the legacy loop-wrap and crossed-beat fixes). Exact event-timestamp tests pass. |
 | **N2 — Musical instruments** | S2 | Godot | **P10** (reset contract, ModalBank `pitch_ratio`), **P3** (waveshaper/saturator fixes) | `MusicNoteInput`, approved reset contracts, seeded note pools, release handling, and protected capacity. An authored multi-track phrase renders correctly; 44.1k/48k equivalence test passes. |
 | **N3 — Recorded phrases** | S3 | Godot | P2 N3 (WAV decode path) | Pinned stretch backend, stereo PCM preparation, context ownership, markers, tempo/key adaptation, and common latency. A fixed hybrid score passes timing and listening checks. |

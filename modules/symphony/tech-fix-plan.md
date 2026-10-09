@@ -2,6 +2,39 @@
 
 > **This file is the master roadmap.** It is paired with [`proc-music-plan.md`](proc-music-plan.md), and together they form one plan. Phases P0–P10 are technical work; milestones N0–N3, G1, G2 and V1 are procedural music. The order of all of them is set in **§Unified roadmap** below. The music plan defers to this file for every shared prerequisite.
 
+## Progress (update every phase commit)
+
+| Field | Value |
+|---|---|
+| **As of** | 2026-10-09 |
+| **Branch** | `master` (ahead of `origin/master`; not pushed) |
+| **Done** | **P0**, **P1** |
+| **Next** | **P1b** — then S0 gate (TSan re-baseline + remaining P1 polish) |
+| **Stage** | S0 Foundation in progress (P0→P1 done; P1b remaining) |
+| **C++ tests** | 210/210 `*Symphony*` green on `bin/godot.macos.editor.arm64` |
+| **TSan** | `.san` rebuilt in P0; **1** baseline race. **P1 not yet re-run under TSan** — do that before closing S0. |
+
+### Commits
+
+| Phase | Commit | Notes |
+|---|---|---|
+| P0 | `26b1e645be` | Shared helpers (`render_graph`, `tone_level_db`, `alias_ratio_db`); TSan rebuild + baseline in `MIGRATION.md` |
+| P1 | `d739292608` | Single-owner lifetime; denormal guard; RTPC atomics; LOD hysteresis; `test_symphony_lifetime.cpp` |
+
+### P1 leftovers (do before or with S0 gate — not blockers for starting P1b)
+
+- Re-run `use_tsan=yes` binary on `*Symphony*` and record “new races vs P0 baseline”.
+- GDScript: `audio_manager_behavior_test.gd` play/stop 50 `torch_fire` → `active_voice_count == 0` (in `game-template/`).
+- Optional lifetime cases still thin: T2 (AudioServer stream), T3, T4/T6–T9, T11, T13–T16.
+- Document parked-packages metric / main-thread-only playback assumption in `user_guide` or `MIGRATION.md` if not already clear.
+
+### How to resume next session
+
+1. Read this **Progress** block and **§P1b** below.
+2. Build: `scons platform=macos target=editor arch=arm64 tests=yes module_raycast_enabled=no -j$(sysctl -n hw.ncpu)`
+3. Implement **P1b** items in order: Float→Audio promotion → SeqLock → G seeds → N10 `frames_rendered` → N16 `render_offline`.
+4. Leave each phase green + committed on its own (plan convention).
+
 ## Context
 
 An external review (`game-template/talk2/`) checked Symphony against 44 audio talks. We re-verified every claim against HEAD `aa3c663d6f`, using float32 ports, C++ benchmarks and a headless repro. The result is `game-template/talk2/VERIFICATION.md`:
@@ -28,51 +61,47 @@ Policy (memory `symphony-presets-no-compat`): pre-production, no compatibility s
 ## Conventions for every phase
 
 - **Build:** `scons platform=macos target=editor arch=arm64 tests=yes module_raycast_enabled=no -j$(sysctl -n hw.ncpu)`
-- **C++ tests:** `bin/godot.macos.editor.arm64 --headless --test --test-case='*Symphony*'` (baseline 182/182). New files under `tests/modules/` are auto-globbed.
+- **C++ tests:** `bin/godot.macos.editor.arm64 --headless --test --test-case='*Symphony*'` (**210/210** as of P1). New files under `tests/modules/` are auto-globbed. Shared helpers live in `tests/modules/symphony_test_helpers.h`.
 - **GDScript tests** (in `game-template/`): `node addons/agent_cli/gd.mjs test test/addons/symphony_audio`. Suites: preset_level, finite_oneshot, preset_render, audio_manager_behavior, reverb_routing, spatial_acoustics_integration, skill_handle.
-- **TSan:** rebuild `use_tsan=yes` (the existing `.san` binary is stale, from Aug 28).
+- **TSan:** `bin/godot.macos.editor.arm64.san` rebuilt in P0 (`use_tsan=yes`). P0 baseline: 1 warning. Re-baseline after P1 before closing S0.
 - **Operator template:** `nodes/filters/symphony_one_pole.h`.
   - Descriptor and `register_operator()` in the header, called from `register_types.cpp`.
   - Schema extras in `core/symphony_operator_schema.cpp::annotate_authoring_schema`.
   - Cost is `cost_per_sample*BLOCK + extra_cost_fn`.
   - LOD state migration has a 256-byte stack limit (`core/symphony_prepared_graph_package.cpp:122`).
-- **Activity/silence pattern to copy:** `nodes/filters/symphony_sv_filter.h:102-112` (`silent_blocks`, `ACTIVITY_THRESHOLD`).
+- **Activity/silence pattern to copy:** `nodes/filters/symphony_sv_filter.h` (`silent_blocks`, `ACTIVITY_THRESHOLD`); ModalBank now flushes at `|y1|+|y2| < 1e-9` and can be skipped (`STATEFUL_TAIL`).
+- **Denormal guard:** `core/symphony_denormal_guard.h` — install at top of `mix()` / around `render_offline`.
 - **Docs to update with any operator or param change:**
   - `user_guide.md` (Operator Reference §487-594, Silence Propagation, Anti-Aliasing, Changelog);
   - regenerate `operator-schema.json` and sync the 4 skill copies (`skills/`, `.claude/skills/`, `.agents/skills/`, `.kiro/skills/` → `godot-audio/references/`);
   - `MIGRATION.md` status line; `dev-log.md`.
-- **Shared test helpers:** promote the file-local helpers into `tests/modules/symphony_test_helpers.h`:
-  - `_rms`, `_db_ratio` (from test_symphony_spectral.cpp);
-  - `_measure_hz`, `_make_sine_graph` (from test_symphony_playback.cpp);
-  - `_execute_mix_frames` (from test_symphony_stress.cpp);
-  - plus a new naive-DFT `tone_level_db(buf, sr, hz)` and `alias_ratio_db(...)` for spectral assertions.
 - Each phase ends green on both test suites with docs updated, and is committed on its own.
 
 ---
 
 ## Phase overview
 
-| Phase | Theme | Fixes | Repo | Depends on |
-|---|---|---|---|---|
-| P0 | Test infrastructure | helpers, alias/spectral asserts, TSan rebuild | godot | — |
-| P1 | Voice/package lifetime + RT safety | N1, B, A, M, cross-thread fields, H, V, ModalBank flush | godot (+1 gd test) | P0 |
-| P1b | Foundation extras (shared with music) | Float→Audio promotion order, SeqLock fix, G seeds, N10 frame counter, N16 `render_offline` | godot | P1 |
-| P2 | Quick audible wins | N2, N3 | both | P1 |
-| P3 | Nonlinear and anti-aliasing DSP | C, D, E, N6, N20, J, L, P, DC blocker, Biquad smoothing | godot | P0 |
-| P4 | Sampler and rate path | S (rate policy D), N18, N19, mix_rate clamp, Oscillator floor | godot | P0 |
-| P5 | Spectral and granular | F, N4, N5, N14, I/U removal, N7, N17, GrainCloud upgrade, stale comments | godot (+ skills docs) | P0 |
-| P6 | Spatial reverb rework | O, T, N15, W, uniformity, FDN AudioEffect, core DRR patch | both + Godot core | P1, P1b, P3 |
-| P7 | SFX-side timing | N11 SymphonyClock, N21, asymmetric RTPC (BeatClock + R move to music N1) | both | P1 |
-| P8a | Voice policy: music-critical part | N9, VITAL tier, N13 | both | P1 |
-| P8b | Voice policy: the rest | Q tiers/caps, N8, N12 | both | P8a |
-| P9 | Performance and polish | state-in-locals convention, K, compile cache, RTSan CI | godot | P1–P5 |
-| P10 | Instrument readiness (shared with music) | resettable-state contract and conformance test, ModalBank `pitch_ratio`, music rate-policy helper | godot | P1b, P3 |
+| Phase | Status | Theme | Fixes | Repo | Depends on |
+|---|---|---|---|---|---|
+| P0 | **Done** `26b1e645be` | Test infrastructure | helpers, alias/spectral asserts, TSan rebuild | godot | — |
+| P1 | **Done** `d739292608` (polish open) | Voice/package lifetime + RT safety | N1, B, A, M, cross-thread fields, H, V, ModalBank flush | godot (+1 gd test pending) | P0 |
+| P1b | **Next** | Foundation extras (shared with music) | Float→Audio promotion order, SeqLock fix, G seeds, N10 frame counter, N16 `render_offline` | godot | P1 |
+| P2 | Pending | Quick audible wins | N2, N3 | both | P1 |
+| P3 | Pending | Nonlinear and anti-aliasing DSP | C, D, E, N6, N20, J, L, P, DC blocker, Biquad smoothing | godot | P0 |
+| P4 | Pending | Sampler and rate path | S (rate policy D), N18, N19, mix_rate clamp, Oscillator floor | godot | P0 |
+| P5 | Pending | Spectral and granular | F, N4, N5, N14, I/U removal, N7, N17, GrainCloud upgrade, stale comments | godot (+ skills docs) | P0 |
+| P6 | Pending | Spatial reverb rework | O, T, N15, W, uniformity, FDN AudioEffect, core DRR patch | both + Godot core | P1, P1b, P3 |
+| P7 | Pending | SFX-side timing | N11 SymphonyClock, N21, asymmetric RTPC (BeatClock + R move to music N1) | both | P1 |
+| P8a | Pending | Voice policy: music-critical part | N9, VITAL tier, N13 | both | P1 |
+| P8b | Pending | Voice policy: the rest | Q tiers/caps, N8, N12 | both | P8a |
+| P9 | Pending | Performance and polish | state-in-locals convention, K, compile cache, RTSan CI | godot | P1–P5 |
+| P10 | Pending | Instrument readiness (shared with music) | resettable-state contract and conformance test, ModalBank `pitch_ratio`, music rate-policy helper | godot | P1b, P3 |
 
 ## Unified roadmap (technical phases + procedural music milestones)
 
 | Stage | Work | Gate to the next stage |
 |---|---|---|
-| **S0 Foundation** (= music **N0**) | P0 → P1 → P1b | TSan stress clean; N1 leak test green; promotion-order and seed tests green; frame counter exact over 10 min |
+| **S0 Foundation** (= music **N0**) | P0 ✅ → P1 ✅ → **P1b ← you are here** | TSan stress clean; N1 leak test green; promotion-order and seed tests green; frame counter exact over 10 min |
 | **S1 Build-out** (parallel lanes) | Lane A: music **N1** (transport, scheduler, BeatClock rework, sample-accurate events). Lane B: **P3**, **P4**, **P2**. Lane C: **P5** | N1 exact-timestamp tests; P3/P4 level contract green |
 | **S2 Instruments** | **P10** → music **N2** (MusicNoteInput, note pools, releases) ‖ **P8a** | Reset conformance passes for every approved operator; an authored multi-track phrase renders correctly |
 | **S3 Recordings + composer** | Music **N3** (Signalsmith, stereo PCM) ‖ music **G1** (resources, composer) ‖ **P7** | Fixed hybrid score passes timing and listening checks; 1,000-seed batch passes |
@@ -86,16 +115,18 @@ Rules:
 
 ---
 
-## P0: Test infrastructure
+## P0: Test infrastructure — **DONE** (`26b1e645be`)
 
-1. Move the file-local helpers listed under Conventions into `tests/modules/symphony_test_helpers.h`, and update the includes in the source test files.
-2. Add helpers:
-   - `render_graph(GraphDescription, frames, sr)` → `Vector<float>`, built on the compile/`execute` pattern in `test_symphony_compiler.cpp:156-189`;
+1. ✅ Move the file-local helpers into `tests/modules/symphony_test_helpers.h`, and update the includes in the source test files.
+2. ✅ Add helpers:
+   - `render_graph(GraphDescription, frames, sr)` → `Vector<float>`;
    - `tone_level_db(buf, sr, hz)` (Goertzel);
    - `alias_ratio_db(buf, sr, f0, harmonics)`: energy off the harmonic grid relative to energy on it.
-3. Rebuild `bin/godot.macos.editor.arm64.san` (`use_tsan=yes`) and record the baseline TSan output for `*Symphony*` in `MIGRATION.md`, so P1 can show "new races = 0".
+3. ✅ Rebuild `bin/godot.macos.editor.arm64.san` (`use_tsan=yes`) and record the baseline in `MIGRATION.md` (1 TSan warning at P0 baseline).
 
-## P1: Voice and package lifetime + RT safety (N1, B, A, M, H, V)
+## P1: Voice and package lifetime + RT safety (N1, B, A, M, H, V) — **DONE** (`d739292608`, polish open)
+
+> Implementation landed. See **Progress → P1 leftovers** for TSan re-run, GDScript zombie case, and optional T2–T16 coverage. Spec below remains the source of truth for any follow-up.
 
 **Lifetime model: single-owner hand-off.** This replaces the ad-hoc stop paths and the release-grace counters. Invariants:
 - **I1.** While a voice is reachable by any mixer, only the *mixing thread* writes `current_package`, `current_graph`, `graph_output_node`, `outgoing_package`, `incoming_package`, `transition_*` and `holds_crossfade_token`.
@@ -197,7 +228,9 @@ Risks:
 - **The reap assumes playbacks are main-thread objects** (no off-thread `Ref` resurrection). Document it.
 - **Driver lock.** The manager destructor relies on `AudioServer::lock()`; verify that on Android and Web.
 
-## P1b: Foundation extras shared with music (stage S0)
+## P1b: Foundation extras shared with music (stage S0) — **NEXT**
+
+> Start here. Five items; commit when the P1b suite is green. Completing P1b + P1 leftovers closes **S0 / music N0**.
 
 **Float→Audio promotion order** (found by the music plan; `core/symphony_compiled_graph.h:62-66`). Today every promotion buffer is filled at the top of `execute()`, before any operator runs, so an AUDIO consumer of a FLOAT producer in the same graph sees the **previous block's** value. That breaks "pitch and gate change together" for notes, and adds a block of lag to every game-driven control.
 - Fix: the compiler attaches each promotion to its producer's position in the topological order (a `promotions_after[op_index]` range), and `execute()` fills them right after that operator runs. Promotions from graph inputs stay at the top.
