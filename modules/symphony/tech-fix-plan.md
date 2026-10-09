@@ -10,8 +10,8 @@
 | **Branch** | `master` (ahead of `origin/master`; not pushed) |
 | **Done** | **P0–P9**, **P10**, music **N1–N3**, **G1–G2**, **MusicStream**, **V1** automated qualification; **S0 / N0** closed. |
 | **Next** | Listening / denser lifetime / 30‑min release profiling / RTSan CI (doc follow-up) as needed. |
-| **Stage** | S5 Qualification ✅ (automated); listening + P9 perf gates deferred |
-| **C++ tests** | 300/300 `*Symphony*` green on `bin/godot.macos.editor.arm64` |
+| **Stage** | S5 Qualification ✅ (automated + P8b/P9); listening / 30‑min profiling deferred |
+| **C++ tests** | 305/305 `*Symphony*` green on `bin/godot.macos.editor.arm64` |
 | **TSan** | `.san` after P1b: **1** warning (same as P0 `DynamicRangeHigh`); new Symphony-frame races = 0 |
 
 ### Commits
@@ -37,6 +37,8 @@
 | MusicStream | `98a4231b9e` | `AudioStreamSymphonyMusic` + playback: scheduler, note pools, stretch, VITAL; `test_symphony_music_stream.cpp` |
 | G2 | game-template `4f002834` | `ProceduralMusicController`; MusicSystem `PROCEDURAL` + `load_score` / intensity / tempo / key |
 | V1 | `b10b24d6ca` (+ gt `a700bb3a`) | Timing/callback/replace tests; DemoScoreFactory; 1000-seed batch; `QUALIFICATION.md` |
+| P8b | `7b5950da02` (+ gt `b6e4fc04`) | Category caps; shared `_admit` (N8); STEAL_QUIETEST (N12); GDScript admit tiers/caps |
+| P9 | `f5f378a49e` | State-in-locals; FeedbackPath zero-extra; flatten cache + arena freelist; `test_symphony_p9.cpp` |
 
 ### P1 leftovers (closed — optional coverage only)
 
