@@ -21,6 +21,7 @@
 | P0 | `26b1e645be` | Shared helpers (`render_graph`, `tone_level_db`, `alias_ratio_db`); TSan rebuild + baseline in `MIGRATION.md` |
 | P1 | `d739292608` | Single-owner lifetime; denormal guard; RTPC atomics; LOD hysteresis; `test_symphony_lifetime.cpp` |
 | P1b | `c5d38b563b` | Promotion order, atomic-word SeqLock, per-voice seeds, `frames_rendered`, unresampled `render_offline` |
+| S0 gate | `81e362e111` (+ game-template `9ed46af4`) | TSan re-baseline (= P0 warning count); T3; parked-package docs; torch_fire GDScript N1 |
 
 ### P1 leftovers (S0 gate)
 
