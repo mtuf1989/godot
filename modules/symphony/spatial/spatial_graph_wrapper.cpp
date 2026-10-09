@@ -9,11 +9,7 @@ bool SpatialGraphWrapper::is_wrappable_wav(const Ref<AudioStream> &p_stream) {
 	if (p_stream->get_path().is_empty()) {
 		return false;
 	}
-	const AudioStreamWAV *wav = Object::cast_to<AudioStreamWAV>(p_stream.ptr());
-	if (wav == nullptr) {
-		return false;
-	}
-	return wav->get_format() == AudioStreamWAV::FORMAT_16_BITS;
+	return Object::cast_to<AudioStreamWAV>(p_stream.ptr()) != nullptr;
 }
 
 bool SpatialGraphWrapper::needs_wrapping(const Ref<AudioStream> &p_stream) {
@@ -43,9 +39,9 @@ Ref<AudioStreamSymphony> SpatialGraphWrapper::create_spatial_stream(const Ref<Au
 	}
 
 	const AudioStreamWAV *wav = Object::cast_to<AudioStreamWAV>(p_source.ptr());
-	if (wav == nullptr || wav->get_format() != AudioStreamWAV::FORMAT_16_BITS) {
+	if (wav == nullptr) {
 		WARN_PRINT_ONCE(vformat(
-				"SpatialGraphWrapper: refusing to wrap unsupported stream '%s' (need 16-bit PCM WAV).",
+				"SpatialGraphWrapper: refusing to wrap unsupported stream '%s' (need AudioStreamWAV).",
 				resource_path));
 		return Ref<AudioStreamSymphony>();
 	}

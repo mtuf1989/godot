@@ -8,10 +8,10 @@
 |---|---|
 | **As of** | 2026-10-09 |
 | **Branch** | `master` (ahead of `origin/master`; not pushed) |
-| **Done** | **P0**, **P1**, **P1b**, **S0 / N0**, **P3**, **P4** |
-| **Next** | **S1** — Lane A music N1 ‖ Lane B P2 ‖ Lane C P5 |
-| **Stage** | S1 Build-out (P3/P4 closed; P2/P5/N1 remain) |
-| **C++ tests** | 237/237 `*Symphony*` green on `bin/godot.macos.editor.arm64` |
+| **Done** | **P0**, **P1**, **P1b**, **S0 / N0**, **P2**, **P3**, **P4** |
+| **Next** | **S1** — Lane A music N1 ‖ Lane C P5 |
+| **Stage** | S1 Build-out (P2–P4 closed; P5/N1 remain) |
+| **C++ tests** | 241/241 `*Symphony*` green on `bin/godot.macos.editor.arm64` |
 | **TSan** | `.san` rebuilt after P1b; **1** warning (same as P0 `DynamicRangeHigh`); new Symphony-frame races = 0 |
 
 ### Commits
@@ -24,6 +24,7 @@
 | S0 gate | `81e362e111` (+ game-template `9ed46af4`) | TSan re-baseline (= P0 warning count); T3; parked-package docs; torch_fire GDScript N1 |
 | P3 | `dd19939a3a` | HIIR saturator OS, u-domain ADAA, waveshaper 3-way ADAA + foldback, FM Carson clamp, staircase/rate LPF, FormantOsc blend, DC R(sr), Biquad τ=5ms |
 | P4 | `1a84c38e46` | Rate policy helper; SFX mix_rate 48k default + clamp; WavePlayer loop-aware Hermite; OnePole/SVF open bypass; osc dt∈[0,0.49] |
+| P2 | _(pending commit)_ | N2 3D filter/max_db; N3 WavePlayer multi-format decode; `test_symphony_p2_wave.cpp` |
 
 ### P1 leftovers (S0 gate)
 
@@ -90,7 +91,7 @@ Policy (memory `symphony-presets-no-compat`): pre-production, no compatibility s
 | P0 | **Done** `26b1e645be` | Test infrastructure | helpers, alias/spectral asserts, TSan rebuild | godot | — |
 | P1 | **Done** `d739292608` (polish open) | Voice/package lifetime + RT safety | N1, B, A, M, cross-thread fields, H, V, ModalBank flush | godot (+1 gd test pending) | P0 |
 | P1b | **Done** | Foundation extras (shared with music) | Float→Audio promotion order, SeqLock fix, G seeds, N10 frame counter, N16 `render_offline` | godot | P1 |
-| P2 | Pending | Quick audible wins | N2, N3 | both | P1 |
+| P2 | **Done** | Quick audible wins | N2, N3 | both | P1 |
 | P3 | **Done** `dd19939a3a` | Nonlinear and anti-aliasing DSP | C, D, E, N6, N20, J, L, P, DC blocker, Biquad smoothing | godot | P0 |
 | P4 | **Done** `1a84c38e46` | Sampler and rate path | S (rate policy D), N18, N19, mix_rate clamp, Oscillator floor | godot | P0 |
 | P5 | Pending | Spectral and granular | F, N4, N5, N14, I/U removal, N7, N17, GrainCloud upgrade, stale comments | godot (+ skills docs) | P0 |
@@ -271,15 +272,11 @@ Risks:
 
 **N16 `render_offline` rate.** It counts frames at the graph rate, but `mix()` resamples to the device rate. Render through the **un-resampled path**: call `_mix_internal` directly at the graph rate, skipping `AudioStreamPlaybackResampled::mix`, so the WAV header, frame counts and pitch are always correct and device-independent. Update `finite_oneshot_test.gd:78-83`, which compensates for the old bug by dividing by `AudioServer.get_mix_rate()`. Test: render a 440 Hz sine with the device at 44.1k and the graph at 48k; `_measure_hz` gives 440 ±1 and frames = duration·48000. Music offline renders use the same path at 48k.
 
-## P2: Quick audible wins
+## P2: Quick audible wins — **DONE**
 
-**N2 Godot 3D attenuation filter double-dip.** In `audio_manager.gd:124`, set `p.attenuation_filter_db = 0.0` and `p.max_db = 24.0` on 3D players. That matches the `final_db` clamp at :961-964; Godot's default `max_db` of 3 silently clamps boosts. Distance HF loss is already handled by Symphony's own air absorption (`compute_air_cutoff`), so nothing replaces Godot's filter. Add an `audio_manager_behavior_test.gd` case asserting both properties.
+**N2 Godot 3D attenuation filter double-dip.** ✅ In `audio_manager.gd`, 3D pool sets `attenuation_filter_db = 0.0` and `max_db = 24.0`. gdUnit asserts both (and `ATTENUATION_DISABLED`).
 
-**N3 WavePlayer silent on QOA/ADPCM/8-bit WAVs.** In `symphony_wave_player.h:192-199`, decode any `AudioStreamWAV` format at bake/create time on the main thread into the arena's PCM16 (or float) buffer:
-- 8-bit → widen.
-- IMA ADPCM / QOA: Godot has no public decode API, so render via `AudioStreamWAV::instantiate_playback()` → `mix()` at ratio 1 into a temp buffer on the main thread (create runs on main).
-
-If decode fails, `ERR_PRINT_ONCE` with the resource path; never fail silently. Document this in user_guide (WavePlayer row). Tests: a QOA- and an 8-bit-sourced WavePlayer each render non-silent output whose RMS is within 1 dB of the PCM16 version.
+**N3 WavePlayer silent on QOA/ADPCM/8-bit WAVs.** ✅ `SymphonyWavePlayer::decode_to_pcm16` at create: 8-bit widens; IMA ADPCM/QOA via `instantiate_playback()->mix` at 1:1 stream rate (`rate_scale = server/stream`). `ERR_PRINT_ONCE` on failure. SpatialGraphWrapper wraps any pathed WAV. Tests: `test_symphony_p2_wave.cpp` (needs `[Audio]` tag for `set_data`).
 
 ## P3: Nonlinear and anti-aliasing DSP — **DONE**
 

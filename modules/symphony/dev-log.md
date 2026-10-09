@@ -1,5 +1,9 @@
 # Dev Log — Symphony Audio System
 
+## P2 (2026-10-09)
+
+N2 (game-template): 3D player pool sets `attenuation_filter_db=0` and `max_db=24`; gdUnit asserts both. N3: WavePlayer `decode_to_pcm16` widens 8-bit and mixes IMA ADPCM/QOA via `instantiate_playback()->mix` at 1:1 stream rate; `ERR_PRINT_ONCE` on failure. SpatialGraphWrapper wraps any pathed WAV. Tests: `test_symphony_p2_wave.cpp`.
+
 ## P4 (2026-10-09)
 
 Sample-rate policy D: `core/symphony_rate_policy.h` (`symphony_select_music_rate`, `symphony_offline_rate`); SFX `AudioStreamSymphony::mix_rate` defaults to 48000 and clamps to [8000, 192000]. WavePlayer uses loop-aware 4-point Catmull-Rom and prefers `AudioStreamWAV::load_from_file` for on-disk WAVs. OnePole/SVFilter bypass when cutoff ≥ 0.45·sr or the 20 kHz spatial “open” sentinel. Oscillator clamps `dt` to [0, 0.49] with DC hold at 0. Tests: `test_symphony_p4_rate.cpp`. Suite: 237/237.

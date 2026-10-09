@@ -462,9 +462,9 @@ TEST_CASE("[Symphony][Playback] Spatial wrapper rejects unsupported streams") {
 	eight_bit.instantiate();
 	eight_bit->set_format(AudioStreamWAV::FORMAT_8_BITS);
 	eight_bit->set_path("user://symphony_fake_8bit.wav");
-	CHECK_FALSE(SpatialGraphWrapper::is_wrappable_wav(eight_bit));
-	CHECK_FALSE(SpatialGraphWrapper::needs_wrapping(eight_bit));
-	CHECK(SpatialGraphWrapper::create_spatial_stream(eight_bit).is_null());
+	// N3: WavePlayer decodes 8-bit/QOA/ADPCM, so any pathed WAV is wrappable.
+	CHECK(SpatialGraphWrapper::is_wrappable_wav(eight_bit));
+	CHECK(SpatialGraphWrapper::needs_wrapping(eight_bit));
 
 	Ref<AudioStreamSymphony> already;
 	already.instantiate();

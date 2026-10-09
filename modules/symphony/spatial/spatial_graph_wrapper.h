@@ -7,8 +7,8 @@
 #include "scene/resources/audio/audio_stream_wav.h"
 
 // Factory that generates a spatial-processing AudioStreamSymphony for plain
-// AudioStreamWAV resources (16-bit PCM only) that don't have their own graph.
-// Unsupported formats are not wrapped — callers keep native Godot playback.
+// AudioStreamWAV resources that don't have their own graph. WavePlayer decodes
+// 8-bit / IMA ADPCM / QOA to PCM16 at create time; non-WAV streams are not wrapped.
 //
 // The generated graph:
 //   WavePlayer → OnePole (air absorption) → SVFilter LP (occlusion) → Gain → GraphOutput
@@ -30,14 +30,14 @@ public:
 	static StringName param_occlusion_cutoff() { return SNAME("spatial_occlusion_cutoff"); }
 	static StringName param_gain() { return SNAME("spatial_gain"); }
 
-	// Create a wrapped AudioStreamSymphony for a 16-bit PCM WAV with a resource path.
-	// Returns null if the stream cannot be loaded by WavePlayer (wrong type/format/path).
+	// Create a wrapped AudioStreamSymphony for a WAV with a resource path.
+	// Returns null if the stream cannot be loaded by WavePlayer (wrong type/path).
 	static Ref<AudioStreamSymphony> create_spatial_stream(const Ref<AudioStream> &p_source, bool p_loop = false);
 
-	// True only when wrapping will succeed (16-bit WAV with a path, not already Symphony).
+	// True only when wrapping will succeed (WAV with a path, not already Symphony).
 	static bool needs_wrapping(const Ref<AudioStream> &p_stream);
 
-	// True when p_stream is a 16-bit PCM AudioStreamWAV with a non-empty resource path.
+	// True when p_stream is an AudioStreamWAV with a non-empty resource path.
 	static bool is_wrappable_wav(const Ref<AudioStream> &p_stream);
 
 	// Compute occlusion cutoff from transmission values.

@@ -4,15 +4,20 @@
 #include "../../core/symphony_operator_registry.h"
 #include "../../core/symphony_arena_allocator.h"
 #include "../../core/symphony_trigger.h"
-#include "scene/resources/audio/audio_stream_wav.h"
 #include "core/io/resource_loader.h"
+#include "core/math/math_funcs.h"
+#include "core/variant/variant.h"
+#include "scene/resources/audio/audio_stream.h"
+#include "scene/resources/audio/audio_stream_wav.h"
+#include "servers/audio/audio_server.h"
 #include <cmath>
 
 // Plays AudioStreamWAV samples with pitch control and loop points.
 // Two modes:
 //   Reference: reads from AudioStreamWAV resource's internal buffer (zero-copy)
 //   Baked: PCM copied into arena at compile time (cache-friendly)
-// Only supports 16-bit PCM mono/stereo (most common game audio format).
+// All AudioStreamWAV formats are decoded to PCM16 at create time (main thread):
+// 8-bit widens; IMA ADPCM / QOA render via instantiate_playback()->mix().
 class SymphonyWavePlayer : public SymphonyOperator {
 private:
 	// Pin pointers
@@ -202,6 +207,103 @@ public:
 		memcpy(&direction, p_buffer + sizeof(double) + sizeof(bool), sizeof(int8_t));
 	}
 
+	// Decode any AudioStreamWAV format into interleaved PCM16 (main thread only).
+	// 8-bit widens; IMA ADPCM / QOA mix via playback at 1:1 stream-rate frames.
+	static bool decode_to_pcm16(const Ref<AudioStreamWAV> &p_wav, Vector<uint8_t> &r_pcm16, bool &r_stereo, int32_t &r_length_samples) {
+		if (p_wav.is_null()) {
+			return false;
+		}
+		r_stereo = p_wav->is_stereo();
+		const int channels = r_stereo ? 2 : 1;
+		const AudioStreamWAV::Format fmt = p_wav->get_format();
+
+		if (fmt == AudioStreamWAV::FORMAT_16_BITS) {
+			r_pcm16 = p_wav->get_data();
+			if (r_pcm16.is_empty()) {
+				r_length_samples = 0;
+				return true;
+			}
+			if ((r_pcm16.size() % (2 * channels)) != 0) {
+				return false;
+			}
+			r_length_samples = (int32_t)(r_pcm16.size() / (2 * channels));
+			return true;
+		}
+
+		if (fmt == AudioStreamWAV::FORMAT_8_BITS) {
+			Vector<uint8_t> raw = p_wav->get_data();
+			if (raw.is_empty()) {
+				r_pcm16.clear();
+				r_length_samples = 0;
+				return true;
+			}
+			if ((raw.size() % channels) != 0) {
+				return false;
+			}
+			r_length_samples = (int32_t)(raw.size() / channels);
+			r_pcm16.resize((size_t)r_length_samples * (size_t)channels * 2);
+			const int8_t *src = reinterpret_cast<const int8_t *>(raw.ptr());
+			int16_t *dst = reinterpret_cast<int16_t *>(r_pcm16.ptrw());
+			const int n = r_length_samples * channels;
+			for (int i = 0; i < n; i++) {
+				dst[i] = (int16_t)src[i] << 8;
+			}
+			return true;
+		}
+
+		if (fmt != AudioStreamWAV::FORMAT_IMA_ADPCM && fmt != AudioStreamWAV::FORMAT_QOA) {
+			return false;
+		}
+
+		Ref<AudioStreamPlayback> pb = p_wav->instantiate_playback();
+		if (pb.is_null()) {
+			return false;
+		}
+		AudioServer *server = AudioServer::get_singleton();
+		if (server == nullptr) {
+			return false;
+		}
+		const float stream_rate = (float)p_wav->get_mix_rate();
+		const float server_rate = server->get_mix_rate();
+		if (!(stream_rate > 0.0f) || !(server_rate > 0.0f)) {
+			return false;
+		}
+		// mix_increment ∝ stream_rate * rate_scale / server_rate; choose scale for 1:1 frames.
+		const float rate_scale = server_rate / stream_rate;
+		const double length_sec = p_wav->get_length();
+		const int total = MAX(1, (int)Math::ceil(length_sec * (double)stream_rate));
+
+		pb->start(0.0);
+		Vector<AudioFrame> frames;
+		frames.resize(total);
+		int filled = 0;
+		while (filled < total) {
+			const int want = MIN(512, total - filled);
+			const int got = pb->mix(frames.ptrw() + filled, rate_scale, want);
+			if (got <= 0) {
+				break;
+			}
+			filled += got;
+		}
+		if (filled <= 0) {
+			return false;
+		}
+
+		r_length_samples = filled;
+		r_pcm16.resize((size_t)filled * (size_t)channels * 2);
+		int16_t *dst = reinterpret_cast<int16_t *>(r_pcm16.ptrw());
+		for (int i = 0; i < filled; i++) {
+			if (r_stereo) {
+				dst[i * 2] = (int16_t)CLAMP(frames[i].left * 32767.0f, -32768.0f, 32767.0f);
+				dst[i * 2 + 1] = (int16_t)CLAMP(frames[i].right * 32767.0f, -32768.0f, 32767.0f);
+			} else {
+				const float mono = 0.5f * (frames[i].left + frames[i].right);
+				dst[i] = (int16_t)CLAMP(mono * 32767.0f, -32768.0f, 32767.0f);
+			}
+		}
+		return true;
+	}
+
 	static void register_operator() {
 		OperatorDescriptor desc;
 		desc.type_name = "WavePlayer";
@@ -239,50 +341,60 @@ public:
 			return wp; // No resource — will output silence
 		}
 
-		// Prefer load_from_file for on-disk WAVs; ResourceLoader::load is for imported .res.
-		Dictionary options;
-		Ref<AudioStreamWAV> wav = AudioStreamWAV::load_from_file(path, options);
+		// Prefer load_from_file for on-disk .wav; ResourceLoader for imported .res/.tres.
+		Ref<AudioStreamWAV> wav;
+		const String ext = path.get_extension().to_lower();
+		if (ext == "wav") {
+			Dictionary options;
+			wav = AudioStreamWAV::load_from_file(path, options);
+		}
 		if (wav.is_null()) {
 			wav = ResourceLoader::load(path, "AudioStreamWAV");
 		}
 		if (wav.is_null()) {
+			ERR_PRINT_ONCE(vformat("SymphonyWavePlayer: failed to load AudioStreamWAV '%s'.", path));
 			return wp;
 		}
 
-		// Only support 16-bit PCM
-		if (wav->get_format() != AudioStreamWAV::FORMAT_16_BITS) {
+		Vector<uint8_t> pcm16;
+		bool stereo = false;
+		int32_t length_samples = 0;
+		if (!decode_to_pcm16(wav, pcm16, stereo, length_samples)) {
+			ERR_PRINT_ONCE(vformat("SymphonyWavePlayer: failed to decode '%s' (unsupported or corrupt AudioStreamWAV).", path));
+			return wp;
+		}
+		if (length_samples <= 0 || pcm16.is_empty()) {
+			ERR_PRINT_ONCE(vformat("SymphonyWavePlayer: decoded empty PCM from '%s'.", path));
 			return wp;
 		}
 
 		bool bake = p_params.has("bake_audio") ? ((float)p_params["bake_audio"] > 0.5f) : false;
-		wp->stereo = wav->is_stereo();
-		int channels = wp->stereo ? 2 : 1;
-		Vector<uint8_t> raw_data = wav->get_data();
-		wp->pcm_length_samples = raw_data.size() / (2 * channels); // 2 bytes per sample per channel
+		wp->stereo = stereo;
+		wp->pcm_length_samples = length_samples;
 
 		if (bake) {
 			// Copy PCM into arena — but only if it fits the arena budget.
 			// Budget: 960,000 bytes (5s stereo 16-bit at 48kHz).
 			// Larger files fall back to reference mode to avoid arena overflow.
-			size_t byte_count = raw_data.size();
+			size_t byte_count = pcm16.size();
 			if (byte_count <= 960000) {
 				void *arena_buf = p_arena.alloc(byte_count, 16);
 				if (arena_buf) {
-					memcpy(arena_buf, raw_data.ptr(), byte_count);
+					memcpy(arena_buf, pcm16.ptr(), byte_count);
 					wp->pcm_data = (const int16_t *)arena_buf;
 				} else {
 					// Arena alloc failed — fall back to reference mode
-					wp->pcm_data_copy = raw_data;
+					wp->pcm_data_copy = pcm16;
 					wp->pcm_data = (const int16_t *)wp->pcm_data_copy.ptr();
 				}
 			} else {
 				// File too large for arena budget — use reference mode instead
-				wp->pcm_data_copy = raw_data;
+				wp->pcm_data_copy = pcm16;
 				wp->pcm_data = (const int16_t *)wp->pcm_data_copy.ptr();
 			}
 		} else {
 			// Reference mode: store data copy to keep pointer alive
-			wp->pcm_data_copy = raw_data;
+			wp->pcm_data_copy = pcm16;
 			wp->pcm_data = (const int16_t *)wp->pcm_data_copy.ptr();
 		}
 

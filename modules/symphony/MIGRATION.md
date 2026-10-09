@@ -5,9 +5,10 @@ Update this file with each commit that changes a public API.
 
 ## Status
 
-- **Milestone:** M3 C++ complete. Tech-fix plan **P0 + P1 + P1b + P3 + P4** landed; **S0 / music N0 closed**; **S1** in progress.
+- **Milestone:** M3 C++ complete. Tech-fix plan **P0 + P1 + P1b + P2 + P3 + P4** landed; **S0 / music N0 closed**; **S1** in progress.
 - **Branch:** `features/symphony_fixed`
-- **Tests:** 237 Symphony cases (2026-10-09). Editor TSan (`.san`) after P1b: 218/218 green at re-baseline time (T3 landed immediately after; same race profile) with **1** data-race warning — same count as the P0 baseline (`DynamicRangeHigh` global; frames unresolved; not a Symphony frame). **New Symphony-frame races vs P0 = 0.**
+- **Tests:** 241 Symphony cases (2026-10-09, +P2). Editor TSan (`.san`) after P1b: 218/218 green at re-baseline time (T3 landed immediately after; same race profile) with **1** data-race warning — same count as the P0 baseline (`DynamicRangeHigh` global; frames unresolved; not a Symphony frame). **New Symphony-frame races vs P0 = 0.**
+- **P2 audible:** WavePlayer decodes all `AudioStreamWAV` formats to PCM16 at create; spatial wrapper accepts any pathed WAV. game-template 3D pool: `attenuation_filter_db=0`, `max_db=24`.
 - **P3 DSP:** Saturator HIIR 2× half-band + u-domain ADAA; Waveshaper shared preset tables + 3-way ADAA + continuous foldback; FM Carson clamp (no output LPF); staircase LPF `min(18000, 0.4·sr)`; FormantOsc harmonic blend; DC blocker `R=exp(−2π·15/sr)`; Biquad 5 ms cutoff/Q smoothing.
 - **P4 rate/sampler:** SFX mix_rate default 48000 (clamp [8000,192000]); `symphony_rate_policy.h` for music/offline; WavePlayer Hermite + loop-aware taps; spatial open LPF bypass; oscillator frequency floor.
 - **SeqLock** moved from `spatial/symphony_seqlock.h` to `core/symphony_seqlock.h`.

@@ -498,7 +498,7 @@ Parameter values are floats unless noted. Enum parameters take the integer index
 | **Noise** | — → `output` | `mode` (0 white, 1 pink), `seed` (0–16777215), `deterministic_seed` (off: mix the seed with the voice; on: the authored seed alone, so every voice matches) |
 | **LFO** | `rate`, `amplitude` → `output` (float) | `rate` Hz, `amplitude`, `waveform` (0 sine, 1 triangle, 2 saw, 3 square) |
 | **Constant** | — → `output` | `value` |
-| **WavePlayer** | `gate` (trigger), `pitch` → `output`, `finished` (trigger) | `resource_path`, `bake_audio`, `loop_mode` (0 none, 1 forward, 2 ping-pong), `loop_start` / `loop_end` (samples; end 0 = file end), `pitch_scale`, `auto_play` |
+| **WavePlayer** | `gate` (trigger), `pitch` → `output`, `finished` (trigger) | `resource_path`, `bake_audio`, `loop_mode` (0 none, 1 forward, 2 ping-pong), `loop_start` / `loop_end` (samples; end 0 = file end), `pitch_scale`, `auto_play`. Decodes all `AudioStreamWAV` formats to PCM16 at create (8-bit widen; IMA ADPCM/QOA via playback mix). Decode failure prints once and yields silence. |
 | **FMOscillator** | `carrier_freq`, `mod_freq`, `mod_index`, `mod_input` (audio) → `audio_out` | `carrier_freq` Hz, `mod_freq` Hz, `mod_index` (0–10). Internal modulator is Carson-clamped so sidebands stay under ~0.45·sr; external `mod_input` is not clamped |
 | **FormantOsc** | `fundamental_freq`, `formant_freq`, `bandwidth` → `audio_out` | `fundamental_freq` Hz, `formant_freq` Hz, `bandwidth` Hz. Non-integer formant ratios blend harmonics `n` and `n+1` (no wrap click) |
 
@@ -2059,6 +2059,11 @@ func _on_music_slider_changed(value: float):
 ---
 
 ## Changelog
+
+### P2 — Quick audible wins (2026-10-09)
+
+- **3D pool (game-template):** `attenuation_filter_db = 0` and `max_db = 24` so Godot’s distance filter does not double-dip Symphony air absorption and the ±24 dB volume stack is not clamped at 3 dB.
+- **WavePlayer:** decodes 8-bit / IMA ADPCM / QOA to PCM16 at create time; spatial wrapper accepts any pathed `AudioStreamWAV`.
 
 ### P4 — Sampler and rate path (2026-10-09)
 
