@@ -105,4 +105,34 @@ TEST_CASE("[Symphony][Spatial][EarlyReflections] Arena byte estimate is finite a
 	CHECK(bytes >= min_expected * sizeof(float));
 }
 
+
+TEST_CASE("[Symphony][Spatial][EarlyReflections] Relative taps distinct for a cube") {
+	SymphonyShoeboxER::TapSet set;
+	ER::compute_relative(Vector3(8, 8, 8), 0.7f, 343.0f, set);
+	int distinct = 0;
+	for (int i = 0; i < ER::NUM_WALLS; i++) {
+		if (set.taps[i].delay_seconds > 0.0f) {
+			distinct++;
+		}
+		for (int j = i + 1; j < ER::NUM_WALLS; j++) {
+			CHECK(Math::abs(set.taps[i].delay_seconds - set.taps[j].delay_seconds) > 1e-5f);
+		}
+	}
+	CHECK(distinct == 6);
+}
+
+TEST_CASE("[Symphony][Spatial][EarlyReflections] First reflection 10×5×8 ≈ 9.2 ms") {
+	SymphonyShoeboxER::TapSet set;
+	ER::compute_relative(Vector3(10, 5, 8), 0.7f, 343.0f, set);
+	// Off-centre relative-to-direct model (P6 defaults).
+	CHECK(set.first_reflection_s * 1000.0f == doctest::Approx(9.2f).epsilon(0.5));
+}
+
+TEST_CASE("[Symphony][Spatial][EarlyReflections] First reflection grows with room size") {
+	SymphonyShoeboxER::TapSet small, large;
+	ER::compute_relative(Vector3(4, 3, 4), 0.7f, 343.0f, small);
+	ER::compute_relative(Vector3(20, 8, 16), 0.7f, 343.0f, large);
+	CHECK(large.first_reflection_s > small.first_reflection_s);
+}
+
 } // namespace TestSymphonyEarlyReflections

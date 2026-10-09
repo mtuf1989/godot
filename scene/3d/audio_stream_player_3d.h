@@ -88,7 +88,7 @@ private:
 	static AudioFrame _calc_output_vol_stereo(const Vector3 &source_dir, real_t panning_strength);
 
 #ifndef PHYSICS_3D_DISABLED
-	void _calc_reverb_vol(Area3D *area, Vector3 listener_area_pos, const FixedVector<AudioFrame, VOLUME_VECTOR_SIZE> &direct_path_vol, FixedVector<AudioFrame, VOLUME_VECTOR_SIZE> &reverb_vol);
+	void _calc_reverb_vol(Area3D *area, Vector3 listener_area_pos, const FixedVector<AudioFrame, VOLUME_VECTOR_SIZE> &send_path_vol, FixedVector<AudioFrame, VOLUME_VECTOR_SIZE> &reverb_vol);
 #endif // PHYSICS_3D_DISABLED
 
 	static void _listener_changed_cb(void *self) { reinterpret_cast<AudioStreamPlayer3D *>(self)->force_update_panning = true; }
@@ -120,7 +120,11 @@ private:
 
 	DopplerTracking doppler_tracking = DOPPLER_TRACKING_DISABLED;
 
+	float _get_model_attenuation_db(float p_distance) const;
 	float _get_attenuation_db(float p_distance) const;
+	float _get_send_attenuation_db(float p_distance) const;
+
+	float direct_volume_db = 0.0f;
 
 	float panning_strength = 1.0f;
 	float cached_global_panning_strength = 0.5f;
@@ -148,6 +152,9 @@ public:
 
 	void set_volume_db(float p_volume);
 	float get_volume_db() const;
+
+	void set_direct_volume_db(float p_volume);
+	float get_direct_volume_db() const;
 
 	void set_volume_linear(float p_volume);
 	float get_volume_linear() const;

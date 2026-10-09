@@ -155,6 +155,10 @@ private:
 	// assigns each cluster a pre-allocated pool slot. Never mutates AudioServer.
 	ReverbPool reverb_pool;
 	bool reverb_pool_enabled = true;
+	float reverb_reference_distance = 1.0f;
+	float reverb_min_drr_db = -12.0f;
+	float reverb_max_amount = 2.0f;
+	float reverb_drr_bias_db = 0.0f;
 	void _update_reverb_pool(float p_delta);
 
 	// Portal propagation (Task 15) — rooms=nodes, portals=weighted edges.
@@ -308,15 +312,20 @@ public:
 	void set_reverb_pool_enabled(bool p_enabled) { reverb_pool_enabled = p_enabled; }
 	bool get_reverb_pool_enabled() const { return reverb_pool_enabled; }
 
-	// Per-slot FDN parameters (for GDScript to drive persistent reverb buses).
+	// Per-slot late-reverb / ER parameters (for GDScript → AudioEffectSymphonyReverb).
 	float get_reverb_slot_decay_time(int p_slot) const;
-	float get_reverb_slot_damping(int p_slot) const;
-	float get_reverb_slot_room_size(int p_slot) const;
-	float get_reverb_slot_wet_gain(int p_slot) const;
+	float get_reverb_slot_absorption_high(int p_slot) const;
+	float get_reverb_slot_hf_ratio(int p_slot) const;
+	Vector3 get_reverb_slot_dimensions(int p_slot) const;
+	float get_reverb_slot_volume(int p_slot) const;
+	float get_reverb_slot_er_reflection(int p_slot) const;
+	float get_reverb_slot_critical_distance(int p_slot) const;
 
 	// Per-emitter resolved routing (which slot a voice sends to, and how much).
 	int get_emitter_reverb_slot(int p_voice_slot) const;
 	float get_emitter_reverb_send(int p_voice_slot) const;
+	float get_emitter_critical_distance(int p_voice_slot) const;
+	float get_emitter_reverb_amount(int p_voice_slot) const;
 	// During migration, the emitter also sends to a previous slot.
 	int get_emitter_reverb_prev_slot(int p_voice_slot) const;
 	float get_emitter_reverb_prev_send(int p_voice_slot) const;

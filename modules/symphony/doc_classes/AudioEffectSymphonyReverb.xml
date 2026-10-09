@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<class name="AudioEffectSymphonyReverb" inherits="AudioEffect" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../../doc/class.xsd">
+	<brief_description>
+		Symphony FDN late reverb with shoebox early reflections for shared wet buses.
+	</brief_description>
+	<description>
+		A physically oriented reverb used by the Symphony spatial reverb pool. Combines stereo early reflections from a shoebox image-source model with an 8-line feedback delay network. Parameters are published through a seqlock so the main thread can call [method set_room] every frame while the audio thread processes.
+		Typical wet-bus setup: [member dry] = [code]0[/code], [member wet] = [code]1[/code], [member auto_predelay] enabled so the late tail starts at the first reflection.
+	</description>
+	<methods>
+		<method name="set_room">
+			<return type="void" />
+			<param index="0" name="rt60" type="float" />
+			<param index="1" name="hf_ratio" type="float" />
+			<param index="2" name="dimensions" type="Vector3" />
+			<param index="3" name="er_reflection" type="float" />
+			<description>
+				Atomically updates decay time, HF decay ratio, room dimensions, and early-reflection coefficient.
+			</description>
+		</method>
+		<method name="compute_first_reflection_ms" qualifiers="static">
+			<return type="float" />
+			<param index="0" name="dimensions" type="Vector3" />
+			<description>
+				Returns the first-reflection delay in milliseconds for the given shoebox dimensions (metres).
+			</description>
+		</method>
+	</methods>
+	<members>
+		<member name="rt60" type="float" setter="set_rt60" getter="get_rt60" default="1.2">
+			Late-reverb decay time (T60) in seconds.
+		</member>
+		<member name="hf_rt60_ratio" type="float" setter="set_hf_rt60_ratio" getter="get_hf_rt60_ratio" default="0.5">
+			Ratio of high-frequency T60 to broadband T60. Lower values damp highs faster.
+		</member>
+		<member name="room_dimensions" type="Vector3" setter="set_room_dimensions" getter="get_room_dimensions" default="Vector3(8, 3, 6)">
+			Shoebox width, height, and depth in metres for early reflections and mean delay.
+		</member>
+		<member name="er_level" type="float" setter="set_er_level" getter="get_er_level" default="1.0">
+			Gain of the early-reflection contribution relative to the late FDN.
+		</member>
+		<member name="er_reflection" type="float" setter="set_er_reflection" getter="get_er_reflection" default="0.7">
+			Wall reflection coefficient for early taps (typically [code]sqrt(1 - alpha_mean)[/code]).
+		</member>
+		<member name="auto_predelay" type="bool" setter="set_auto_predelay" getter="get_auto_predelay" default="true">
+			When [code]true[/code], late-reverb pre-delay follows the first reflection time.
+		</member>
+		<member name="predelay_ms" type="float" setter="set_predelay_ms" getter="get_predelay_ms" default="20.0">
+			Manual pre-delay in milliseconds when [member auto_predelay] is [code]false[/code].
+		</member>
+		<member name="wet" type="float" setter="set_wet" getter="get_wet" default="1.0">
+			Wet mix level.
+		</member>
+		<member name="dry" type="float" setter="set_dry" getter="get_dry" default="0.0">
+			Dry mix level. Wet buses usually keep this at [code]0[/code].
+		</member>
+	</members>
+</class>

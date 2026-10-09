@@ -1,5 +1,9 @@
 # Dev Log — Symphony Audio System
 
+## P6 (2026-10-09)
+
+Spatial reverb rework: header-only `dsp/symphony_fdn_core.h` + `dsp/symphony_shoebox_er.h`; FDNReverb/EarlyReflections wrap the cores (fractional taps, ER A/B crossfade, always-write pre-delay). New `AudioEffectSymphonyReverb` (SeqLock params, ER+FDN, `process_silence=false`). Godot core: `AudioStreamPlayer3D.direct_volume_db` for DRR (send path excludes it). Reverb pool SlotParams → decay/absorption_high/hf_ratio/volume/dims/er_reflection/critical_distance; `reverb_level.h` DRR amount. GDScript: wet buses use Symphony reverb (`dry=0`,`wet=1`), proxy after apparent position, `get_emitter_reverb_amount` (no portal double-apply), volume stack split. FDN Mix presets retuned ~+6 dB. Tests: fdn_core, reverb_effect, early relative, spatial pool rewrite, ASP3D bind. Suite: 270/270.
+
 ## Music N1 (2026-10-09)
 
 Transport: `runtime/symphony_music_transport.h` (960 PPQN, tempo step/ramp, meter, tick↔frame). Scheduler: `runtime/symphony_music_scheduler.h` (bounded phrase handoff, NoteOff-before-NoteOn, SeqLock snapshot). BeatClock: incremental `beat_acc`, loop-wrap, multi-beat hitch (cap 8), `fire_ahead_s`, `beat_hit`/`bar_hit` carry `target_time`. P7 R: `TriggerInput`/`trigger_at`/`get_frames_rendered` sample-accurate. `AudioStreamPlaybackInteractive::get_playback_position` returns current clip position. Tests: `test_symphony_music_n1.cpp`. Suite: 250/250. Stream class `AudioStreamSymphonyMusic` deferred to N2 wiring.

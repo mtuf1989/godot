@@ -32,8 +32,22 @@ SpatialAcousticsEngine::SpatialAcousticsEngine() {
 	ProjectSettings::get_singleton()->set_custom_property_info(PropertyInfo(
 			Variant::INT, "audio/symphony/reverb_pool_slots", PROPERTY_HINT_RANGE, "1,8,1"));
 
+	reverb_reference_distance = GLOBAL_DEF("audio/symphony/reverb_reference_distance", 1.0f);
+	ProjectSettings::get_singleton()->set_custom_property_info(PropertyInfo(
+			Variant::FLOAT, "audio/symphony/reverb_reference_distance", PROPERTY_HINT_RANGE, "0.05,50,0.01,suffix:m"));
+	reverb_min_drr_db = GLOBAL_DEF("audio/symphony/reverb_min_drr_db", -12.0f);
+	ProjectSettings::get_singleton()->set_custom_property_info(PropertyInfo(
+			Variant::FLOAT, "audio/symphony/reverb_min_drr_db", PROPERTY_HINT_RANGE, "-48,0,0.1,suffix:dB"));
+	reverb_max_amount = GLOBAL_DEF("audio/symphony/reverb_max_amount", 2.0f);
+	ProjectSettings::get_singleton()->set_custom_property_info(PropertyInfo(
+			Variant::FLOAT, "audio/symphony/reverb_max_amount", PROPERTY_HINT_RANGE, "0,4,0.01"));
+	reverb_drr_bias_db = GLOBAL_DEF("audio/symphony/reverb_drr_bias_db", 0.0f);
+	ProjectSettings::get_singleton()->set_custom_property_info(PropertyInfo(
+			Variant::FLOAT, "audio/symphony/reverb_drr_bias_db", PROPERTY_HINT_RANGE, "-12,12,0.1,suffix:dB"));
+
 	ReverbPool::Config rp_cfg;
 	rp_cfg.active_slots = reverb_slots;
+	rp_cfg.drr_bias_db = reverb_drr_bias_db;
 	reverb_pool.init(rp_cfg);
 
 	// Air absorption artistic scale knob (Phase 4.1). Physical default 1.0; the
@@ -290,7 +304,12 @@ void SpatialAcousticsEngine::_update_reverb_pool(float p_delta) {
 			continue;
 		}
 		const SpatialParams &sp = emitters[i].smoothed;
-		reverb_pool.assign(emitters[i].voice_slot, sp.rt60, sp.damping, sp.reverb_send, sp.room_volume);
+		// Prefer authored shoebox from target (discrete); fall back to smoothed.
+		Vector3 dims = emitters[i].target.shoebox_dimensions;
+		if (dims.x <= 0.0f || dims.y <= 0.0f || dims.z <= 0.0f) {
+			dims = sp.shoebox_dimensions;
+		}
+		reverb_pool.assign(emitters[i].voice_slot, sp.rt60, sp.damping, sp.reverb_send, sp.room_volume, dims);
 	}
 
 	// Advance crossfades and recompute per-slot aggregated FDN parameters.
@@ -1032,6 +1051,7 @@ Vector3 SpatialAcousticsEngine::get_emitter_shoebox_dimensions(int p_voice_slot)
 void SpatialAcousticsEngine::set_reverb_pool_slots(int p_slots) {
 	ReverbPool::Config cfg = reverb_pool.get_config();
 	cfg.active_slots = CLAMP(p_slots, 1, ReverbPool::MAX_SLOTS);
+	cfg.drr_bias_db = reverb_drr_bias_db;
 	reverb_pool.init(cfg);
 }
 
@@ -1039,16 +1059,81 @@ float SpatialAcousticsEngine::get_reverb_slot_decay_time(int p_slot) const {
 	return reverb_pool.slot_params(p_slot).decay_time;
 }
 
-float SpatialAcousticsEngine::get_reverb_slot_damping(int p_slot) const {
-	return reverb_pool.slot_params(p_slot).damping;
+float SpatialAcousticsEngine::get_reverb_slot_absorption_high(int p_slot) const {
+	return reverb_pool.slot_params(p_slot).absorption_high;
 }
 
-float SpatialAcousticsEngine::get_reverb_slot_room_size(int p_slot) const {
-	return reverb_pool.slot_params(p_slot).room_size;
+float SpatialAcousticsEngine::get_reverb_slot_hf_ratio(int p_slot) const {
+	return reverb_pool.slot_params(p_slot).hf_ratio;
 }
 
-float SpatialAcousticsEngine::get_reverb_slot_wet_gain(int p_slot) const {
-	return reverb_pool.slot_params(p_slot).wet_gain;
+Vector3 SpatialAcousticsEngine::get_reverb_slot_dimensions(int p_slot) const {
+	const ReverbPool::SlotParams &sp = reverb_pool.slot_params(p_slot);
+	return Vector3(sp.dim_x, sp.dim_y, sp.dim_z);
+}
+
+float SpatialAcousticsEngine::get_reverb_slot_volume(int p_slot) const {
+	return reverb_pool.slot_params(p_slot).volume;
+}
+
+float SpatialAcousticsEngine::get_reverb_slot_er_reflection(int p_slot) const {
+	return reverb_pool.slot_params(p_slot).er_reflection;
+}
+
+float SpatialAcousticsEngine::get_reverb_slot_critical_distance(int p_slot) const {
+	return reverb_pool.slot_params(p_slot).critical_distance;
+}
+
+float SpatialAcousticsEngine::get_emitter_critical_distance(int p_voice_slot) const {
+	float rt60 = 0.0f;
+	float volume = 0.0f;
+	Vector3 dims;
+	if (!reverb_pool.emitter_descriptor(p_voice_slot, rt60, volume, dims)) {
+		return 1.0f;
+	}
+	if (volume <= 0.0f && dims.x > 0.0f) {
+		volume = dims.x * dims.y * dims.z;
+	}
+	return SymphonyReverbLevel::critical_distance(volume > 0.0f ? volume : 1.0f, rt60 > 0.01f ? rt60 : 1.0f, reverb_drr_bias_db);
+}
+
+float SpatialAcousticsEngine::get_emitter_reverb_amount(int p_voice_slot) const {
+	int slot = -1;
+	float send = 0.0f;
+	if (!reverb_pool.emitter_slot(p_voice_slot, slot, send)) {
+		return 0.0f;
+	}
+
+	float rt60 = 0.0f;
+	float volume = 0.0f;
+	Vector3 dims;
+	reverb_pool.emitter_descriptor(p_voice_slot, rt60, volume, dims);
+	if (volume <= 0.0f) {
+		volume = reverb_pool.slot_params(slot).volume;
+	}
+	if (rt60 <= 0.01f) {
+		rt60 = reverb_pool.slot_params(slot).decay_time;
+	}
+	if (volume <= 0.0f && dims.x > 0.0f) {
+		volume = dims.x * dims.y * dims.z;
+	}
+
+	const float r_c = SymphonyReverbLevel::critical_distance(
+			volume > 0.0f ? volume : 1.0f, rt60 > 0.01f ? rt60 : 1.0f, reverb_drr_bias_db);
+
+	float distance = 0.0f;
+	const int *idx_ptr = slot_to_emitter.getptr(p_voice_slot);
+	if (idx_ptr) {
+		distance = emitters[*idx_ptr].source_position.distance_to(listener_position);
+	}
+
+	float a_r = 1.0f;
+	if (SymphonyVoicePool *pool = SymphonyVoicePool::get_singleton()) {
+		a_r = pool->get_slot_attenuation_volume(p_voice_slot);
+	}
+
+	return SymphonyReverbLevel::amount(send, distance, r_c, rt60, a_r,
+			reverb_reference_distance, reverb_min_drr_db, reverb_max_amount);
 }
 
 int SpatialAcousticsEngine::get_emitter_reverb_slot(int p_voice_slot) const {
@@ -1187,9 +1272,14 @@ void SpatialAcousticsEngine::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_reverb_pool_enabled", "enabled"), &SpatialAcousticsEngine::set_reverb_pool_enabled);
 	ClassDB::bind_method(D_METHOD("get_reverb_pool_enabled"), &SpatialAcousticsEngine::get_reverb_pool_enabled);
 	ClassDB::bind_method(D_METHOD("get_reverb_slot_decay_time", "slot"), &SpatialAcousticsEngine::get_reverb_slot_decay_time);
-	ClassDB::bind_method(D_METHOD("get_reverb_slot_damping", "slot"), &SpatialAcousticsEngine::get_reverb_slot_damping);
-	ClassDB::bind_method(D_METHOD("get_reverb_slot_room_size", "slot"), &SpatialAcousticsEngine::get_reverb_slot_room_size);
-	ClassDB::bind_method(D_METHOD("get_reverb_slot_wet_gain", "slot"), &SpatialAcousticsEngine::get_reverb_slot_wet_gain);
+	ClassDB::bind_method(D_METHOD("get_reverb_slot_absorption_high", "slot"), &SpatialAcousticsEngine::get_reverb_slot_absorption_high);
+	ClassDB::bind_method(D_METHOD("get_reverb_slot_hf_ratio", "slot"), &SpatialAcousticsEngine::get_reverb_slot_hf_ratio);
+	ClassDB::bind_method(D_METHOD("get_reverb_slot_dimensions", "slot"), &SpatialAcousticsEngine::get_reverb_slot_dimensions);
+	ClassDB::bind_method(D_METHOD("get_reverb_slot_volume", "slot"), &SpatialAcousticsEngine::get_reverb_slot_volume);
+	ClassDB::bind_method(D_METHOD("get_reverb_slot_er_reflection", "slot"), &SpatialAcousticsEngine::get_reverb_slot_er_reflection);
+	ClassDB::bind_method(D_METHOD("get_reverb_slot_critical_distance", "slot"), &SpatialAcousticsEngine::get_reverb_slot_critical_distance);
+	ClassDB::bind_method(D_METHOD("get_emitter_critical_distance", "voice_slot"), &SpatialAcousticsEngine::get_emitter_critical_distance);
+	ClassDB::bind_method(D_METHOD("get_emitter_reverb_amount", "voice_slot"), &SpatialAcousticsEngine::get_emitter_reverb_amount);
 	ClassDB::bind_method(D_METHOD("get_emitter_reverb_slot", "voice_slot"), &SpatialAcousticsEngine::get_emitter_reverb_slot);
 	ClassDB::bind_method(D_METHOD("get_emitter_reverb_send", "voice_slot"), &SpatialAcousticsEngine::get_emitter_reverb_send);
 	ClassDB::bind_method(D_METHOD("get_emitter_reverb_prev_slot", "voice_slot"), &SpatialAcousticsEngine::get_emitter_reverb_prev_slot);

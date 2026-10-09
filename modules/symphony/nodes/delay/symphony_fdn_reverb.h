@@ -5,43 +5,18 @@
 #include "../../core/symphony_arena_allocator.h"
 #include "../../core/symphony_checked_math.h"
 #include "../../core/symphony_denormal_guard.h"
+#include "../../dsp/symphony_fdn_core.h"
 #include "core/math/math_funcs.h"
 
 #include <cmath>
+#include <cstring>
 #include <limits>
 
-// Feedback Delay Network (FDN) reverb operator.
-// Produces a wet reverb signal from an audio input without needing an AudioEffect bus.
-// Configurable as 4-line or 8-line FDN via compile-time parameter "num_lines".
-//
-// Architecture:
-//   audio_in → [pre_delay] → FDN core → audio_out (wet only)
-//
-// FDN core (per sample):
-//   1. Read from each delay line at its tap point
-//   2. Apply Hadamard mixing matrix to the read values
-//   3. Apply per-line one-pole LP damping filter
-//   4. Multiply by decay gain (derived from delay length and decay_time)
-//   5. Add input signal to each line's feedback
-//   6. Write to each delay line
-//
-// The Hadamard matrix ensures energy is distributed across all delay lines,
-// producing dense, colorless reflections.
-//
-// Delay line lengths are derived from room_size using mutually prime ratios
-// to avoid metallic coloration.
-//
-// Arena allocation: all delay line buffers + pre-delay buffer allocated at compile time.
-// Max room_size determines buffer sizes.
-//
+// Feedback Delay Network reverb — wraps SymphonyFDNCore.
+// Pins/params unchanged: room_size → mean delay, damping → hf_ratio = 1−0.9·damping,
+// num_lines → minimum line count (may promote to 8 for mode density).
 class SymphonyFDNReverb : public SymphonyOperator {
 private:
-	static constexpr int MAX_LINES = 8;
-	// Prime-ratio delay multipliers for colorless reflection density
-	// These produce mutually incommensurate delay lengths from a single room_size param
-	static constexpr float DELAY_RATIOS_4[4] = { 1.0f, 1.2599f, 1.4983f, 1.8409f };
-	static constexpr float DELAY_RATIOS_8[8] = { 1.0f, 1.1225f, 1.2599f, 1.4142f, 1.4983f, 1.6818f, 1.8409f, 1.9953f };
-
 	const float *SYMPHONY_RESTRICT audio_in = nullptr;
 	const float *SYMPHONY_RESTRICT room_size_input = nullptr;
 	const float *SYMPHONY_RESTRICT decay_time_input = nullptr;
@@ -49,105 +24,95 @@ private:
 	const float *SYMPHONY_RESTRICT pre_delay_input = nullptr;
 	float *SYMPHONY_RESTRICT audio_out = nullptr;
 
-	// Delay line state
-	float *delay_buffers[MAX_LINES] = {};
-	int delay_lengths[MAX_LINES] = {}; // integer targets (legacy / gains)
-	float delay_lengths_f[MAX_LINES] = {}; // smoothed fractional tap positions
-	float delay_targets_f[MAX_LINES] = {};
-	int write_positions[MAX_LINES] = {};
-	int max_delay_samples = 0;
-	float tap_smooth_coeff = 0.0f; // one-pole toward target over ~20 ms
+	SymphonyFDNCore::State core;
+	SymphonyFDNCore::Design design;
 
-	// One-pole LP damping filters (per line)
-	float damping_state[MAX_LINES] = {};
-
-	// Pre-delay
 	float *pre_delay_buffer = nullptr;
 	int pre_delay_write_pos = 0;
 	int max_pre_delay_samples = 0;
+	float pre_delay_f = 0.0f;
+	float pre_delay_target = 0.0f;
+	float pre_smooth = 1.0f;
 
-	// Configuration
-	int num_lines = 4;
+	int min_lines = 4;
+	int max_delay_samples = 0;
 	float mix_rate = 48000.0f;
-	float default_room_size = 0.5f;     // 0-1 normalized
-	float default_decay_time = 2.0f;    // seconds
-	float default_damping = 0.5f;       // 0-1 (0=no damping, 1=maximum damping)
-	float default_pre_delay_ms = 20.0f; // milliseconds
+	float max_delay_ms = 100.0f;
+	float default_room_size = 0.5f;
+	float default_decay_time = 2.0f;
+	float default_damping = 0.5f;
+	float default_pre_delay_ms = 20.0f;
 
-	// Cached micro-block controls (avoid per-block zipper + pow in hot path).
 	float cached_room_size = -1.0f;
 	float cached_decay_time = -1.0f;
 	float cached_damping = -1.0f;
 	float cached_pre_delay_ms = -1.0f;
-	int cached_pre_delay_samples = 0;
-	float damp_coeff = 0.0f;
-	float line_gains[MAX_LINES] = {};
-	float hadamard_scale = 1.0f;
+
 	uint8_t silent_blocks = 0;
 	static constexpr float ACTIVITY_THRESHOLD = 1e-6f;
 
-	void _refresh_controls(float p_room_size, float p_decay_time, float p_damping, float p_pre_delay_ms) {
-		bool lengths_dirty = (p_room_size != cached_room_size);
-		bool gains_dirty = lengths_dirty || (p_decay_time != cached_decay_time);
-		bool damp_dirty = (p_damping != cached_damping);
-		bool pre_dirty = (p_pre_delay_ms != cached_pre_delay_ms);
-
-		if (lengths_dirty) {
-			_update_delay_lengths(p_room_size);
-			cached_room_size = p_room_size;
-		}
-		if (gains_dirty) {
-			// gain = 10^(-3 * delay_sec / decay) = exp2(log2(10) * -3 * delay_sec / decay)
-			const float log2_10 = 3.321928094887362f;
-			for (int l = 0; l < num_lines; l++) {
-				float delay_sec = (float)delay_lengths[l] / mix_rate;
-				line_gains[l] = exp2f(log2_10 * (-3.0f * delay_sec / p_decay_time));
+	void _refresh(float room_size, float decay_time, float damping, float pre_delay_ms) {
+		bool dirty = (room_size != cached_room_size) || (decay_time != cached_decay_time) || (damping != cached_damping);
+		if (dirty) {
+			const float mean_delay_s = CLAMP(room_size, 0.01f, 1.0f) * (max_delay_ms * 0.001f) * 0.5f;
+			const float hf_ratio = CLAMP(1.0f - 0.9f * damping, 0.05f, 1.0f);
+			SymphonyFDNCore::Design d;
+			if (SymphonyFDNCore::design(mix_rate, min_lines, mean_delay_s, decay_time, hf_ratio, max_delay_samples, d)) {
+				design = d;
+				SymphonyFDNCore::apply_design(core, design, false);
 			}
-			cached_decay_time = p_decay_time;
+			cached_room_size = room_size;
+			cached_decay_time = decay_time;
+			cached_damping = damping;
 		}
-		if (damp_dirty) {
-			damp_coeff = p_damping * 0.7f;
-			cached_damping = p_damping;
-		}
-		if (pre_dirty) {
-			cached_pre_delay_samples = (int)(p_pre_delay_ms * mix_rate / 1000.0f);
-			cached_pre_delay_samples = MIN(cached_pre_delay_samples, max_pre_delay_samples - 1);
-			cached_pre_delay_ms = p_pre_delay_ms;
+		if (pre_delay_ms != cached_pre_delay_ms) {
+			pre_delay_target = pre_delay_ms * mix_rate * 0.001f;
+			pre_delay_target = CLAMP(pre_delay_target, 0.0f, (float)(max_pre_delay_samples - 2));
+			cached_pre_delay_ms = pre_delay_ms;
 		}
 	}
 
+	float _read_pre_delay() const {
+		if (!pre_delay_buffer || pre_delay_f < 0.5f) {
+			return 0.0f; // caller supplies undelayed when target ~0
+		}
+		float read_pos = (float)pre_delay_write_pos - pre_delay_f;
+		while (read_pos < 0.0f) {
+			read_pos += (float)max_pre_delay_samples;
+		}
+		const int idx = (int)read_pos;
+		const float frac = read_pos - (float)idx;
+		int next = idx + 1;
+		if (next >= max_pre_delay_samples) {
+			next = 0;
+		}
+		return pre_delay_buffer[idx] + frac * (pre_delay_buffer[next] - pre_delay_buffer[idx]);
+	}
+
 public:
-	SymphonyFDNReverb(float p_mix_rate, int p_num_lines, int p_max_delay_samples, int p_max_pre_delay_samples,
-			float *p_delay_memory, float *p_pre_delay_memory,
+	SymphonyFDNReverb(float p_mix_rate, int p_min_lines, int p_max_delay_samples, int p_max_pre_delay_samples,
+			float p_max_delay_ms, float *p_delay_memory, float *p_pre_delay_memory,
 			float p_room_size, float p_decay_time, float p_damping, float p_pre_delay_ms)
-			: max_delay_samples(p_max_delay_samples),
-			  pre_delay_buffer(p_pre_delay_memory),
+			: pre_delay_buffer(p_pre_delay_memory),
 			  max_pre_delay_samples(p_max_pre_delay_samples),
-			  num_lines(p_num_lines),
+			  min_lines(p_min_lines),
+			  max_delay_samples(p_max_delay_samples),
 			  mix_rate(p_mix_rate),
+			  max_delay_ms(p_max_delay_ms),
 			  default_room_size(p_room_size),
 			  default_decay_time(p_decay_time),
 			  default_damping(p_damping),
 			  default_pre_delay_ms(p_pre_delay_ms) {
-		for (int l = 0; l < num_lines; l++) {
-			delay_buffers[l] = p_delay_memory + (l * p_max_delay_samples);
-			write_positions[l] = 0;
-			damping_state[l] = 0.0f;
-		}
-		memset(p_delay_memory, 0, sizeof(float) * num_lines * p_max_delay_samples);
+		// Bind with max lines; design may use 4 or 8.
+		SymphonyFDNCore::bind_buffers(core, p_delay_memory, SymphonyFDNCore::MAX_LINES, p_max_delay_samples, p_mix_rate);
 		if (pre_delay_buffer) {
 			memset(pre_delay_buffer, 0, sizeof(float) * p_max_pre_delay_samples);
 		}
-		// ~20 ms smoothing of fractional tap positions (improve_plan §8).
-		{
-			float smooth_samples = 0.020f * mix_rate;
-			tap_smooth_coeff = (smooth_samples > 1.0f) ? (1.0f - exp2f(-1.0f / smooth_samples)) : 1.0f;
-		}
-		hadamard_scale = 1.0f / Math::sqrt((float)num_lines);
-		_refresh_controls(p_room_size, p_decay_time, p_damping, p_pre_delay_ms);
-		for (int l = 0; l < num_lines; l++) {
-			delay_lengths_f[l] = delay_targets_f[l];
-		}
+		const float smooth_n = 0.020f * mix_rate;
+		pre_smooth = (smooth_n > 1.0f) ? (1.0f - exp2f(-1.0f / smooth_n)) : 1.0f;
+		_refresh(p_room_size, p_decay_time, p_damping, p_pre_delay_ms);
+		SymphonyFDNCore::apply_design(core, design, true);
+		pre_delay_f = pre_delay_target;
 	}
 
 	virtual void bind_pins(void **p_input_ptrs, void **p_output_ptrs) override {
@@ -171,75 +136,49 @@ public:
 		decay_time = CLAMP(decay_time, 0.1f, 20.0f);
 		damping = CLAMP(damping, 0.0f, 1.0f);
 		pre_delay_ms = CLAMP(pre_delay_ms, 0.0f, 200.0f);
-
-		_refresh_controls(room_size, decay_time, damping, pre_delay_ms);
-		const int pre_delay_samples = cached_pre_delay_samples;
+		_refresh(room_size, decay_time, damping, pre_delay_ms);
 
 		float peak = 0.0f;
-		for (int32_t i = 0; i < p_num_frames; i++) {
-			float input_sample = audio_in ? audio_in[i] : 0.0f;
+		float wet[SYMPHONY_MICRO_BLOCK_SIZE];
+		float delayed[SYMPHONY_MICRO_BLOCK_SIZE];
 
-			float delayed_input;
-			if (pre_delay_samples > 0 && pre_delay_buffer) {
+		for (int32_t i = 0; i < p_num_frames; i++) {
+			const float input_sample = audio_in ? audio_in[i] : 0.0f;
+			// Always write pre-delay; smooth fractional read (P6).
+			if (pre_delay_buffer) {
 				pre_delay_buffer[pre_delay_write_pos] = input_sample;
-				int read_pos = pre_delay_write_pos - pre_delay_samples;
-				if (read_pos < 0) {
-					read_pos += max_pre_delay_samples;
+				pre_delay_f += (pre_delay_target - pre_delay_f) * pre_smooth;
+				if (pre_delay_f < 0.5f) {
+					delayed[i] = input_sample;
+				} else {
+					delayed[i] = _read_pre_delay();
 				}
-				delayed_input = pre_delay_buffer[read_pos];
 				pre_delay_write_pos = (pre_delay_write_pos + 1) % max_pre_delay_samples;
 			} else {
-				delayed_input = input_sample;
+				delayed[i] = input_sample;
 			}
+		}
 
-			float tap_values[MAX_LINES];
-			for (int l = 0; l < num_lines; l++) {
-				// Smooth fractional tap toward target (single interpolated read, no dual-tap).
-				delay_lengths_f[l] += (delay_targets_f[l] - delay_lengths_f[l]) * tap_smooth_coeff;
-				tap_values[l] = _read_tap_linear(l, delay_lengths_f[l]);
-			}
+		SymphonyFDNCore::process(core, delayed, wet, nullptr, p_num_frames);
 
-			float mixed[MAX_LINES];
-			_hadamard_mix(tap_values, mixed);
-
-			for (int l = 0; l < num_lines; l++) {
-				mixed[l] *= hadamard_scale;
-			}
-
-			float output_sum = 0.0f;
-			for (int l = 0; l < num_lines; l++) {
-				damping_state[l] = (1.0f - damp_coeff) * mixed[l] + damp_coeff * damping_state[l];
-				float feedback = damping_state[l] * line_gains[l];
-				delay_buffers[l][write_positions[l]] = delayed_input + feedback;
-				write_positions[l] = (write_positions[l] + 1) % max_delay_samples;
-				output_sum += tap_values[l];
-				peak = MAX(peak, Math::abs(damping_state[l]));
-			}
-
-			audio_out[i] = output_sum * hadamard_scale;
-			peak = MAX(peak, Math::abs(audio_out[i]));
+		for (int32_t i = 0; i < p_num_frames; i++) {
+			audio_out[i] = wet[i];
+			peak = MAX(peak, Math::abs(wet[i]));
 		}
 
 		if (peak < ACTIVITY_THRESHOLD) {
-			for (int l = 0; l < num_lines; l++) {
-				damping_state[l] = 0.0f;
-			}
 			if (silent_blocks < 255) {
 				silent_blocks++;
 			}
 			activity = (silent_blocks >= 2) ? 0 : 1;
 		} else {
-			for (int l = 0; l < num_lines; l++) {
-				symphony_flush_denormal(damping_state[l]);
-			}
 			silent_blocks = 0;
 			activity = 1;
 		}
 	}
 
 	virtual size_t export_state(uint8_t *p_buffer, size_t p_max_size) const override {
-		// State: damping_state + write_positions + pre_delay_write_pos + carrier_phase placeholder
-		size_t needed = sizeof(float) * MAX_LINES + sizeof(int) * MAX_LINES + sizeof(int);
+		size_t needed = sizeof(float) * SymphonyFDNCore::MAX_LINES + sizeof(int) * SymphonyFDNCore::MAX_LINES + sizeof(int);
 		if (!p_buffer) {
 			return needed;
 		}
@@ -247,25 +186,25 @@ public:
 			return 0;
 		}
 		size_t offset = 0;
-		memcpy(p_buffer + offset, damping_state, sizeof(float) * MAX_LINES);
-		offset += sizeof(float) * MAX_LINES;
-		memcpy(p_buffer + offset, write_positions, sizeof(int) * MAX_LINES);
-		offset += sizeof(int) * MAX_LINES;
+		memcpy(p_buffer + offset, core.damp_z, sizeof(float) * SymphonyFDNCore::MAX_LINES);
+		offset += sizeof(float) * SymphonyFDNCore::MAX_LINES;
+		memcpy(p_buffer + offset, core.write_pos, sizeof(int) * SymphonyFDNCore::MAX_LINES);
+		offset += sizeof(int) * SymphonyFDNCore::MAX_LINES;
 		memcpy(p_buffer + offset, &pre_delay_write_pos, sizeof(int));
-		offset += sizeof(int);
-		return offset;
+		return offset + sizeof(int);
 	}
 
 	virtual void import_state(const uint8_t *p_buffer, size_t p_size) override {
-		size_t needed = sizeof(float) * MAX_LINES + sizeof(int) * MAX_LINES + sizeof(int);
-		if (p_size >= needed) {
-			size_t offset = 0;
-			memcpy(damping_state, p_buffer + offset, sizeof(float) * MAX_LINES);
-			offset += sizeof(float) * MAX_LINES;
-			memcpy(write_positions, p_buffer + offset, sizeof(int) * MAX_LINES);
-			offset += sizeof(int) * MAX_LINES;
-			memcpy(&pre_delay_write_pos, p_buffer + offset, sizeof(int));
+		size_t needed = sizeof(float) * SymphonyFDNCore::MAX_LINES + sizeof(int) * SymphonyFDNCore::MAX_LINES + sizeof(int);
+		if (p_size < needed) {
+			return;
 		}
+		size_t offset = 0;
+		memcpy(core.damp_z, p_buffer + offset, sizeof(float) * SymphonyFDNCore::MAX_LINES);
+		offset += sizeof(float) * SymphonyFDNCore::MAX_LINES;
+		memcpy(core.write_pos, p_buffer + offset, sizeof(int) * SymphonyFDNCore::MAX_LINES);
+		offset += sizeof(int) * SymphonyFDNCore::MAX_LINES;
+		memcpy(&pre_delay_write_pos, p_buffer + offset, sizeof(int));
 	}
 
 	static void register_operator() {
@@ -278,13 +217,12 @@ public:
 		desc.inputs.push_back({ "damping", SymphonyPinType::FLOAT, false });
 		desc.inputs.push_back({ "pre_delay_ms", SymphonyPinType::FLOAT, false });
 		desc.outputs.push_back({ "audio_out", SymphonyPinType::AUDIO, false });
-		desc.params.push_back({ "num_lines", 4.0f, 4.0f, 8.0f, 4.0f }); // 4 or 8
+		desc.params.push_back({ "num_lines", 4.0f, 4.0f, 8.0f, 4.0f });
 		desc.params.push_back({ "max_delay_ms", 100.0f, 10.0f, 200.0f, 1.0f });
 		desc.params.push_back({ "room_size", 0.5f, 0.01f, 1.0f, 0.01f });
 		desc.params.push_back({ "decay_time", 2.0f, 0.1f, 20.0f, 0.1f });
 		desc.params.push_back({ "damping", 0.5f, 0.0f, 1.0f, 0.01f });
 		desc.params.push_back({ "pre_delay_ms", 20.0f, 0.0f, 200.0f, 1.0f });
-		// State size is the operator struct only — delay buffers are arena-allocated separately
 		desc.state_size = sizeof(SymphonyFDNReverb);
 		desc.state_align = alignof(SymphonyFDNReverb);
 		desc.extra_arena_bytes = 0;
@@ -324,7 +262,8 @@ public:
 	static size_t calculate_arena_bytes(const HashMap<StringName, Variant> &p_params, float p_mix_rate) {
 		Config cfg = resolve_config(p_params, p_mix_rate);
 		size_t offset = 0;
-		if (!SymphonyCheckedMath::bump(offset, sizeof(float) * (size_t)cfg.num_lines * (size_t)cfg.max_delay_samples, 32)) {
+		// Always reserve MAX_LINES — design may promote 4→8 for mode density.
+		if (!SymphonyCheckedMath::bump(offset, sizeof(float) * (size_t)SymphonyFDNCore::MAX_LINES * (size_t)cfg.max_delay_samples, 32)) {
 			return std::numeric_limits<size_t>::max();
 		}
 		if (!SymphonyCheckedMath::bump(offset, sizeof(float) * (size_t)cfg.max_pre_delay_samples, 32)) {
@@ -335,92 +274,17 @@ public:
 
 	static SymphonyOperator *create(ArenaAllocator &p_arena, const HashMap<StringName, Variant> &p_params, float p_mix_rate) {
 		Config cfg = resolve_config(p_params, p_mix_rate);
-
 		void *mem = p_arena.alloc(sizeof(SymphonyFDNReverb), alignof(SymphonyFDNReverb));
 		if (!mem) {
 			return nullptr;
 		}
-
-		size_t delay_mem_size = sizeof(float) * cfg.num_lines * cfg.max_delay_samples;
-		float *delay_memory = (float *)p_arena.alloc(delay_mem_size, 32);
-		if (!delay_memory) {
+		float *delay_memory = (float *)p_arena.alloc(sizeof(float) * SymphonyFDNCore::MAX_LINES * cfg.max_delay_samples, 32);
+		float *pre_delay_memory = (float *)p_arena.alloc(sizeof(float) * cfg.max_pre_delay_samples, 32);
+		if (!delay_memory || !pre_delay_memory) {
 			return nullptr;
 		}
-
-		size_t pre_delay_mem_size = sizeof(float) * cfg.max_pre_delay_samples;
-		float *pre_delay_memory = (float *)p_arena.alloc(pre_delay_mem_size, 32);
-		if (!pre_delay_memory) {
-			return nullptr;
-		}
-
 		return new (mem) SymphonyFDNReverb(p_mix_rate, cfg.num_lines, cfg.max_delay_samples, cfg.max_pre_delay_samples,
-				delay_memory, pre_delay_memory,
+				cfg.max_delay_ms, delay_memory, pre_delay_memory,
 				cfg.room_size, cfg.decay_time, cfg.damping, cfg.pre_delay_ms);
 	}
-
-private:
-	void _update_delay_lengths(float p_room_size) {
-		// Base delay from room_size (normalized 0-1 maps to 10%-100% of max buffer)
-		float base_delay_samples = p_room_size * (float)(max_delay_samples - 1) * 0.9f + (float)(max_delay_samples - 1) * 0.1f;
-
-		const float *ratios = (num_lines == 8) ? DELAY_RATIOS_8 : DELAY_RATIOS_4;
-		for (int l = 0; l < num_lines; l++) {
-			float target = base_delay_samples / ratios[l];
-			target = CLAMP(target, 1.0f, (float)(max_delay_samples - 2));
-			delay_targets_f[l] = target;
-			delay_lengths[l] = (int)(target + 0.5f); // integer for RT60 gain calc
-			delay_lengths[l] = CLAMP(delay_lengths[l], 1, max_delay_samples - 1);
-		}
-	}
-
-	[[nodiscard]] float _read_tap_linear(int p_line, float p_delay_samples) const {
-		float read_pos = (float)write_positions[p_line] - p_delay_samples;
-		while (read_pos < 0.0f) {
-			read_pos += (float)max_delay_samples;
-		}
-		while (read_pos >= (float)max_delay_samples) {
-			read_pos -= (float)max_delay_samples;
-		}
-		int idx = (int)read_pos;
-		float frac = read_pos - (float)idx;
-		int next = idx + 1;
-		if (next >= max_delay_samples) {
-			next = 0;
-		}
-		const float *buf = delay_buffers[p_line];
-		return buf[idx] + frac * (buf[next] - buf[idx]);
-	}
-
-	void _hadamard_mix(const float *p_input, float *p_output) {
-		if (num_lines == 4) {
-			// 4×4 Hadamard matrix (unnormalized — normalization applied after)
-			// H4 = [[1,1,1,1],[1,-1,1,-1],[1,1,-1,-1],[1,-1,-1,1]]
-			p_output[0] = p_input[0] + p_input[1] + p_input[2] + p_input[3];
-			p_output[1] = p_input[0] - p_input[1] + p_input[2] - p_input[3];
-			p_output[2] = p_input[0] + p_input[1] - p_input[2] - p_input[3];
-			p_output[3] = p_input[0] - p_input[1] - p_input[2] + p_input[3];
-		} else {
-			// 8×8 Hadamard matrix via recursive construction: H8 = H4 ⊗ H2
-			// H2 = [[1,1],[1,-1]]
-			// First apply H4 to pairs, then H2 across pairs
-			float temp_a[4], temp_b[4];
-			for (int k = 0; k < 4; k++) {
-				temp_a[k] = p_input[k] + p_input[k + 4];
-				temp_b[k] = p_input[k] - p_input[k + 4];
-			}
-			// Apply H4 to each half
-			p_output[0] = temp_a[0] + temp_a[1] + temp_a[2] + temp_a[3];
-			p_output[1] = temp_a[0] - temp_a[1] + temp_a[2] - temp_a[3];
-			p_output[2] = temp_a[0] + temp_a[1] - temp_a[2] - temp_a[3];
-			p_output[3] = temp_a[0] - temp_a[1] - temp_a[2] + temp_a[3];
-			p_output[4] = temp_b[0] + temp_b[1] + temp_b[2] + temp_b[3];
-			p_output[5] = temp_b[0] - temp_b[1] + temp_b[2] - temp_b[3];
-			p_output[6] = temp_b[0] + temp_b[1] - temp_b[2] - temp_b[3];
-			p_output[7] = temp_b[0] - temp_b[1] - temp_b[2] + temp_b[3];
-		}
-	}
 };
-
-// Static constexpr member definitions (required for ODR-use in C++14/17)
-constexpr float SymphonyFDNReverb::DELAY_RATIOS_4[4];
-constexpr float SymphonyFDNReverb::DELAY_RATIOS_8[8];

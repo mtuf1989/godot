@@ -66,6 +66,7 @@
 #include "spatial/acoustic_room_3d.h"
 #include "spatial/acoustic_portal_3d.h"
 #include "spatial/spatial_acoustics_engine.h"
+#include "effects/audio_effect_symphony_reverb.h"
 
 #include "core/object/class_db.h"
 #include "core/config/engine.h"
@@ -179,6 +180,7 @@ void initialize_symphony_module(ModuleInitializationLevel p_level) {
 		GDREGISTER_CLASS(AcousticRoom3D);
 		GDREGISTER_CLASS(AcousticPortal3D);
 		GDREGISTER_CLASS(SpatialAcousticsEngine);
+		GDREGISTER_CLASS(AudioEffectSymphonyReverb);
 
 		// Create voice manager singleton (DSP graph tracking)
 		memnew(SymphonyVoiceManager);

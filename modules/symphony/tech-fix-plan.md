@@ -390,7 +390,7 @@ Defer mips (talk2 #24) to "Later".
 
 Minor: in the Noise `pink_index`, use `uint32_t` and `symphony_ctz((pink_index + 1) | 0x80u)` (`symphony_noise.h:19,41-45`; `symphony_pin_types.h:29`).
 
-## P6: Spatial reverb rework (O, T, N15, W, uniformity; plus 3 newly found routing bugs)
+## P6: Spatial reverb rework (O, T, N15, W, uniformity; plus 3 newly found routing bugs) ✅
 
 Newly found during design:
 - **(a) Portal gain is applied twice to the wet signal.** The graph's `spatial_gain` already includes it, and `audio_manager.gd:370` multiplies it in again.

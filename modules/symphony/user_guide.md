@@ -1110,7 +1110,7 @@ The unified ray budget is the main scaling control. In the 2.0 verification benc
 
 - Spatial graph processing is mono; Godot performs downstream panning. There is no HRTF path in 2.0.
 - Reverb routing uses one bus per `AudioStreamPlayer3D`; it is not a native per-voice auxiliary send.
-- Early-reflection room dimensions currently drive reverb predelay in the Game Audio Layer because Symphony does not yet provide an `AudioEffect` insert for its DSP operator.
+- Wet buses use `AudioEffectSymphonyReverb` (shoebox early reflections + FDN late). Drive it with `set_room(rt60, hf_ratio, dims, er_reflection)` from `SpatialAcousticsEngine.get_reverb_slot_*`. Per-voice send amount is `get_emitter_reverb_amount` (DRR-aware); put distance attenuation in `AudioStreamPlayer3D.direct_volume_db`, not `volume_db`.
 - The 12 material presets are technically verified but still need a project-specific interactive listening/tuning pass.
 
 ---

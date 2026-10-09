@@ -545,3 +545,12 @@ PhysicsServer property, not a Symphony one.
   routing tradeoff (a voice on a reverb slot bus loses its dry category-bus volume) is documented;
   the richer-routing accessors (`get_emitter_reverb_prev_slot`/`prev_send`, `is_emitter_reverb_migrating`)
   are bound and available if a custom send effect lands later.
+
+## P6 landed (2026-10-09)
+
+- Wet buses: `AudioEffectSymphonyReverb` (`dry=0`, `wet=1`); no `wet_gain` push.
+- Slot accessors: `get_reverb_slot_{decay_time,absorption_high,hf_ratio,dimensions,volume,er_reflection,critical_distance}`.
+- Removed: `get_reverb_slot_{room_size,damping,wet_gain}`.
+- Per-voice: `get_emitter_reverb_amount` / `get_emitter_critical_distance` (portal not multiplied into amount).
+- ASP3D: `direct_volume_db` for dry-path attenuation; GDScript volume stack split accordingly.
+- Proxy: radius 2 m, `reverb_bus_uniformity=1`, position updated after apparent-position write.

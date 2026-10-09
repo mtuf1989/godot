@@ -82,10 +82,11 @@ TEST_CASE("[Symphony][Spatial][Reverb] Distinct RT60 clusters take distinct slot
 	CHECK(pool.get_metrics().active_slot_count == 3);
 }
 
-TEST_CASE("[Symphony][Spatial][Reverb] Slot params derive from RT60 and damping") {
+TEST_CASE("[Symphony][Spatial][Reverb] Slot params derive from RT60 and absorption") {
 	ReverbPool pool = make_pool(8);
 
-	pool.assign(0, 3.0f, 0.7f, 0.8f);
+	// Authored 10×5×8 room, V=400; α_high=0.7.
+	pool.assign(0, 3.0f, 0.7f, 0.8f, 400.0f, Vector3(10, 5, 8));
 	pool.update(0.016f);
 
 	int slot = -1;
@@ -94,19 +95,14 @@ TEST_CASE("[Symphony][Spatial][Reverb] Slot params derive from RT60 and damping"
 
 	const ReverbPool::SlotParams &sp = pool.slot_params(slot);
 	CHECK(sp.decay_time == doctest::Approx(3.0f).epsilon(0.01f));
-	CHECK(sp.damping == doctest::Approx(0.7f).epsilon(0.01f));
-	// room_size is a monotonic map of RT60/max_rt60 (default max 10s).
-	CHECK(sp.room_size == doctest::Approx(0.3f).epsilon(0.05f));
-	// wet_gain RAMPS in over crossfade_seconds (Phase 3.6), so after one small
-	// step it is partway up, not snapped to 1. Drive enough frames to complete
-	// the ramp (default crossfade 0.25s), then it settles at 1.0.
-	CHECK(sp.wet_gain > 0.0f);
-	CHECK(sp.wet_gain < 1.0f);
-	for (int i = 0; i < 20; i++) {
-		pool.assign(0, 3.0f, 0.7f, 0.8f);
-		pool.update(0.016f);
-	}
-	CHECK(sp.wet_gain == doctest::Approx(1.0f));
+	CHECK(sp.absorption_high == doctest::Approx(0.7f).epsilon(0.01f));
+	CHECK(sp.dim_x == doctest::Approx(10.0f).epsilon(0.01f));
+	CHECK(sp.volume == doctest::Approx(400.0f).epsilon(0.1f));
+	CHECK(sp.hf_ratio >= 0.1f);
+	CHECK(sp.hf_ratio <= 1.0f);
+	CHECK(sp.er_reflection > 0.0f);
+	CHECK(sp.er_reflection <= 1.0f);
+	CHECK(sp.critical_distance > 0.05f);
 }
 
 TEST_CASE("[Symphony][Spatial][Reverb] Slot params are a contiguous block (GPU offload)") {
@@ -119,7 +115,7 @@ TEST_CASE("[Symphony][Spatial][Reverb] Slot params are a contiguous block (GPU o
 	const ReverbPool::SlotParams *s1 = &pool.slot_params(1);
 	CHECK(block == s0);
 	CHECK((s1 - s0) == 1);
-	CHECK(sizeof(ReverbPool::SlotParams) == 5 * sizeof(float));
+	CHECK(sizeof(ReverbPool::SlotParams) == 9 * sizeof(float));
 }
 
 TEST_CASE("[Symphony][Spatial][Reverb] First assignment snaps (no crossfade)") {
@@ -221,12 +217,6 @@ TEST_CASE("[Symphony][Spatial][Reverb] Release frees a slot for reuse") {
 	pool.release(1);
 	pool.update(0.016f);
 	CHECK(pool.get_metrics().active_slot_count == 1);
-	// wet_gain now RAMPS down (Phase 3.6); drive a few frames for the tail to
-	// fade fully out before asserting it reached idle.
-	for (int i = 0; i < 20; i++) {
-		pool.update(0.016f);
-	}
-	CHECK(pool.slot_params(b).wet_gain == doctest::Approx(0.0f));
 
 	// A new distinct cluster can now claim the freed slot.
 	int c = pool.assign(2, 5.0f, 0.3f, 0.8f);

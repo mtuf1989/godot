@@ -117,6 +117,9 @@
 		<member name="unit_size" type="float" setter="set_unit_size" getter="get_unit_size" default="10.0">
 			The factor for the attenuation effect. Higher values make the sound audible over a larger distance.
 		</member>
+		<member name="direct_volume_db" type="float" setter="set_direct_volume_db" getter="get_direct_volume_db" default="0.0">
+			Additional gain applied only to the direct (dry) path, in decibels. Does not affect [Area3D] reverb sends. Default [code]0.0[/code] matches upstream behaviour.
+		</member>
 		<member name="volume_db" type="float" setter="set_volume_db" getter="get_volume_db" default="0.0">
 			The base sound level before attenuation, in decibels.
 		</member>

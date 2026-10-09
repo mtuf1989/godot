@@ -163,7 +163,7 @@ AudioFrame AudioStreamPlayer3D::_calc_output_vol_stereo(const Vector3 &source_di
 }
 
 #ifndef PHYSICS_3D_DISABLED
-void AudioStreamPlayer3D::_calc_reverb_vol(Area3D *area, Vector3 listener_area_pos, const FixedVector<AudioFrame, VOLUME_VECTOR_SIZE> &direct_path_vol, FixedVector<AudioFrame, VOLUME_VECTOR_SIZE> &reverb_vol) {
+void AudioStreamPlayer3D::_calc_reverb_vol(Area3D *area, Vector3 listener_area_pos, const FixedVector<AudioFrame, VOLUME_VECTOR_SIZE> &send_path_vol, FixedVector<AudioFrame, VOLUME_VECTOR_SIZE> &reverb_vol) {
 	reverb_vol.resize_uninitialized(VOLUME_VECTOR_SIZE);
 	for (AudioFrame &frame : reverb_vol) {
 		frame = AudioFrame(0, 0);
@@ -174,7 +174,7 @@ void AudioStreamPlayer3D::_calc_reverb_vol(Area3D *area, Vector3 listener_area_p
 
 	if (uniformity > 0.0) {
 		float distance = listener_area_pos.length();
-		float attenuation = Math::db_to_linear(_get_attenuation_db(distance));
+		float attenuation = Math::db_to_linear(_get_send_attenuation_db(distance));
 
 		// Determine the fraction of sound that would come from each speaker if they were all driven uniformly.
 		float center_val[3] = { 0.5f, 0.25f, 0.16666f };
@@ -220,19 +220,19 @@ void AudioStreamPlayer3D::_calc_reverb_vol(Area3D *area, Vector3 listener_area_p
 		}
 
 		for (int i = 0; i < channel_count; i++) {
-			reverb_vol[i] = direct_path_vol[i].lerp(reverb_vol[i] * attenuation, uniformity);
+			reverb_vol[i] = send_path_vol[i].lerp(reverb_vol[i] * attenuation, uniformity);
 			reverb_vol[i] *= area_send;
 		}
 
 	} else {
 		for (int i = 0; i < 4; i++) {
-			reverb_vol[i] = direct_path_vol[i] * area_send;
+			reverb_vol[i] = send_path_vol[i] * area_send;
 		}
 	}
 }
 #endif // PHYSICS_3D_DISABLED
 
-float AudioStreamPlayer3D::_get_attenuation_db(float p_distance) const {
+float AudioStreamPlayer3D::_get_model_attenuation_db(float p_distance) const {
 	float att = 0;
 	switch (attenuation_model) {
 		case ATTENUATION_INVERSE_DISTANCE: {
@@ -253,12 +253,22 @@ float AudioStreamPlayer3D::_get_attenuation_db(float p_distance) const {
 			break;
 		}
 	}
+	return att;
+}
 
-	att += internal->volume_db;
+float AudioStreamPlayer3D::_get_send_attenuation_db(float p_distance) const {
+	float att = _get_model_attenuation_db(p_distance) + internal->volume_db;
 	if (att > max_db) {
 		att = max_db;
 	}
+	return att;
+}
 
+float AudioStreamPlayer3D::_get_attenuation_db(float p_distance) const {
+	float att = _get_model_attenuation_db(p_distance) + internal->volume_db + direct_volume_db;
+	if (att > max_db) {
+		att = max_db;
+	}
 	return att;
 }
 
@@ -470,12 +480,15 @@ Vector<AudioFrame> AudioStreamPlayer3D::_update_panning() {
 		}
 		has_any_listener_in_range = true;
 
-		float multiplier = Math::db_to_linear(_get_attenuation_db(dist));
+		float direct_multiplier = Math::db_to_linear(_get_attenuation_db(dist));
+		float send_multiplier = Math::db_to_linear(_get_send_attenuation_db(dist));
 		if (max_distance > 0) {
-			multiplier *= MAX(0, 1.0 - (dist / max_distance));
+			const float fade = MAX(0, 1.0 - (dist / max_distance));
+			direct_multiplier *= fade;
+			send_multiplier *= fade;
 		}
 
-		float db_att = (1.0 - MIN(1.0, multiplier)) * attenuation_filter_db;
+		float db_att = (1.0 - MIN(1.0, direct_multiplier)) * attenuation_filter_db;
 
 		if (emission_angle_enabled) {
 			Vector3 listenertopos = global_pos - listener_node->get_global_transform().origin;
@@ -503,8 +516,11 @@ Vector<AudioFrame> AudioStreamPlayer3D::_update_panning() {
 			_calc_output_vol(local_pos.normalized(), tightness, listener_volume_vector);
 		}
 
-		for (AudioFrame &frame : listener_volume_vector) {
-			frame *= multiplier;
+		FixedVector<AudioFrame, VOLUME_VECTOR_SIZE> listener_send_vector;
+		listener_send_vector.resize_uninitialized(VOLUME_VECTOR_SIZE);
+		for (int i = 0; i < VOLUME_VECTOR_SIZE; i++) {
+			listener_send_vector[i] = listener_volume_vector[i] * send_multiplier;
+			listener_volume_vector[i] *= direct_multiplier;
 		}
 
 		_apply_max_volume_from_vector(output_volume_vector, listener_volume_vector);
@@ -513,7 +529,7 @@ Vector<AudioFrame> AudioStreamPlayer3D::_update_panning() {
 
 		if (area && area->is_using_reverb_bus()) {
 			FixedVector<AudioFrame, VOLUME_VECTOR_SIZE> listener_reverb_vector;
-			_calc_reverb_vol(area, listener_area_pos, listener_volume_vector, listener_reverb_vector);
+			_calc_reverb_vol(area, listener_area_pos, listener_send_vector, listener_reverb_vector);
 			_apply_max_volume_from_vector(output_reverb_vector, listener_reverb_vector);
 		}
 #endif
@@ -612,6 +628,15 @@ void AudioStreamPlayer3D::set_volume_db(float p_volume) {
 
 float AudioStreamPlayer3D::get_volume_db() const {
 	return internal->volume_db;
+}
+
+void AudioStreamPlayer3D::set_direct_volume_db(float p_volume) {
+	ERR_FAIL_COND_MSG(Math::is_nan(p_volume), "Direct volume can't be set to NaN.");
+	direct_volume_db = p_volume;
+}
+
+float AudioStreamPlayer3D::get_direct_volume_db() const {
+	return direct_volume_db;
 }
 
 void AudioStreamPlayer3D::set_volume_linear(float p_volume) {
@@ -861,6 +886,9 @@ void AudioStreamPlayer3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_volume_db", "volume_db"), &AudioStreamPlayer3D::set_volume_db);
 	ClassDB::bind_method(D_METHOD("get_volume_db"), &AudioStreamPlayer3D::get_volume_db);
 
+	ClassDB::bind_method(D_METHOD("set_direct_volume_db", "volume_db"), &AudioStreamPlayer3D::set_direct_volume_db);
+	ClassDB::bind_method(D_METHOD("get_direct_volume_db"), &AudioStreamPlayer3D::get_direct_volume_db);
+
 	ClassDB::bind_method(D_METHOD("set_volume_linear", "volume_linear"), &AudioStreamPlayer3D::set_volume_linear);
 	ClassDB::bind_method(D_METHOD("get_volume_linear"), &AudioStreamPlayer3D::get_volume_linear);
 
@@ -933,6 +961,7 @@ void AudioStreamPlayer3D::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "stream", PROPERTY_HINT_RESOURCE_TYPE, AudioStream::get_class_static()), "set_stream", "get_stream");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "attenuation_model", PROPERTY_HINT_ENUM, "Inverse,Inverse Square,Logarithmic,Disabled"), "set_attenuation_model", "get_attenuation_model");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "volume_db", PROPERTY_HINT_RANGE, "-80,24,or_greater,suffix:dB"), "set_volume_db", "get_volume_db");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "direct_volume_db", PROPERTY_HINT_RANGE, "-80,24,or_greater,suffix:dB"), "set_direct_volume_db", "get_direct_volume_db");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "volume_linear", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_NONE), "set_volume_linear", "get_volume_linear");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "unit_size", PROPERTY_HINT_RANGE, "0.1,100,0.01,or_greater"), "set_unit_size", "get_unit_size");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "max_db", PROPERTY_HINT_RANGE, "-24,6,suffix:dB"), "set_max_db", "get_max_db");
