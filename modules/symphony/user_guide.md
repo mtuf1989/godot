@@ -2060,6 +2060,14 @@ func _on_music_slider_changed(value: float):
 
 ## Changelog
 
+### Music N1 — Transport and scheduler (2026-10-09)
+
+- **Transport** (960 PPQN): tempo steps/ramps and meter changes; continuous tick↔frame mapping.
+- **Scheduler:** bounded phrase handoff; NoteOff before NoteOn at equal ticks; SeqLock transport snapshot.
+- **BeatClock:** incremental beat accumulator; loop-wrap; emits every crossed beat (cap 8/frame); `fire_ahead_s`; signals are `beat_hit(index, target_time)` / `bar_hit(index, target_time)`.
+- **`trigger_at(name, frame)`** / **`get_frames_rendered()`** on `AudioStreamPlaybackSymphony` for sample-accurate gates.
+- **AudioStreamInteractive:** `get_playback_position()` returns the current clip position (was always 0).
+
 ### P2 — Quick audible wins (2026-10-09)
 
 - **3D pool (game-template):** `attenuation_filter_db = 0` and `max_db = 24` so Godot’s distance filter does not double-dip Symphony air absorption and the ±24 dB volume stack is not clamped at 3 dB.

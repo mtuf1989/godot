@@ -8,10 +8,10 @@
 |---|---|
 | **As of** | 2026-10-09 |
 | **Branch** | `master` (ahead of `origin/master`; not pushed) |
-| **Done** | **P0**, **P1**, **P1b**, **S0 / N0**, **P2**, **P3**, **P4** |
-| **Next** | **S1** — Lane A music N1 ‖ Lane C P5 |
-| **Stage** | S1 Build-out (P2–P4 closed; P5/N1 remain) |
-| **C++ tests** | 241/241 `*Symphony*` green on `bin/godot.macos.editor.arm64` |
+| **Done** | **P0**, **P1**, **P1b**, **S0 / N0**, **P2**, **P3**, **P4**, music **N1** |
+| **Next** | **S1** — Lane C **P5** (spectral/granular) |
+| **Stage** | S1 Build-out (P2–P4 + N1 closed; P5 remain) |
+| **C++ tests** | 250/250 `*Symphony*` green on `bin/godot.macos.editor.arm64` |
 | **TSan** | `.san` rebuilt after P1b; **1** warning (same as P0 `DynamicRangeHigh`); new Symphony-frame races = 0 |
 
 ### Commits
@@ -25,6 +25,7 @@
 | P3 | `dd19939a3a` | HIIR saturator OS, u-domain ADAA, waveshaper 3-way ADAA + foldback, FM Carson clamp, staircase/rate LPF, FormantOsc blend, DC R(sr), Biquad τ=5ms |
 | P4 | `1a84c38e46` | Rate policy helper; SFX mix_rate 48k default + clamp; WavePlayer loop-aware Hermite; OnePole/SVF open bypass; osc dt∈[0,0.49] |
 | P2 | `554859a7d4` (+ game-template `b9e17326`) | N2 3D filter/max_db; N3 WavePlayer multi-format decode; `test_symphony_p2_wave.cpp` |
+| N1 | _(pending commit)_ | Music transport/scheduler; BeatClock rewrite; `trigger_at`; Interactive position; `test_symphony_music_n1.cpp` |
 
 ### P1 leftovers (S0 gate)
 
@@ -35,7 +36,7 @@
 
 ### How to resume next session
 
-1. Read this **Progress** block. P3/P4 closed; continue **S1** with P2 and/or music N1 / P5.
+1. Read this **Progress** block. P2–P4 + music N1 closed; continue **S1** with **P5**.
 2. Build: `scons platform=macos target=editor arch=arm64 tests=yes module_raycast_enabled=no -j$(sysctl -n hw.ncpu)`
 3. Leave each phase green + committed on its own (plan convention).
 4. Re-run `preset_level_test` in game-template after audible DSP changes (P3/P4).
@@ -107,7 +108,7 @@ Policy (memory `symphony-presets-no-compat`): pre-production, no compatibility s
 | Stage | Work | Gate to the next stage |
 |---|---|---|
 | **S0 Foundation** (= music **N0**) | P0 ✅ → P1 ✅ → P1b ✅ → TSan re-baseline ✅ | TSan stress clean; N1 leak test green; promotion-order and seed tests green; frame counter exact over 10 min |
-| **S1 Build-out** (parallel lanes) ← **you are here** | Lane A: music **N1** (transport, scheduler, BeatClock rework, sample-accurate events). Lane B: **P3**, **P4**, **P2**. Lane C: **P5** | N1 exact-timestamp tests; P3/P4 level contract green |
+| **S1 Build-out** (parallel lanes) ← **you are here** | Lane A: music **N1** ✅. Lane B: **P3–P2** ✅. Lane C: **P5** | N1 exact-timestamp tests ✅; P5 remain |
 | **S2 Instruments** | **P10** → music **N2** (MusicNoteInput, note pools, releases) ‖ **P8a** | Reset conformance passes for every approved operator; an authored multi-track phrase renders correctly |
 | **S3 Recordings + composer** | Music **N3** (Signalsmith, stereo PCM) ‖ music **G1** (resources, composer) ‖ **P7** | Fixed hybrid score passes timing and listening checks; 1,000-seed batch passes |
 | **S4 Adaptive integration** | Music **G2** ‖ **P8b** ‖ **P6** | Exploration → tension → combat through one playback; DRR and reverb tests green |
@@ -496,7 +497,7 @@ Risks:
 
 > **Handed to music N1:** the **R** (sample-accurate triggers) and **N BeatClock** specs below are implemented as part of music milestone N1. The procedural transport becomes the timing authority, and BeatClock observes it in PROCEDURAL mode. The legacy-mode fixes below (loop wrap, crossed beats, `AudioStreamInteractive` position) are still part of N1's exit gate. They stay in this file as the spec. P7 itself only delivers N11, N21 and asymmetric RTPC smoothing.
 
-**R Sample-accurate triggers** *(implemented in music N1; reuses the P1b `frames_rendered` counter)*:
+**R Sample-accurate triggers** *(✅ done in music N1; reuses the P1b `frames_rendered` counter)*:
 - Add `uint64_t target_frame` to the TriggerInput `QueueEntry` (`nodes/io/symphony_trigger_input.h:39-49`).
 - New API `AudioStreamPlaybackSymphony::trigger_at(name, frame)` and `get_frames_rendered()`.
 - In `execute()`, an entry fires at `offset = clamp(target_frame − block_start_frame, 0, BLOCK−1)` when it falls in the block, stays queued if it is in the future, and fires at offset 0 if it is late.
@@ -509,7 +510,7 @@ Risks:
 - add a FLOAT `bpm` input pin (smoothed per block, keeping phase continuous), a `reset` trigger input and a `phase` output;
 - new tests (none exist today): ticks land at exact frames for 120 BPM at 48k, the first tick is at frame 0, and a bpm change mid-beat preserves phase.
 
-**N BeatClock** (`runtime/beat_clock.cpp/.h`) *(implemented in music N1)*:
+**N BeatClock** (`runtime/beat_clock.cpp/.h`) *(✅ done in music N1)*:
 - Replace `beat = t·bpm/60` with an incremental accumulator: `beat_acc += Δpos·bpm/60` per process.
   - If Δpos < 0 (loop wrap or stream switch): when `wrapped_to ≈ 0`, treat it as a loop and continue the accumulator from the loop length. Otherwise re-base: `beat_acc = new_pos·bpm/60`, emitting a new downbeat.
   - On `set_bpm`/`set_beats_per_bar`, keep `beat_acc` and change only the slope.

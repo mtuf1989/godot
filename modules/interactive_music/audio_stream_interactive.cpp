@@ -1038,6 +1038,14 @@ int AudioStreamPlaybackInteractive::get_loop_count() const {
 }
 
 double AudioStreamPlaybackInteractive::get_playback_position() const {
+	// Symphony N1: upstream always returned 0, which broke BeatClock in INTERACTIVE mode.
+	// Report the currently playing clip's position (the mixer already tracks per-clip playbacks).
+	if (playback_current >= 0 && playback_current < AudioStreamInteractive::MAX_CLIPS) {
+		const State &st = states[playback_current];
+		if (st.active && st.playback.is_valid()) {
+			return st.playback->get_playback_position();
+		}
+	}
 	return 0.0;
 }
 

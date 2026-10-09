@@ -1,8 +1,8 @@
 #include "beat_clock.h"
+#include "core/config/engine.h"
+#include "core/math/math_funcs.h"
 #include "core/object/class_db.h"
 #include "core/os/os.h"
-#include "core/config/engine.h"
-#include "scene/resources/audio/audio_stream.h"
 #include "servers/audio/audio_server.h"
 
 BeatClock *BeatClock::singleton = nullptr;
@@ -12,6 +12,10 @@ void BeatClock::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_bpm"), &BeatClock::get_bpm);
 	ClassDB::bind_method(D_METHOD("set_beats_per_bar", "beats"), &BeatClock::set_beats_per_bar);
 	ClassDB::bind_method(D_METHOD("get_beats_per_bar"), &BeatClock::get_beats_per_bar);
+	ClassDB::bind_method(D_METHOD("set_fire_ahead_s", "seconds"), &BeatClock::set_fire_ahead_s);
+	ClassDB::bind_method(D_METHOD("get_fire_ahead_s"), &BeatClock::get_fire_ahead_s);
+	ClassDB::bind_method(D_METHOD("set_loop_length_hint", "seconds"), &BeatClock::set_loop_length_hint);
+	ClassDB::bind_method(D_METHOD("get_loop_length_hint"), &BeatClock::get_loop_length_hint);
 	ClassDB::bind_method(D_METHOD("is_playing"), &BeatClock::is_playing);
 
 	ClassDB::bind_method(D_METHOD("start", "bpm", "beats_per_bar"), &BeatClock::start);
@@ -25,15 +29,20 @@ void BeatClock::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_time_to_next_bar"), &BeatClock::get_time_to_next_bar);
 	ClassDB::bind_method(D_METHOD("process", "delta"), &BeatClock::process);
 
-	// S4.4: Music Moment Integration
 	ClassDB::bind_method(D_METHOD("calculate_time_stretch_for_alignment", "target_time_sec", "tolerance_percent", "max_stretch"), &BeatClock::calculate_time_stretch_for_alignment, DEFVAL(5.0f), DEFVAL(0.1f));
 	ClassDB::bind_method(D_METHOD("calculate_duration_stretch_for_alignment", "target_time_sec", "tolerance_percent", "max_stretch"), &BeatClock::calculate_duration_stretch_for_alignment, DEFVAL(5.0f), DEFVAL(0.1f));
 
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "bpm"), "set_bpm", "get_bpm");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "beats_per_bar"), "set_beats_per_bar", "get_beats_per_bar");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "fire_ahead_s"), "set_fire_ahead_s", "get_fire_ahead_s");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "loop_length_hint"), "set_loop_length_hint", "get_loop_length_hint");
 
-	ADD_SIGNAL(MethodInfo("beat_hit", PropertyInfo(Variant::INT, "beat_index")));
-	ADD_SIGNAL(MethodInfo("bar_hit", PropertyInfo(Variant::INT, "bar_index")));
+	ADD_SIGNAL(MethodInfo("beat_hit",
+			PropertyInfo(Variant::INT, "beat_index"),
+			PropertyInfo(Variant::FLOAT, "target_time")));
+	ADD_SIGNAL(MethodInfo("bar_hit",
+			PropertyInfo(Variant::INT, "bar_index"),
+			PropertyInfo(Variant::FLOAT, "target_time")));
 }
 
 BeatClock::BeatClock() {
@@ -45,6 +54,7 @@ BeatClock::~BeatClock() {
 }
 
 void BeatClock::set_bpm(float p_bpm) {
+	// Keep beat_acc; only the slope changes (N1).
 	bpm = CLAMP(p_bpm, 1.0f, 999.0f);
 }
 
@@ -52,15 +62,26 @@ void BeatClock::set_beats_per_bar(int p_beats) {
 	beats_per_bar = CLAMP(p_beats, 1, 32);
 }
 
+void BeatClock::set_fire_ahead_s(float p_seconds) {
+	fire_ahead_s = MAX(0.0f, p_seconds);
+}
+
+void BeatClock::set_loop_length_hint(double p_seconds) {
+	loop_length_hint = MAX(0.0, p_seconds);
+}
+
 void BeatClock::start(float p_bpm, int p_beats_per_bar) {
 	bpm = CLAMP(p_bpm, 1.0f, 999.0f);
 	beats_per_bar = CLAMP(p_beats_per_bar, 1, 32);
 	playing = true;
 	playback_position = 0.0;
+	prev_playback_position = 0.0;
 	logic_time = 0.0;
+	beat_acc = 0.0;
 	prev_beat_index = -1;
 	prev_bar_index = -1;
 	last_process_frame = UINT64_MAX;
+	last_processed_position = -1.0;
 	_refresh_latency_cache();
 }
 
@@ -75,6 +96,9 @@ void BeatClock::update_playback_position(double p_position) {
 }
 
 void BeatClock::_refresh_latency_cache() {
+	if (!AudioServer::get_singleton()) {
+		return;
+	}
 	uint64_t now = OS::get_singleton()->get_ticks_msec();
 	if (now - latency_cache_time > 1000) {
 		cached_output_latency = (float)AudioServer::get_singleton()->get_output_latency();
@@ -86,8 +110,11 @@ double BeatClock::_get_corrected_time() const {
 	if (!playing) {
 		return 0.0;
 	}
-	double time_since_mix = AudioServer::get_singleton()->get_time_since_last_mix();
-	double corrected = playback_position + time_since_mix - (double)cached_output_latency;
+	double time_since_mix = 0.0;
+	if (AudioServer::get_singleton()) {
+		time_since_mix = AudioServer::get_singleton()->get_time_since_last_mix();
+	}
+	double corrected = playback_position + time_since_mix - (double)cached_output_latency + (double)fire_ahead_s;
 	if (corrected < 0.0) {
 		corrected = 0.0;
 	}
@@ -95,123 +122,181 @@ double BeatClock::_get_corrected_time() const {
 }
 
 float BeatClock::get_current_beat() const {
-	if (!playing) return 0.0f;
-	double t = _get_corrected_time();
-	return (float)(t * (double)bpm / 60.0);
+	if (!playing) {
+		return 0.0f;
+	}
+	return (float)beat_acc;
 }
 
 int BeatClock::get_current_bar() const {
-	if (!playing) return 0;
-	float beat = get_current_beat();
-	return (int)(beat / (float)beats_per_bar);
+	if (!playing || beats_per_bar <= 0) {
+		return 0;
+	}
+	return (int)(beat_acc / (double)beats_per_bar);
 }
 
 float BeatClock::get_beat_fraction() const {
-	if (!playing) return 0.0f;
-	float beat = get_current_beat();
-	return beat - (float)(int)beat;
+	if (!playing) {
+		return 0.0f;
+	}
+	const double beat = beat_acc;
+	return (float)(beat - Math::floor(beat));
 }
 
 float BeatClock::get_time_to_next_beat() const {
-	if (!playing || bpm <= 0.0f) return 0.0f;
-	float beat = get_current_beat();
-	float next_beat = (float)((int)beat + 1);
-	float beat_duration = 60.0f / bpm;
-	return (next_beat - beat) * beat_duration;
+	if (!playing || bpm <= 0.0f) {
+		return 0.0f;
+	}
+	const float frac = get_beat_fraction();
+	const float beat_duration = 60.0f / bpm;
+	return (1.0f - frac) * beat_duration;
 }
 
 float BeatClock::get_time_to_next_bar() const {
-	if (!playing || bpm <= 0.0f) return 0.0f;
-	float beat = get_current_beat();
-	int current_bar = (int)(beat / (float)beats_per_bar);
-	float next_bar_beat = (float)((current_bar + 1) * beats_per_bar);
-	float beat_duration = 60.0f / bpm;
-	return (next_bar_beat - beat) * beat_duration;
+	if (!playing || bpm <= 0.0f || beats_per_bar <= 0) {
+		return 0.0f;
+	}
+	const double beats_into_bar = beat_acc - Math::floor(beat_acc / (double)beats_per_bar) * (double)beats_per_bar;
+	const double beats_left = (double)beats_per_bar - beats_into_bar;
+	return (float)(beats_left * (60.0 / (double)bpm));
+}
+
+void BeatClock::_emit_crossed(double p_from_beat, double p_to_beat) {
+	if (p_to_beat <= p_from_beat) {
+		return;
+	}
+	const int from_i = (int)Math::floor(p_from_beat);
+	const int to_i = (int)Math::floor(p_to_beat);
+	int emitted = 0;
+	for (int bi = from_i + 1; bi <= to_i && emitted < MAX_EMIT_PER_FRAME; bi++) {
+		if (bi < 0) {
+			continue;
+		}
+		// Exact musical time of this beat index at current bpm (heard/target).
+		const float target_time = (bpm > 0.0f) ? ((float)bi * 60.0f / bpm) : 0.0f;
+		emit_signal(SNAME("beat_hit"), bi, target_time);
+		emitted++;
+		if (beats_per_bar > 0 && (bi % beats_per_bar) == 0) {
+			const int bar_i = bi / beats_per_bar;
+			emit_signal(SNAME("bar_hit"), bar_i, target_time);
+		}
+		prev_beat_index = bi;
+		if (beats_per_bar > 0) {
+			prev_bar_index = bi / beats_per_bar;
+		}
+	}
 }
 
 void BeatClock::process(double p_delta) {
-	if (!playing) return;
+	if (!playing) {
+		return;
+	}
 
-	// Double-call guard: skip if already processed this frame.
 	uint64_t current_frame = Engine::get_singleton()->get_process_frames();
-	if (current_frame == last_process_frame) {
+	// Skip duplicate calls in one engine frame when position is unchanged.
+	// Headless tests keep process_frames at 0, so still allow position advances.
+	if (current_frame == last_process_frame && playback_position == last_processed_position) {
 		return;
 	}
 	last_process_frame = current_frame;
+	last_processed_position = playback_position;
 
 	_refresh_latency_cache();
 
-	// Drift correction: advance logic_time by delta, compare with audio time
-	logic_time += p_delta;
-	double audio_time = _get_corrected_time();
-	double drift = audio_time - logic_time;
+	const double audio_time = _get_corrected_time();
+	const double prev_pos = prev_playback_position;
+	const double new_pos = playback_position;
+	prev_playback_position = playback_position;
 
+	double delta_pos = new_pos - prev_pos;
+	if (delta_pos < 0.0) {
+		// Loop wrap or stream switch.
+		const bool wrapped_to_start = new_pos < 0.05 || (loop_length_hint > 0.0 && new_pos < loop_length_hint * 0.05);
+		if (wrapped_to_start && loop_length_hint > 0.0) {
+			// Continue accumulator across the loop seam.
+			delta_pos = (loop_length_hint - prev_pos) + new_pos;
+			if (delta_pos < 0.0) {
+				delta_pos = new_pos; // fallback
+			}
+		} else if (wrapped_to_start) {
+			// Unknown loop length: treat jump to ~0 as a full wrap of whatever we just left.
+			delta_pos = MAX(0.0, -prev_pos) + new_pos;
+			if (delta_pos <= 0.0) {
+				delta_pos = 0.0;
+			}
+			// Re-base downbeat when wrapping without a length hint and large discontinuity.
+			if (prev_pos > 0.25 && new_pos < 0.05) {
+				const double before = beat_acc;
+				beat_acc = new_pos * (double)bpm / 60.0;
+				// Force bar 0 / beat 0 emission on loop.
+				_emit_crossed(before - 0.001, beat_acc + 0.001);
+				// Also ensure beat 0 fires when rebased to near-zero.
+				if (prev_beat_index != 0) {
+					emit_signal(SNAME("beat_hit"), 0, 0.0f);
+					emit_signal(SNAME("bar_hit"), 0, 0.0f);
+					prev_beat_index = 0;
+					prev_bar_index = 0;
+				}
+				logic_time = audio_time;
+				return;
+			}
+		} else {
+			// Stream switch / scrub: re-base accumulator.
+			const double before = beat_acc;
+			beat_acc = new_pos * (double)bpm / 60.0;
+			_emit_crossed(before, beat_acc);
+			logic_time = audio_time;
+			return;
+		}
+	}
+
+	// Drift-smoothed logic clock (same as queries).
+	logic_time += p_delta;
+	const double drift = audio_time - logic_time;
 	if (Math::abs(drift) > 0.050) {
-		// Snap correction for large drift (>50ms)
 		logic_time = audio_time;
 	} else if (Math::abs(drift) > 0.002) {
-		// Proportional correction (Kp=10) for medium drift (>2ms)
 		logic_time += drift * 10.0 * p_delta;
 	}
-	// Dead band: drift < 2ms — ignore
 
-	// Beat detection using corrected time
-	float beat = (float)(logic_time * (double)bpm / 60.0);
-	int beat_index = (int)beat;
-	int bar_index = beat_index / beats_per_bar;
-
-	if (beat_index > prev_beat_index && prev_beat_index >= 0) {
-		emit_signal(SNAME("beat_hit"), beat_index);
-	}
-	if (bar_index > prev_bar_index && prev_bar_index >= 0) {
-		emit_signal(SNAME("bar_hit"), bar_index);
+	const double before = beat_acc;
+	if (bpm > 0.0f) {
+		if (delta_pos > 0.0) {
+			beat_acc += delta_pos * (double)bpm / 60.0;
+		} else {
+			// No position advance this frame: hold accumulator (queries use beat_acc).
+		}
 	}
 
-	prev_beat_index = beat_index;
-	prev_bar_index = bar_index;
+	// First process after start: establish baseline without emitting a phantom beat.
+	if (prev_beat_index < 0) {
+		prev_beat_index = (int)Math::floor(beat_acc);
+		prev_bar_index = beats_per_bar > 0 ? prev_beat_index / beats_per_bar : 0;
+		// Downbeat at t=0: emit beat 0 / bar 0 once when starting at rest.
+		if (before <= 0.0 && beat_acc >= 0.0 && prev_beat_index == 0) {
+			emit_signal(SNAME("beat_hit"), 0, 0.0f);
+			emit_signal(SNAME("bar_hit"), 0, 0.0f);
+		}
+		return;
+	}
+
+	_emit_crossed(before, beat_acc);
 }
 
 float BeatClock::calculate_time_stretch_for_alignment(float p_target_time_sec, float p_tolerance_percent, float p_max_stretch) const {
-	// S4.4: Music Moment Integration
-	// Calculate the stretch ratio needed so that the next bar boundary
-	// arrives exactly at p_target_time_sec from now.
-	//
-	// Use case: "Boss door opens in 3.2 seconds — stretch music so downbeat hits at that moment."
-
 	if (!playing || bpm <= 0.0f) {
 		return 1.0f;
 	}
-
-	// How long until the next bar boundary at current tempo?
 	float time_to_next_bar = get_time_to_next_bar();
-
-	if (time_to_next_bar < 0.001f) {
-		// We're essentially AT the bar boundary already
+	if (time_to_next_bar < 0.001f || p_target_time_sec <= 0.0f) {
 		return 1.0f;
 	}
-
-	// Target time must be positive
-	if (p_target_time_sec <= 0.0f) {
-		return 1.0f;
-	}
-
-	// Calculate required stretch ratio:
-	// If time_to_next_bar / stretch = p_target_time_sec
-	// Then stretch = time_to_next_bar / p_target_time_sec
 	float stretch = time_to_next_bar / p_target_time_sec;
-
-	// Check if we're already within tolerance (no stretch needed)
 	float deviation_percent = Math::abs(stretch - 1.0f) * 100.0f;
 	if (deviation_percent <= p_tolerance_percent) {
-		return 1.0f; // Close enough, no correction needed
+		return 1.0f;
 	}
-
-	// Clamp stretch to max allowed deviation
-	float min_stretch = 1.0f - p_max_stretch;
-	float max_stretch = 1.0f + p_max_stretch;
-	stretch = CLAMP(stretch, min_stretch, max_stretch);
-
-	return stretch;
+	return CLAMP(stretch, 1.0f - p_max_stretch, 1.0f + p_max_stretch);
 }
 
 float BeatClock::calculate_duration_stretch_for_alignment(float p_target_time_sec, float p_tolerance_percent, float p_max_stretch) const {

@@ -1,5 +1,9 @@
 # Dev Log — Symphony Audio System
 
+## Music N1 (2026-10-09)
+
+Transport: `runtime/symphony_music_transport.h` (960 PPQN, tempo step/ramp, meter, tick↔frame). Scheduler: `runtime/symphony_music_scheduler.h` (bounded phrase handoff, NoteOff-before-NoteOn, SeqLock snapshot). BeatClock: incremental `beat_acc`, loop-wrap, multi-beat hitch (cap 8), `fire_ahead_s`, `beat_hit`/`bar_hit` carry `target_time`. P7 R: `TriggerInput`/`trigger_at`/`get_frames_rendered` sample-accurate. `AudioStreamPlaybackInteractive::get_playback_position` returns current clip position. Tests: `test_symphony_music_n1.cpp`. Suite: 250/250. Stream class `AudioStreamSymphonyMusic` deferred to N2 wiring.
+
 ## P2 (2026-10-09)
 
 N2 (game-template): 3D player pool sets `attenuation_filter_db=0` and `max_db=24`; gdUnit asserts both. N3: WavePlayer `decode_to_pcm16` widens 8-bit and mixes IMA ADPCM/QOA via `instantiate_playback()->mix` at 1:1 stream rate; `ERR_PRINT_ONCE` on failure. SpatialGraphWrapper wraps any pathed WAV. Tests: `test_symphony_p2_wave.cpp`.

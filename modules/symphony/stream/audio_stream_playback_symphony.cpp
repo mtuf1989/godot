@@ -36,6 +36,8 @@ void AudioStreamPlaybackSymphony::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_parameter", "name", "value"), &AudioStreamPlaybackSymphony::set_parameter);
 	ClassDB::bind_method(D_METHOD("get_parameter", "name"), &AudioStreamPlaybackSymphony::get_parameter);
 	ClassDB::bind_method(D_METHOD("trigger", "name", "value"), &AudioStreamPlaybackSymphony::trigger, DEFVAL(1.0f));
+	ClassDB::bind_method(D_METHOD("trigger_at", "name", "frame", "value"), &AudioStreamPlaybackSymphony::trigger_at, DEFVAL(1.0f));
+	ClassDB::bind_method(D_METHOD("get_frames_rendered"), &AudioStreamPlaybackSymphony::get_frames_rendered);
 	ClassDB::bind_method(D_METHOD("get_voice_cpu_microseconds"), &AudioStreamPlaybackSymphony::get_voice_cpu_microseconds);
 	ClassDB::bind_method(D_METHOD("get_budget_percent"), &AudioStreamPlaybackSymphony::get_budget_percent);
 	ClassDB::bind_method(D_METHOD("get_last_rms"), &AudioStreamPlaybackSymphony::get_last_rms);
@@ -432,8 +434,18 @@ int AudioStreamPlaybackSymphony::_mix_internal(AudioFrame *p_buffer, int p_frame
 	}
 
 	int frames_processed = 0;
+	const uint64_t mix_start_frame = frames_rendered.load(std::memory_order_acquire);
 	while (frames_processed < p_frames) {
 		int chunk = MIN(SYMPHONY_MICRO_BLOCK_SIZE, p_frames - frames_processed);
+		// N1 / P7 R: TriggerInput schedules against absolute graph frames.
+		if (current_package) {
+			const uint64_t block_start = mix_start_frame + (uint64_t)frames_processed;
+			for (int i = 0; i < current_package->trigger_routes.size(); i++) {
+				if (SymphonyTriggerInput *tin = current_package->trigger_routes[i].input) {
+					tin->set_block_start_frame(block_start);
+				}
+			}
+		}
 		graph_output_node->set_output(p_buffer, frames_processed);
 		current_graph->execute(chunk);
 
@@ -682,12 +694,16 @@ Variant AudioStreamPlaybackSymphony::get_parameter(const StringName &p_name) con
 }
 
 bool AudioStreamPlaybackSymphony::trigger(const StringName &p_name, float p_value) {
+	return trigger_at(p_name, 0, p_value);
+}
+
+bool AudioStreamPlaybackSymphony::trigger_at(const StringName &p_name, uint64_t p_frame, float p_value) {
 	// A restart/swap package already published will go live at the next block: fire into it so the
 	// trigger is not lost on the soon-to-be-retired graph.
 	if (control_package.load(std::memory_order_acquire) != nullptr) {
 		if (PreparedGraphPackage *pending = pending_package.load(std::memory_order_acquire)) {
 			if (SymphonyTriggerInput *pending_tin = pending->find_trigger(p_name)) {
-				return pending_tin->fire(p_value);
+				return pending_tin->fire_at(p_frame, p_value);
 			}
 		}
 	}
@@ -703,7 +719,7 @@ bool AudioStreamPlaybackSymphony::trigger(const StringName &p_name, float p_valu
 		if (control_package.load(std::memory_order_acquire) != pkg) {
 			continue;
 		}
-		const bool ok = tin->fire(p_value);
+		const bool ok = tin->fire_at(p_frame, p_value);
 		if (control_package.load(std::memory_order_acquire) == pkg) {
 			return ok;
 		}

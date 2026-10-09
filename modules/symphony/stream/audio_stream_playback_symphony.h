@@ -159,6 +159,8 @@ public:
 	virtual void set_parameter(const StringName &p_name, const Variant &p_value) override;
 	virtual Variant get_parameter(const StringName &p_name) const override;
 	bool trigger(const StringName &p_name, float p_value = 1.0f);
+	// Sample-accurate: fire at absolute graph-rate frame (0 = ASAP). N1 / P7 R.
+	bool trigger_at(const StringName &p_name, uint64_t p_frame, float p_value = 1.0f);
 
 	[[nodiscard]] float get_voice_cpu_microseconds() const;
 	[[nodiscard]] float get_budget_percent() const;
