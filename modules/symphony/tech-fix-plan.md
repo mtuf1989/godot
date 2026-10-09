@@ -20,7 +20,7 @@
 |---|---|---|
 | P0 | `26b1e645be` | Shared helpers (`render_graph`, `tone_level_db`, `alias_ratio_db`); TSan rebuild + baseline in `MIGRATION.md` |
 | P1 | `d739292608` | Single-owner lifetime; denormal guard; RTPC atomics; LOD hysteresis; `test_symphony_lifetime.cpp` |
-| P1b | (this change) | Promotion order, atomic-word SeqLock, per-voice seeds, `frames_rendered`, unresampled `render_offline` |
+| P1b | `c5d38b563b` | Promotion order, atomic-word SeqLock, per-voice seeds, `frames_rendered`, unresampled `render_offline` |
 
 ### P1 leftovers (do before or with S0 gate — not blockers for starting P1b)
 
