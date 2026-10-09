@@ -96,9 +96,9 @@ Policy (memory `symphony-presets-no-compat`): pre-production, no compatibility s
 | P3 | **Done** `dd19939a3a` | Nonlinear and anti-aliasing DSP | C, D, E, N6, N20, J, L, P, DC blocker, Biquad smoothing | godot | P0 |
 | P4 | **Done** `1a84c38e46` | Sampler and rate path | S (rate policy D), N18, N19, mix_rate clamp, Oscillator floor | godot | P0 |
 | P5 | **Done** `78ea215b35` | Spectral and granular | F, N4, N5, N14, I/U removal, N7, N17, GrainCloud upgrade, stale comments | godot (+ skills docs) | P0 |
-| P6 | Pending | Spatial reverb rework | O, T, N15, W, uniformity, FDN AudioEffect, core DRR patch | both + Godot core | P1, P1b, P3 |
-| P7 | Pending | SFX-side timing | N11 SymphonyClock, N21, asymmetric RTPC (BeatClock + R move to music N1) | both | P1 |
-| P8a | Pending | Voice policy: music-critical part | N9, VITAL tier, N13 | both | P1 |
+| P6 | **Done** `d6bfa4adfc` | Spatial reverb rework | O, T, N15, W, uniformity, FDN AudioEffect, core DRR patch | both + Godot core | P1, P1b, P3 |
+| P7 | **Done** `1c50d03cf0` | SFX-side timing | N11 SymphonyClock, N21, asymmetric RTPC (BeatClock + R move to music N1) | both | P1 |
+| P8a | **Done** | Voice policy: music-critical part | N9, VITAL tier, N13 | both | P1 |
 | P8b | Pending | Voice policy: the rest | Q tiers/caps, N8, N12 | both | P8a |
 | P9 | Pending | Performance and polish | state-in-locals convention, K, compile cache, RTSan CI | godot | P1–P5 |
 | P10 | Pending | Instrument readiness (shared with music) | resettable-state contract and conformance test, ModalBank `pitch_ratio`, music rate-policy helper | godot | P1b, P3 |

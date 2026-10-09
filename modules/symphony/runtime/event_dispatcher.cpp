@@ -34,7 +34,7 @@ int SymphonyEventDispatcher::dispatch(const Ref<SoundEvent> &p_event, PlayResult
 	return dispatch(p_event, r_result, unused_reason);
 }
 
-int SymphonyEventDispatcher::_select_steal_victim(uint64_t p_event_id, int p_incoming_priority, SoundEvent::StealMode p_mode, bool p_same_event_only, StringName &r_reason) const {
+int SymphonyEventDispatcher::_select_steal_victim(uint64_t p_event_id, int p_incoming_priority, int p_incoming_tier, SoundEvent::StealMode p_mode, bool p_same_event_only, StringName &r_reason) const {
 	SymphonyVoicePool *pool = SymphonyVoicePool::get_singleton();
 	if (!pool) {
 		return -1;
@@ -60,8 +60,13 @@ int SymphonyEventDispatcher::_select_steal_victim(uint64_t p_event_id, int p_inc
 			if (slot->event_id != p_event_id) {
 				continue;
 			}
-		} else if (slot->priority > p_incoming_priority) {
-			continue;
+		} else {
+			if (slot->tier > p_incoming_tier) {
+				continue; // never steal a higher tier (VITAL protected from Important/Optional)
+			}
+			if (slot->priority > p_incoming_priority) {
+				continue;
+			}
 		}
 
 		bool better = false;
@@ -167,7 +172,9 @@ int SymphonyEventDispatcher::_reclaim_player_victim(const Ref<SoundEvent> &p_eve
 	if (vs) {
 		vs->event_id = event_id;
 		vs->priority = p_event->get_priority();
-		vs->importance = (float)p_event->get_priority() * p_event->get_importance_weight();
+		vs->tier = (int)p_event->get_tier();
+		vs->importance = SoundEvent::tier_band(p_event->get_tier()) +
+				(float)p_event->get_priority() * p_event->get_importance_weight();
 		vs->importance_weight = p_event->get_importance_weight();
 		vs->category = (int)p_event->get_category();
 	}
@@ -202,6 +209,7 @@ int SymphonyEventDispatcher::dispatch(const Ref<SoundEvent> &p_event, PlayResult
 	ERR_FAIL_NULL_V(pool, -1);
 
 	const int incoming_priority = p_event->get_priority();
+	const int incoming_tier = (int)p_event->get_tier();
 	const int max_voices = p_event->get_max_voices();
 	const int current_event_voices = event_voice_counts.has(event_id) ? event_voice_counts[event_id] : 0;
 	const bool at_event_cap = max_voices > 0 && current_event_voices >= max_voices;
@@ -210,7 +218,7 @@ int SymphonyEventDispatcher::dispatch(const Ref<SoundEvent> &p_event, PlayResult
 	bool stole = false;
 
 	if (at_event_cap) {
-		slot = _select_steal_victim(event_id, incoming_priority, p_event->get_steal_mode(), true, r_steal_reason);
+		slot = _select_steal_victim(event_id, incoming_priority, incoming_tier, p_event->get_steal_mode(), true, r_steal_reason);
 		if (slot < 0) {
 			r_result = RESULT_REJECTED_VOICE_LIMIT;
 			return -1;
@@ -225,7 +233,7 @@ int SymphonyEventDispatcher::dispatch(const Ref<SoundEvent> &p_event, PlayResult
 	} else {
 		slot = pool->acquire_slot(incoming_priority);
 		if (slot < 0) {
-			slot = _select_steal_victim(event_id, incoming_priority, p_event->get_steal_mode(), false, r_steal_reason);
+			slot = _select_steal_victim(event_id, incoming_priority, incoming_tier, p_event->get_steal_mode(), false, r_steal_reason);
 			if (slot < 0) {
 				r_result = RESULT_REJECTED_VOICE_LIMIT;
 				return -1;
@@ -247,7 +255,9 @@ int SymphonyEventDispatcher::dispatch(const Ref<SoundEvent> &p_event, PlayResult
 	if (vs) {
 		vs->event_id = event_id;
 		vs->priority = incoming_priority;
-		vs->importance = (float)incoming_priority * p_event->get_importance_weight();
+		vs->tier = incoming_tier;
+		vs->importance = SoundEvent::tier_band(p_event->get_tier()) +
+				(float)incoming_priority * p_event->get_importance_weight();
 		vs->importance_weight = p_event->get_importance_weight();
 		vs->category = (int)p_event->get_category();
 	}

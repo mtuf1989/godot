@@ -72,8 +72,9 @@ public:
 
 private:
 	// Select a steal victim. same_event: only slots for p_event_id.
-	// Otherwise only slots with priority <= p_incoming_priority.
-	int _select_steal_victim(uint64_t p_event_id, int p_incoming_priority, SoundEvent::StealMode p_mode, bool p_same_event_only, StringName &r_reason) const;
+	// Otherwise only slots with priority <= p_incoming_priority and tier <= incoming tier
+	// (VITAL is never stolen by a lower tier — P8a).
+	int _select_steal_victim(uint64_t p_event_id, int p_incoming_priority, int p_incoming_tier, SoundEvent::StealMode p_mode, bool p_same_event_only, StringName &r_reason) const;
 	int _reclaim_player_victim(const Ref<SoundEvent> &p_event, int p_victim_slot, PlayResult &r_result, StringName &r_steal_reason);
 };
 

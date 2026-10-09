@@ -16,8 +16,6 @@ void AudioStreamSymphony::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_mix_rate"), &AudioStreamSymphony::get_mix_rate);
 	ClassDB::bind_method(D_METHOD("set_duration_limit_seconds", "seconds"), &AudioStreamSymphony::set_duration_limit_seconds);
 	ClassDB::bind_method(D_METHOD("get_duration_limit_seconds"), &AudioStreamSymphony::get_duration_limit_seconds);
-	ClassDB::bind_method(D_METHOD("set_voice_priority", "priority"), &AudioStreamSymphony::set_voice_priority);
-	ClassDB::bind_method(D_METHOD("get_voice_priority"), &AudioStreamSymphony::get_voice_priority);
 	ClassDB::bind_method(D_METHOD("load_test_graph"), &AudioStreamSymphony::load_test_graph);
 	ClassDB::bind_method(D_METHOD("load_test_graph_30"), &AudioStreamSymphony::load_test_graph_30);
 	ClassDB::bind_method(D_METHOD("load_test_graph_50"), &AudioStreamSymphony::load_test_graph_50);
@@ -29,7 +27,6 @@ void AudioStreamSymphony::_bind_methods() {
 	ClassDB::bind_static_method("AudioStreamSymphony", D_METHOD("get_operator_schema"), &AudioStreamSymphony::get_operator_schema);
 	ClassDB::bind_method(D_METHOD("validate_authoring"), &AudioStreamSymphony::validate_authoring);
 	ClassDB::bind_method(D_METHOD("render_offline", "duration_seconds", "seed", "initial_parameters", "triggers", "wav_path"), &AudioStreamSymphony::render_offline, DEFVAL(Dictionary()), DEFVAL(Array()), DEFVAL(String()));
-	ADD_PROPERTY(PropertyInfo(Variant::INT, "voice_priority", PROPERTY_HINT_RANGE, "0,100,1"), "set_voice_priority", "get_voice_priority");
 
 	// LOD system
 	ClassDB::bind_method(D_METHOD("get_lod_count"), &AudioStreamSymphony::get_lod_count);
@@ -454,14 +451,6 @@ void AudioStreamSymphony::set_duration_limit_seconds(double p_seconds) {
 
 float AudioStreamSymphony::get_mix_rate() const {
 	return mix_rate;
-}
-
-void AudioStreamSymphony::set_voice_priority(int p_priority) {
-	voice_priority = CLAMP(p_priority, 0, 100);
-}
-
-int AudioStreamSymphony::get_voice_priority() const {
-	return voice_priority;
 }
 
 void AudioStreamSymphony::set_graph_description(const GraphDescription &p_desc) {

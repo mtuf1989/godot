@@ -169,11 +169,13 @@ func _spawn_voice(p_priority: int) -> void:
 	var player := AudioStreamPlayer.new()
 	var stream := AudioStreamSymphony.new()
 	stream.mix_rate = 44100.0
-	stream.voice_priority = p_priority
 	stream.load_test_graph()
 	player.stream = stream
 	add_child(player)
 	player.play()
+	var playback := player.get_stream_playback()
+	if playback != null and playback.has_method("set_voice_importance"):
+		playback.set_voice_importance(float(p_priority))
 	players.append(player)
 
 
@@ -181,11 +183,13 @@ func _spawn_voice_tier3(p_priority: int) -> void:
 	var player := AudioStreamPlayer.new()
 	var stream := AudioStreamSymphony.new()
 	stream.mix_rate = 44100.0
-	stream.voice_priority = p_priority
 	stream.load_test_graph_50()
 	player.stream = stream
 	add_child(player)
 	player.play()
+	var playback := player.get_stream_playback()
+	if playback != null and playback.has_method("set_voice_importance"):
+		playback.set_voice_importance(float(p_priority))
 	players.append(player)
 
 
@@ -193,12 +197,14 @@ func _spawn_voice_with_gain(p_priority: int, p_gain: float) -> void:
 	var player := AudioStreamPlayer.new()
 	var stream := AudioStreamSymphony.new()
 	stream.mix_rate = 44100.0
-	stream.voice_priority = p_priority
 	stream.load_test_graph()
 	player.stream = stream
 	player.volume_db = linear_to_db(p_gain) if p_gain > 0.0 else -80.0
 	add_child(player)
 	player.play()
+	var playback := player.get_stream_playback()
+	if playback != null and playback.has_method("set_voice_importance"):
+		playback.set_voice_importance(float(p_priority))
 	players.append(player)
 
 

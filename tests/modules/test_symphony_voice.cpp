@@ -20,8 +20,11 @@ TEST_FORCE_LINK(test_symphony_voice)
 #include "modules/symphony/runtime/event_dispatcher.h"
 #include "modules/symphony/runtime/sound_event.h"
 #include "modules/symphony/stream/audio_stream_symphony.h"
+#include "modules/symphony/stream/audio_stream_playback_symphony.h"
 #include "modules/symphony/core/symphony_voice_manager.h"
 #include "scene/resources/audio/audio_stream_wav.h"
+#include "tests/modules/symphony_test_helpers.h"
+#include "core/os/os.h"
 
 namespace TestSymphonyVoice {
 
@@ -254,6 +257,185 @@ TEST_CASE("[Symphony][Voice] occupancy and measured budget are separate") {
 	CHECK(pool->get_budget_percent() == doctest::Approx(12.5f));
 	float expected = pool->get_pool_size() > 0 ? (100.0f * pool->get_active_voice_count() / pool->get_pool_size()) : 0.0f;
 	CHECK(pool->get_occupancy_percent() == doctest::Approx(expected));
+}
+
+TEST_CASE("[Symphony][Voice][P8a] N13 resets position; non-positional distance_factor is 1") {
+	SymphonyVoicePool *pool = SymphonyVoicePool::get_singleton();
+	REQUIRE(pool != nullptr);
+
+	pool->set_listener_position(Vector3(1000, 0, 0));
+	pool->set_reference_distance(100.0f);
+
+	int slot = pool->acquire_slot(50);
+	REQUIRE(slot >= 0);
+	// Stale position left over would have crushed importance before N13.
+	pool->set_slot_position(slot, Vector3(1000, 0, 0));
+	pool->set_slot_spatial_mode(slot, (int)SoundEvent::SPATIAL_NON_POSITIONAL);
+	pool->set_slot_tier(slot, (int)SoundEvent::TIER_IMPORTANT);
+	pool->set_slot_importance_weight(slot, 1.0f);
+	pool->set_slot_category(slot, (int)SoundEvent::CATEGORY_SFX);
+
+	SymphonyVoicePool::VoiceSlot *vs = pool->get_slot(slot);
+	REQUIRE(vs != nullptr);
+	// Re-activate to prove position clears on acquire/reclaim.
+	pool->reclaim_slot(slot, 50);
+	vs = pool->get_slot(slot);
+	CHECK(vs->position == Vector3());
+
+	pool->set_slot_spatial_mode(slot, (int)SoundEvent::SPATIAL_NON_POSITIONAL);
+	pool->set_slot_position(slot, Vector3(1000, 0, 0)); // must be ignored
+	pool->set_slot_tier(slot, (int)SoundEvent::TIER_IMPORTANT);
+	pool->set_slot_importance_weight(slot, 1.0f);
+	pool->update_importance_all();
+	// tier_band(IMPORTANT) + 50 * 1 * 1 * 1
+	CHECK(pool->get_slot_importance(slot) == doctest::Approx(SoundEvent::TIER_BAND_IMPORTANT + 50.0f));
+
+	pool->release_slot(slot, true);
+}
+
+TEST_CASE("[Symphony][Voice][P8a] VITAL survives budget steal at critical load") {
+	SymphonyVoiceManager *mgr = SymphonyVoiceManager::get_singleton();
+	REQUIRE(mgr != nullptr);
+
+	const int32_t prev_max = mgr->get_max_voices();
+	const float prev_warn = mgr->get_warning_threshold();
+	const float prev_crit = mgr->get_critical_threshold();
+	mgr->set_max_voices(0);
+	mgr->set_warning_threshold(0.3f);
+	mgr->set_critical_threshold(0.5f);
+
+	Ref<AudioStreamSymphony> stream_vital;
+	stream_vital.instantiate();
+	stream_vital->set_mix_rate(48000.0f);
+	stream_vital->set_graph_description(SymphonyTestHelpers::make_sine_graph());
+	Ref<AudioStreamPlayback> base_v = stream_vital->instantiate_playback();
+	Ref<AudioStreamPlaybackSymphony> vital = base_v;
+	REQUIRE(vital.is_valid());
+	vital->start();
+	AudioFrame chunk[64];
+	vital->mix(chunk, 1.0f, 64);
+	vital->set_voice_tier((int)SoundEvent::TIER_VITAL);
+	vital->set_voice_importance(SoundEvent::TIER_BAND_VITAL + 10.0f);
+	vital->_test_set_cost_ewma(80.0f);
+
+	Ref<AudioStreamSymphony> stream_opt;
+	stream_opt.instantiate();
+	stream_opt->set_mix_rate(48000.0f);
+	stream_opt->set_graph_description(SymphonyTestHelpers::make_sine_graph());
+	Ref<AudioStreamPlayback> base_o = stream_opt->instantiate_playback();
+	Ref<AudioStreamPlaybackSymphony> optional = base_o;
+	REQUIRE(optional.is_valid());
+	optional->start();
+	optional->mix(chunk, 1.0f, 64);
+	optional->set_voice_tier((int)SoundEvent::TIER_OPTIONAL);
+	optional->set_voice_importance(10.0f);
+	optional->_test_set_cost_ewma(80.0f);
+
+	const uint64_t t0 = 2'000'000;
+	// Refresh mix_seq so both stay in the snapshot across enforces.
+	vital->_test_set_cost_ewma(80.0f);
+	optional->_test_set_cost_ewma(80.0f);
+	mgr->_enforce_voice_limits_at(t0);
+	vital->_test_set_cost_ewma(80.0f);
+	optional->_test_set_cost_ewma(80.0f);
+	mgr->_enforce_voice_limits_at(t0 + 40'000);
+
+	CHECK(vital->is_playing());
+	CHECK_FALSE(optional->is_playing());
+
+	vital->stop();
+	optional->stop();
+	vital.unref();
+	optional.unref();
+	base_v.unref();
+	base_o.unref();
+	mgr->process_deferred_lod();
+	mgr->set_max_voices(prev_max);
+	mgr->set_warning_threshold(prev_warn);
+	mgr->set_critical_threshold(prev_crit);
+}
+
+TEST_CASE("[Symphony][Voice][P8a] pool pushes importance to bound playback") {
+	SymphonyVoicePool *pool = SymphonyVoicePool::get_singleton();
+	REQUIRE(pool != nullptr);
+
+	Ref<AudioStreamSymphony> stream;
+	stream.instantiate();
+	stream->set_mix_rate(48000.0f);
+	stream->set_graph_description(SymphonyTestHelpers::make_sine_graph());
+	Ref<AudioStreamPlayback> base = stream->instantiate_playback();
+	Ref<AudioStreamPlaybackSymphony> playback = base;
+	REQUIRE(playback.is_valid());
+
+	int slot = pool->acquire_slot(40);
+	REQUIRE(slot >= 0);
+	pool->set_slot_tier(slot, (int)SoundEvent::TIER_IMPORTANT);
+	pool->set_slot_importance_weight(slot, 2.0f);
+	pool->set_slot_spatial_mode(slot, (int)SoundEvent::SPATIAL_NON_POSITIONAL);
+	pool->set_slot_playback(slot, playback.ptr());
+	pool->update_importance_all();
+
+	const float expected = SoundEvent::TIER_BAND_IMPORTANT + 40.0f * 2.0f;
+	CHECK(pool->get_slot_importance(slot) == doctest::Approx(expected));
+	CHECK(playback->get_voice_importance() == doctest::Approx(expected));
+	CHECK(playback->get_voice_tier() == (int)SoundEvent::TIER_IMPORTANT);
+
+	pool->clear_slot_playback(slot);
+	pool->release_slot(slot, true);
+}
+
+TEST_CASE("[Symphony][Voice][P8a] lower tier cannot steal VITAL slot") {
+	SymphonyVoicePool *pool = SymphonyVoicePool::get_singleton();
+	SymphonyEventDispatcher *dispatcher = SymphonyEventDispatcher::get_singleton();
+	REQUIRE(pool != nullptr);
+	REQUIRE(dispatcher != nullptr);
+
+	for (int i = 0; i < pool->get_pool_size(); i++) {
+		pool->release_slot(i, true);
+	}
+
+	Ref<SoundEvent> vital_event;
+	vital_event.instantiate();
+	vital_event->set_priority(10);
+	vital_event->set_tier(SoundEvent::TIER_VITAL);
+	vital_event->set_max_voices(0);
+	Ref<AudioStreamWAV> stream;
+	stream.instantiate();
+	TypedArray<AudioStream> streams;
+	streams.push_back(stream);
+	vital_event->set_streams(streams);
+
+	SymphonyEventDispatcher::PlayResult pr;
+	StringName reason;
+	int vital_slot = dispatcher->dispatch(vital_event, pr, reason);
+	REQUIRE(vital_slot >= 0);
+
+	// Fill the rest of the pool so the next dispatch must steal.
+	while (pool->acquire_slot(1) >= 0) {
+	}
+
+	Ref<SoundEvent> optional_event;
+	optional_event.instantiate();
+	optional_event->set_priority(99);
+	optional_event->set_tier(SoundEvent::TIER_OPTIONAL);
+	optional_event->set_max_voices(0);
+	optional_event->set_streams(streams);
+
+	int stolen = dispatcher->dispatch(optional_event, pr, reason);
+	// Optional may steal a low-priority filler, but never the VITAL slot.
+	CHECK(stolen != vital_slot);
+	CHECK(pool->get_slot(vital_slot)->tier == (int)SoundEvent::TIER_VITAL);
+	CHECK(pool->get_slot(vital_slot)->event_id == (uint64_t)vital_event->get_instance_id());
+
+	if (stolen >= 0) {
+		pool->release_slot(stolen, true);
+		dispatcher->on_voice_stopped(optional_event->get_instance_id());
+	}
+	pool->release_slot(vital_slot, true);
+	dispatcher->on_voice_stopped(vital_event->get_instance_id());
+	for (int i = 0; i < pool->get_pool_size(); i++) {
+		pool->release_slot(i, true);
+	}
 }
 
 TEST_CASE("[Symphony][Authoring] operator schema lists trigger names and modal arrays") {

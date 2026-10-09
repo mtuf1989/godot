@@ -42,6 +42,8 @@ void SoundEvent::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_cooldown_ms"), &SoundEvent::get_cooldown_ms);
 	ClassDB::bind_method(D_METHOD("set_category", "category"), &SoundEvent::set_category);
 	ClassDB::bind_method(D_METHOD("get_category"), &SoundEvent::get_category);
+	ClassDB::bind_method(D_METHOD("set_tier", "tier"), &SoundEvent::set_tier);
+	ClassDB::bind_method(D_METHOD("get_tier"), &SoundEvent::get_tier);
 	ClassDB::bind_method(D_METHOD("set_bus_override", "bus"), &SoundEvent::set_bus_override);
 	ClassDB::bind_method(D_METHOD("get_bus_override"), &SoundEvent::get_bus_override);
 	ClassDB::bind_method(D_METHOD("set_importance_weight", "weight"), &SoundEvent::set_importance_weight);
@@ -96,6 +98,7 @@ void SoundEvent::_bind_methods() {
 
 	ADD_GROUP("Routing", "");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "category", PROPERTY_HINT_ENUM, "SFX,Music,UI,Ambient,Voice"), "set_category", "get_category");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "tier", PROPERTY_HINT_ENUM, "Optional,Important,Vital"), "set_tier", "get_tier");
 	ADD_PROPERTY(PropertyInfo(Variant::STRING_NAME, "bus_override"), "set_bus_override", "get_bus_override");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "importance_weight", PROPERTY_HINT_RANGE, "0.0,10.0,0.1"), "set_importance_weight", "get_importance_weight");
 
@@ -125,6 +128,9 @@ void SoundEvent::_bind_methods() {
 	BIND_ENUM_CONSTANT(CATEGORY_UI);
 	BIND_ENUM_CONSTANT(CATEGORY_AMBIENT);
 	BIND_ENUM_CONSTANT(CATEGORY_VOICE);
+	BIND_ENUM_CONSTANT(TIER_OPTIONAL);
+	BIND_ENUM_CONSTANT(TIER_IMPORTANT);
+	BIND_ENUM_CONSTANT(TIER_VITAL);
 	BIND_ENUM_CONSTANT(SPATIAL_NON_POSITIONAL);
 	BIND_ENUM_CONSTANT(SPATIAL_2D);
 	BIND_ENUM_CONSTANT(SPATIAL_3D);

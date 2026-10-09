@@ -386,7 +386,8 @@ void SymphonyVoiceManager::_enforce_voice_limits_at(uint64_t p_now_us) {
 		AudioStreamPlaybackSymphony *voice = nullptr;
 		float cost = 0.0f; // smoothed % of block deadline
 		float rms = 0.0f;
-		int priority = 50;
+		float importance = 50.0f;
+		int tier = 1; // SoundEvent::VoiceTier — VITAL never budget-stolen
 		float microseconds = 0.0f;
 		int floor = 0;
 		int max_lod = 0;
@@ -415,7 +416,8 @@ void SymphonyVoiceManager::_enforce_voice_limits_at(uint64_t p_now_us) {
 		snap.voice = v;
 		snap.cost = v->get_cost_pct_ewma();
 		snap.rms = v->get_last_rms();
-		snap.priority = v->get_effective_priority();
+		snap.importance = v->get_voice_importance();
+		snap.tier = v->get_voice_tier();
 		snap.microseconds = v->get_voice_cpu_microseconds();
 		snap.floor = v->get_budget_lod_floor();
 		snap.max_lod = v->get_cached_max_lod();
@@ -494,7 +496,7 @@ void SymphonyVoiceManager::_enforce_voice_limits_at(uint64_t p_now_us) {
 	if (!engaged && below_release_active && (p_now_us - below_release_since_us) >= RELEASE_QUIET_US &&
 			(!has_released || (p_now_us - last_release_us) >= RELEASE_SPACING_US)) {
 		int32_t best_idx = -1;
-		int best_priority = -1;
+		float best_importance = -1.0f;
 		for (int32_t i = 0; i < voice_count; i++) {
 			const VoiceSnapshot &snap = snapshots[i];
 			if (snap.floor <= 0) {
@@ -507,8 +509,8 @@ void SymphonyVoiceManager::_enforce_voice_limits_at(uint64_t p_now_us) {
 			if (level + snap.cost * (1.0f / 0.6f - 1.0f) >= release_projection_limit) {
 				continue;
 			}
-			if (snap.priority > best_priority) {
-				best_priority = snap.priority;
+			if (snap.importance > best_importance) {
+				best_importance = snap.importance;
 				best_idx = i;
 			}
 		}
@@ -531,17 +533,22 @@ void SymphonyVoiceManager::_enforce_voice_limits_at(uint64_t p_now_us) {
 		is_victim_flags[idx] = true;
 		victim_indices[victim_count++] = idx;
 	};
+	// P8a N9: rank by pool importance (ties → quieter RMS). VITAL is never budget-stolen.
+	static constexpr int TIER_VITAL = 2;
 	auto pick_worst = [&]() {
 		int worst_idx = -1;
-		int worst_priority = INT32_MAX;
+		float worst_importance = FLT_MAX;
 		float worst_rms = FLT_MAX;
 		for (int32_t i = 0; i < voice_count; i++) {
 			if (is_victim_flags[i]) {
 				continue;
 			}
-			if (snapshots[i].priority < worst_priority ||
-					(snapshots[i].priority == worst_priority && snapshots[i].rms < worst_rms)) {
-				worst_priority = snapshots[i].priority;
+			if (snapshots[i].tier >= TIER_VITAL) {
+				continue;
+			}
+			if (snapshots[i].importance < worst_importance ||
+					(snapshots[i].importance == worst_importance && snapshots[i].rms < worst_rms)) {
+				worst_importance = snapshots[i].importance;
 				worst_rms = snapshots[i].rms;
 				worst_idx = i;
 			}

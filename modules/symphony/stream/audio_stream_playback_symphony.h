@@ -89,7 +89,9 @@ private:
 	std::atomic<float> mix_rate_cached{ 44100.0f };
 	std::atomic<float> output_rate_cached{ 44100.0f };
 	std::atomic<double> cached_duration_limit{ 0.0 };
-	std::atomic<int32_t> cached_priority{ 50 };
+	// Pool/music-authored importance + tier for CPU manager steal ranking (P8a N9).
+	std::atomic<float> cached_importance{ 50.0f };
+	std::atomic<int32_t> cached_tier{ 1 }; // SoundEvent::TIER_IMPORTANT
 	std::atomic<int32_t> cached_max_lod{ 0 };
 
 	// Manager → main-thread requests (audio writes atomics only).
@@ -165,7 +167,11 @@ public:
 	[[nodiscard]] float get_voice_cpu_microseconds() const;
 	[[nodiscard]] float get_budget_percent() const;
 	[[nodiscard]] float get_last_rms() const;
-	[[nodiscard]] int get_effective_priority() const;
+	// P8a: importance key shared with SymphonyVoicePool; tier protects VITAL from budget steal.
+	void set_voice_importance(float p_importance);
+	[[nodiscard]] float get_voice_importance() const;
+	void set_voice_tier(int p_tier);
+	[[nodiscard]] int get_voice_tier() const;
 	[[nodiscard]] float get_estimated_cost_units() const;
 
 	// Test/debug: push WavePlayer finished on the live package and mix once.

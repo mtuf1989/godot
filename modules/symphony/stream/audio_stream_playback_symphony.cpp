@@ -41,6 +41,10 @@ void AudioStreamPlaybackSymphony::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_voice_cpu_microseconds"), &AudioStreamPlaybackSymphony::get_voice_cpu_microseconds);
 	ClassDB::bind_method(D_METHOD("get_budget_percent"), &AudioStreamPlaybackSymphony::get_budget_percent);
 	ClassDB::bind_method(D_METHOD("get_last_rms"), &AudioStreamPlaybackSymphony::get_last_rms);
+	ClassDB::bind_method(D_METHOD("set_voice_importance", "importance"), &AudioStreamPlaybackSymphony::set_voice_importance);
+	ClassDB::bind_method(D_METHOD("get_voice_importance"), &AudioStreamPlaybackSymphony::get_voice_importance);
+	ClassDB::bind_method(D_METHOD("set_voice_tier", "tier"), &AudioStreamPlaybackSymphony::set_voice_tier);
+	ClassDB::bind_method(D_METHOD("get_voice_tier"), &AudioStreamPlaybackSymphony::get_voice_tier);
 	ClassDB::bind_method(D_METHOD("has_unsupported_seek"), &AudioStreamPlaybackSymphony::has_unsupported_seek);
 	ClassDB::bind_method(D_METHOD("get_budget_lod_floor"), &AudioStreamPlaybackSymphony::get_budget_lod_floor);
 	ClassDB::bind_method(D_METHOD("get_current_lod_tier"), &AudioStreamPlaybackSymphony::get_current_lod_tier);
@@ -176,13 +180,12 @@ void AudioStreamPlaybackSymphony::_begin_fallback_transition(PreparedGraphPackag
 void AudioStreamPlaybackSymphony::_cache_stream_metadata() {
 	if (!stream.is_valid()) {
 		mix_rate_cached.store(44100.0f, std::memory_order_relaxed);
-		cached_priority.store(50, std::memory_order_relaxed);
 		cached_max_lod.store(0, std::memory_order_relaxed);
 		return;
 	}
 	const float graph_rate = stream->get_mix_rate();
 	mix_rate_cached.store(graph_rate, std::memory_order_relaxed);
-	cached_priority.store(stream->get_voice_priority(), std::memory_order_relaxed);
+	// Importance/tier come from VoicePool or music (P8a); stream no longer owns voice_priority.
 	cached_max_lod.store(MAX(0, stream->get_lod_count() - 1), std::memory_order_relaxed);
 	cached_duration_limit.store(stream->get_duration_limit_seconds(), std::memory_order_relaxed);
 	float out_rate = graph_rate;
@@ -752,8 +755,20 @@ float AudioStreamPlaybackSymphony::get_last_rms() const {
 	return stat_rms.load(std::memory_order_relaxed);
 }
 
-int AudioStreamPlaybackSymphony::get_effective_priority() const {
-	return cached_priority.load(std::memory_order_relaxed);
+void AudioStreamPlaybackSymphony::set_voice_importance(float p_importance) {
+	cached_importance.store(p_importance, std::memory_order_relaxed);
+}
+
+float AudioStreamPlaybackSymphony::get_voice_importance() const {
+	return cached_importance.load(std::memory_order_relaxed);
+}
+
+void AudioStreamPlaybackSymphony::set_voice_tier(int p_tier) {
+	cached_tier.store(CLAMP(p_tier, 0, 2), std::memory_order_relaxed);
+}
+
+int AudioStreamPlaybackSymphony::get_voice_tier() const {
+	return cached_tier.load(std::memory_order_relaxed);
 }
 
 float AudioStreamPlaybackSymphony::get_estimated_cost_units() const {

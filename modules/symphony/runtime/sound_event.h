@@ -12,9 +12,27 @@ public:
 	enum VariationMode { VARIATION_RANDOM = 0, VARIATION_SEQUENCE, VARIATION_SHUFFLE };
 	enum StealMode { STEAL_OLDEST = 0, STEAL_QUIETEST, STEAL_FARTHEST };
 	enum Category { CATEGORY_SFX = 0, CATEGORY_MUSIC, CATEGORY_UI, CATEGORY_AMBIENT, CATEGORY_VOICE };
+	// Voice policy tier (P8a). Higher tiers are never stolen by lower-tier admissions;
+	// VITAL is never budget-stolen by the CPU manager (LOD demotion is still allowed).
+	enum VoiceTier { TIER_OPTIONAL = 0, TIER_IMPORTANT, TIER_VITAL };
 	enum SpatialMode { SPATIAL_NON_POSITIONAL = 0, SPATIAL_2D, SPATIAL_3D };
 	enum AttenuationModel { ATTENUATION_LINEAR = 0, ATTENUATION_LOGARITHMIC, ATTENUATION_CUSTOM, ATTENUATION_NATURAL, ATTENUATION_LOG_REVERSE, ATTENUATION_INVERSE_SQUARE };
 	enum RTPCTarget { RTPC_PITCH = 0, RTPC_VOLUME, RTPC_GRAPH_INPUT, RTPC_PLAYBACK_SPEED };
+
+	// Additive band so importance sorts by tier first, then priority×distance×weights.
+	static constexpr float TIER_BAND_OPTIONAL = 0.0f;
+	static constexpr float TIER_BAND_IMPORTANT = 1000.0f;
+	static constexpr float TIER_BAND_VITAL = 1000000.0f;
+	static float tier_band(VoiceTier p_tier) {
+		switch (p_tier) {
+			case TIER_VITAL:
+				return TIER_BAND_VITAL;
+			case TIER_IMPORTANT:
+				return TIER_BAND_IMPORTANT;
+			default:
+				return TIER_BAND_OPTIONAL;
+		}
+	}
 
 private:
 	TypedArray<AudioStream> streams;
@@ -26,6 +44,7 @@ private:
 	StealMode steal_mode = STEAL_OLDEST;
 	float cooldown_ms = 0.0;
 	Category category = CATEGORY_SFX;
+	VoiceTier tier = TIER_IMPORTANT;
 	StringName bus_override;
 	float importance_weight = 1.0f; // Base importance multiplier for voice stealing/virtualization
 	SpatialMode spatial_mode = SPATIAL_NON_POSITIONAL;
@@ -76,6 +95,9 @@ public:
 
 	void set_category(Category p_category) { category = p_category; }
 	Category get_category() const { return category; }
+
+	void set_tier(VoiceTier p_tier) { tier = p_tier; }
+	VoiceTier get_tier() const { return tier; }
 
 	void set_bus_override(const StringName &p_bus) { bus_override = p_bus; }
 	StringName get_bus_override() const { return bus_override; }
@@ -149,6 +171,7 @@ public:
 VARIANT_ENUM_CAST(SoundEvent::VariationMode);
 VARIANT_ENUM_CAST(SoundEvent::StealMode);
 VARIANT_ENUM_CAST(SoundEvent::Category);
+VARIANT_ENUM_CAST(SoundEvent::VoiceTier);
 VARIANT_ENUM_CAST(SoundEvent::SpatialMode);
 VARIANT_ENUM_CAST(SoundEvent::AttenuationModel);
 VARIANT_ENUM_CAST(SoundEvent::RTPCTarget);

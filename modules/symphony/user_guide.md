@@ -134,11 +134,12 @@ MusicSystem.set_state(&"exploration") # Transition follows graph rules
 | `variation_mode` | Enum | RANDOM | How to pick from multiple streams: `RANDOM`, `SEQUENCE`, `SHUFFLE` |
 | `pitch_range` | Vector2 | (1.0, 1.0) | Random pitch range (min, max) |
 | `volume_range` | Vector2 | (0.0, 0.0) | Random volume offset in dB (min, max) |
-| `priority` | int | 50 | Voice priority (0-100, higher = harder to steal) |
+| `priority` | int | 50 | Voice priority (0-100, higher = harder to steal within the same tier) |
 | `max_voices` | int | 0 | Max simultaneous voices (0 = unlimited) |
 | `steal_mode` | Enum | OLDEST | How to steal when at max: `OLDEST`, `QUIETEST`, `FARTHEST` |
 | `cooldown_ms` | float | 0.0 | Minimum ms between triggers |
 | `category` | Enum | SFX | Bus category: `SFX`, `MUSIC`, `UI`, `AMBIENT`, `VOICE` |
+| `tier` | Enum | IMPORTANT | Voice policy tier: `OPTIONAL`, `IMPORTANT`, `VITAL` (VITAL is never stolen by a lower tier, and never budget-stolen) |
 | `bus_override` | String | "" | Override the default bus for this category |
 | `importance_weight` | float | 1.0 | Multiplier for importance scoring |
 | `spatial_mode` | Enum | NON_POSITIONAL | `NON_POSITIONAL`, `2D`, `3D` |
@@ -309,7 +310,6 @@ The `.tres` representation:
 
 [resource]
 mix_rate = 48000.0
-voice_priority = 50
 schema_version = 2
 duration_limit_seconds = 0.3
 
@@ -1359,13 +1359,17 @@ The stolen voice fades out over 64 samples (anti-click); the new voice takes the
 
 ### Importance Calculation
 
-Each voice's importance is computed from:
+Each voice's importance is computed as:
+
+`tier_band + priority × distance_factor × importance_weight × category_weight`
+
+- **Tier band** — Optional=0, Important=1000, Vital=1e6 (higher tiers sort first; Vital is never stolen by a lower tier)
 - **Priority** (from SoundEvent)
-- **Distance** (closer = more important)
+- **Distance factor** — closer = more important for 2D/3D; non-positional always uses 1.0
 - **Category weight** (Voice > UI > SFX = Music > Ambient)
 - **Importance weight** (per-event multiplier)
 
-Importance is updated in a staggered fashion (1/4 of the pool per frame) to spread CPU cost.
+Importance is updated in a staggered fashion (1/4 of the pool per frame) to spread CPU cost. Bound `AudioStreamPlaybackSymphony` instances receive the same key via `set_voice_importance` so the CPU manager ranks by one shared score (ties broken by RMS). Procedural music marks its playback **VITAL** so it can be LOD-demoted but never budget-stolen.
 
 ### Virtualization
 
@@ -1473,7 +1477,7 @@ When the total voice CPU budget exceeds the **warning threshold** (default 70%),
 |--------------|-----------------|
 | < 70% | Normal — all voices at distance-based LOD |
 | 70% – 90% | **Auto-LOD demotion** — expensive voices transition to cheaper LOD tiers |
-| > 90% | **Voice stealing** — lowest-priority voices are killed |
+| > 90% | **Voice stealing** — lowest-importance non-VITAL voices are killed |
 
 **What this means for users:**
 - Under moderate load, sounds degrade quality gracefully (with crossfade) rather than disappearing

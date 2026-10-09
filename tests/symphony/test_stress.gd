@@ -66,7 +66,7 @@ func _spawn_voice(p_tier: int) -> void:
 	var player := AudioStreamPlayer.new()
 	var stream := AudioStreamSymphony.new()
 	stream.mix_rate = 44100.0
-	stream.voice_priority = randi_range(10, 90)
+	var importance := float(randi_range(10, 90))
 
 	match p_tier:
 		1:
@@ -106,6 +106,9 @@ func _spawn_voice(p_tier: int) -> void:
 	player.stream = stream
 	add_child(player)
 	player.play()
+	var playback := player.get_stream_playback()
+	if playback != null and playback.has_method("set_voice_importance"):
+		playback.set_voice_importance(importance)
 	players.append(player)
 
 

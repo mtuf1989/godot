@@ -55,6 +55,7 @@ public:
 		VoiceState state = VOICE_FREE;
 		uint64_t event_id = 0;
 		int priority = 50;
+		int tier = 1; // SoundEvent::VoiceTier (0=Optional,1=Important,2=Vital)
 		float importance = 0.0f;
 		float rms = 0.0f;
 		bool rms_valid = false;
@@ -64,6 +65,9 @@ public:
 		uint64_t start_time = 0;
 		int category = 0; // SoundEvent::Category (0=SFX,1=Music,2=UI,3=Ambient,4=Voice)
 		float importance_weight = 1.0f; // Per-event weight from SoundEvent
+		// Main-thread ObjectID of AudioStreamPlaybackSymphony bound to this slot (0 = none).
+		// VoicePool pushes importance/tier to it each importance update (P8a N9).
+		ObjectID bound_playback_id;
 
 		// Distance attenuation
 		int spatial_mode = 0; // SoundEvent::SpatialMode (0=NonPositional,1=2D,2=3D)
@@ -181,9 +185,14 @@ public:
 	void set_reference_distance(float p_dist);
 	float get_reference_distance() const;
 	void set_slot_category(int p_slot, int p_category);
+	void set_slot_tier(int p_slot, int p_tier);
+	int get_slot_tier(int p_slot) const;
 	void set_slot_importance_weight(int p_slot, float p_weight);
 	void set_slot_position(int p_slot, const Vector3 &p_pos);
 	float get_slot_importance(int p_slot) const;
+	// Bind a Symphony playback so importance/tier are pushed each update (P8a N9).
+	void set_slot_playback(int p_slot, Object *p_playback);
+	void clear_slot_playback(int p_slot);
 	void update_importance(); // Called each frame (internally handles staggering)
 	void update_importance_all(); // Forces all slots to update immediately (test/debug only)
 

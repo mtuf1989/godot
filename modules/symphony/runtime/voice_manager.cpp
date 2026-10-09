@@ -1,5 +1,8 @@
 #include "voice_manager.h"
+#include "sound_event.h"
+#include "../stream/audio_stream_playback_symphony.h"
 #include "core/object/class_db.h"
+#include "core/object/object.h"
 #include "core/os/os.h"
 #include "core/math/math_funcs.h"
 #include "core/variant/dictionary.h"
@@ -63,9 +66,13 @@ void SymphonyVoicePool::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_reference_distance", "distance"), &SymphonyVoicePool::set_reference_distance);
 	ClassDB::bind_method(D_METHOD("get_reference_distance"), &SymphonyVoicePool::get_reference_distance);
 	ClassDB::bind_method(D_METHOD("set_slot_category", "slot", "category"), &SymphonyVoicePool::set_slot_category);
+	ClassDB::bind_method(D_METHOD("set_slot_tier", "slot", "tier"), &SymphonyVoicePool::set_slot_tier);
+	ClassDB::bind_method(D_METHOD("get_slot_tier", "slot"), &SymphonyVoicePool::get_slot_tier);
 	ClassDB::bind_method(D_METHOD("set_slot_importance_weight", "slot", "weight"), &SymphonyVoicePool::set_slot_importance_weight);
 	ClassDB::bind_method(D_METHOD("set_slot_position", "slot", "position"), &SymphonyVoicePool::set_slot_position);
 	ClassDB::bind_method(D_METHOD("get_slot_importance", "slot"), &SymphonyVoicePool::get_slot_importance);
+	ClassDB::bind_method(D_METHOD("set_slot_playback", "slot", "playback"), &SymphonyVoicePool::set_slot_playback);
+	ClassDB::bind_method(D_METHOD("clear_slot_playback", "slot"), &SymphonyVoicePool::clear_slot_playback);
 	ClassDB::bind_method(D_METHOD("update_importance"), &SymphonyVoicePool::update_importance);
 	ClassDB::bind_method(D_METHOD("update_importance_all"), &SymphonyVoicePool::update_importance_all);
 
@@ -135,15 +142,19 @@ static void _activate_slot(SymphonyVoicePool::VoiceSlot &slot, int p_priority) {
 	_bump_generation(slot);
 	slot.state = SymphonyVoicePool::VOICE_TO_PLAY;
 	slot.priority = p_priority;
-	slot.importance = (float)p_priority;
+	slot.tier = (int)SoundEvent::TIER_IMPORTANT;
+	slot.importance = SoundEvent::tier_band(SoundEvent::TIER_IMPORTANT) + (float)p_priority;
 	slot.rms = 0.0f;
 	slot.rms_valid = false;
+	slot.position = Vector3(); // N13: never inherit a prior emitter position
+	slot.bound_playback_id = ObjectID();
 	slot.fade_progress = 0.0f;
 	slot.fade_speed = 1.0f / SymphonyVoicePool::ANTI_CLICK_SAMPLES;
 	slot.start_time = OS::get_singleton()->get_ticks_usec();
 	slot.local_param_count = 0;
 	slot.attenuation_volume = 1.0f;
 	slot.pending_start_delay_s = 0.0f;
+	slot.spatial_mode = 0;
 	slot.lod_threshold_1 = 0.3f;
 	slot.lod_threshold_2 = 0.7f;
 	slot.current_lod = 0;
@@ -165,6 +176,7 @@ int SymphonyVoicePool::acquire_slot(int p_priority) {
 
 void SymphonyVoicePool::release_slot(int p_index, bool p_immediate) {
 	ERR_FAIL_INDEX(p_index, pool_size);
+	slots[p_index].bound_playback_id = ObjectID();
 	if (p_immediate) {
 		slots[p_index].state = VOICE_FREE;
 		slots[p_index].event_id = 0;
@@ -172,6 +184,7 @@ void SymphonyVoicePool::release_slot(int p_index, bool p_immediate) {
 		slots[p_index].inner_radius = 0.0f;
 		slots[p_index].falloff_distance = 0.0f;
 		slots[p_index].pending_start_delay_s = 0.0f;
+		slots[p_index].position = Vector3();
 	} else {
 		slots[p_index].state = VOICE_STOPPING;
 		slots[p_index].fade_progress = 1.0f;
@@ -193,6 +206,9 @@ int SymphonyVoicePool::find_lowest_importance_slot() const {
 	float worst_importance = FLT_MAX;
 	for (int i = 0; i < pool_size; i++) {
 		if (slots[i].state == VOICE_PLAYING || slots[i].state == VOICE_TO_PLAY) {
+			if (slots[i].tier >= (int)SoundEvent::TIER_VITAL) {
+				continue; // VITAL is never selected as a steal victim
+			}
 			if (slots[i].importance < worst_importance ||
 					(slots[i].importance == worst_importance && (worst_idx < 0 || i < worst_idx))) {
 				worst_importance = slots[i].importance;
@@ -388,6 +404,16 @@ void SymphonyVoicePool::set_slot_category(int p_slot, int p_category) {
 	slots[p_slot].category = CLAMP(p_category, 0, 4);
 }
 
+void SymphonyVoicePool::set_slot_tier(int p_slot, int p_tier) {
+	ERR_FAIL_INDEX(p_slot, pool_size);
+	slots[p_slot].tier = CLAMP(p_tier, 0, 2);
+}
+
+int SymphonyVoicePool::get_slot_tier(int p_slot) const {
+	ERR_FAIL_INDEX_V(p_slot, pool_size, (int)SoundEvent::TIER_IMPORTANT);
+	return slots[p_slot].tier;
+}
+
 void SymphonyVoicePool::set_slot_importance_weight(int p_slot, float p_weight) {
 	ERR_FAIL_INDEX(p_slot, pool_size);
 	slots[p_slot].importance_weight = MAX(p_weight, 0.0f);
@@ -401,6 +427,21 @@ void SymphonyVoicePool::set_slot_position(int p_slot, const Vector3 &p_pos) {
 float SymphonyVoicePool::get_slot_importance(int p_slot) const {
 	ERR_FAIL_INDEX_V(p_slot, pool_size, 0.0f);
 	return slots[p_slot].importance;
+}
+
+void SymphonyVoicePool::set_slot_playback(int p_slot, Object *p_playback) {
+	ERR_FAIL_INDEX(p_slot, pool_size);
+	if (p_playback == nullptr) {
+		slots[p_slot].bound_playback_id = ObjectID();
+		return;
+	}
+	ERR_FAIL_COND(Object::cast_to<AudioStreamPlaybackSymphony>(p_playback) == nullptr);
+	slots[p_slot].bound_playback_id = p_playback->get_instance_id();
+}
+
+void SymphonyVoicePool::clear_slot_playback(int p_slot) {
+	ERR_FAIL_INDEX(p_slot, pool_size);
+	slots[p_slot].bound_playback_id = ObjectID();
 }
 
 // --- Distance Attenuation ---
@@ -536,16 +577,34 @@ void SymphonyVoicePool::_update_importance_batch(int p_start, int p_count) {
 			continue;
 		}
 
-		// distance_factor = 1.0 / (1.0 + distance_sq / ref_distance²)
-		float distance_sq = slots[i].position.distance_squared_to(listener_position);
-		float distance_factor = 1.0f / (1.0f + distance_sq / ref_dist_sq);
+		// N13: non-positional voices use distance_factor = 1 (ignore stale position).
+		float distance_sq = 0.0f;
+		float distance_factor = 1.0f;
+		if (slots[i].spatial_mode != 0) {
+			distance_sq = slots[i].position.distance_squared_to(listener_position);
+			distance_factor = 1.0f / (1.0f + distance_sq / ref_dist_sq);
+		}
 
 		// category_weight from lookup table
 		int cat = CLAMP(slots[i].category, 0, 4);
 		float category_weight = CATEGORY_WEIGHTS[cat];
+		const SoundEvent::VoiceTier tier = (SoundEvent::VoiceTier)CLAMP(slots[i].tier, 0, 2);
 
-		// importance = priority × distance_factor × importance_weight × category_weight
-		slots[i].importance = (float)slots[i].priority * distance_factor * slots[i].importance_weight * category_weight;
+		// importance = tier_band + priority × distance_factor × importance_weight × category_weight
+		slots[i].importance = SoundEvent::tier_band(tier) +
+				(float)slots[i].priority * distance_factor * slots[i].importance_weight * category_weight;
+
+		// Push pool importance into the bound Symphony playback (P8a N9).
+		if (slots[i].bound_playback_id.is_valid()) {
+			if (Object *obj = ObjectDB::get_instance(slots[i].bound_playback_id)) {
+				if (AudioStreamPlaybackSymphony *pb = Object::cast_to<AudioStreamPlaybackSymphony>(obj)) {
+					pb->set_voice_importance(slots[i].importance);
+					pb->set_voice_tier(slots[i].tier);
+				}
+			} else {
+				slots[i].bound_playback_id = ObjectID();
+			}
+		}
 
 		// --- Distance attenuation ---
 		// Only compute for spatial voices (2D or 3D)

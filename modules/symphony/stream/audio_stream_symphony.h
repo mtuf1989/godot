@@ -16,7 +16,6 @@ private:
 	double duration_limit_seconds = 0.0;
 	// 0 = legacy graph resources (migration diagnostics). 2 = strict authoring schema.
 	int schema_version = 0;
-	int voice_priority = 50; // 0-100, higher = harder to steal
 	GraphDescription graph_desc; // LOD 0 (full quality)
 	// When true, AudioStreamPlaybackSymphony clears is_playing after WavePlayer fires finished.
 	bool stop_on_source_finished = false;
@@ -56,9 +55,6 @@ public:
 	static Dictionary get_operator_schema();
 	Dictionary validate_authoring() const;
 	Dictionary render_offline(double p_duration_seconds, int64_t p_seed, const Dictionary &p_initial_parameters, const Array &p_triggers, const String &p_wav_path);
-
-	void set_voice_priority(int p_priority);
-	int get_voice_priority() const;
 
 	void set_stop_on_source_finished(bool p_enable) { stop_on_source_finished = p_enable; }
 	[[nodiscard]] bool get_stop_on_source_finished() const { return stop_on_source_finished; }
