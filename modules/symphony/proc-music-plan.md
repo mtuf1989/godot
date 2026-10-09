@@ -9,7 +9,7 @@
 >   - the resettable-state contract and ModalBank `pitch_ratio` (P10);
 >   - music-safe voice budgeting (P8a).
 >
-> **Status (2026-10-09):** tech **P0–P8a** and **P10** done; music **N0–N3**, composer **G1**, **MusicStream**, and adaptive **G2** done. Resume at `tech-fix-plan.md` §Progress → **V1** qualification.
+> **Status (2026-10-09):** tech **P0–P8a** and **P10** done; music **N0–N3**, **G1–G2**, **MusicStream**, and **V1** automated qualification done. Optional **P8b**/**P9** + listening deferred — see `QUALIFICATION.md`.
 
 ## 1. Goal and scope
 
@@ -274,7 +274,7 @@ Before expanding playback (all delivered in **S0** by tech plan P1/P1b):
 | **G1 — Score authoring and composer** | S3 | Game template | P1b G (seed helper) | **Done:** `addons/symphony_audio/procedural/*` resources; `ProceduralMusicComposer` stages; `ProceduralMusicLedger`; `procedural_composer_test.gd` (7 cases). |
 | **MusicStream — Native playback** | S4 prep | Godot | N1–N3, P8a, P10 | **Done:** `AudioStreamSymphonyMusic` / `AudioStreamPlaybackSymphonyMusic`; phrase submit, pools, stretch, VITAL; `test_symphony_music_stream.cpp`. |
 | **G2 — Adaptive integration** | S4 | Game template | MusicStream + **P8a** | **Done:** `ProceduralMusicController`; MusicSystem `PROCEDURAL` + `load_score`/`set_intensity`/`request_tempo`/`request_key`; phrase-ahead + fallback; `procedural_music_g2_test.gd`. |
-| **V1 — Qualification and documentation** | S5 | Both | P9 (perf convention), all phases | Regression suites, sanitizer runs, release profiling, audition review, resource examples, and public API/schema documentation. Acceptance gates below pass. |
+| **V1 — Qualification and documentation** | S5 | Both | all phases (P9 optional) | **Done (automated):** `test_symphony_music_v1.cpp`; `DemoScoreFactory`; 1000-seed batch; `QUALIFICATION.md` + API docs. **Deferred with P8b/P9:** 30‑min release profiling, RTSan CI, designer listening. |
 
 Follow the stage order in `tech-fix-plan.md` §Unified roadmap. Within it, implement native timing and a fixed hybrid playback example before adding composition heuristics. Keep native and Game Audio Layer changes in separate reviewable commits.
 

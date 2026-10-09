@@ -66,7 +66,7 @@ Equivalent filter:
 bin/godot.macos.editor.arm64 --headless --test --test-case='*Symphony*'
 ```
 
-The Symphony 2.0 baseline is **182/182 cases, 195,815 assertions, 0 failures**. Spatial integration in the separate `game-template` repo adds **14/14 GdUnit4 cases**.
+Procedural-music + DSP suite: run `--test-case='*Symphony*'` (see Progress in `tech-fix-plan.md` for the current count). Game-template GdUnit suites live under `test/addons/symphony_audio/` (composer, G2, V1).
 
 **Do not** pass `'[Symphony]'` alone. Doctest treats `[...]` as a character-class glob and will run almost every engine test.
 
@@ -114,9 +114,11 @@ modules/symphony/
 ├── nodes/      DSP operators
 ├── runtime/    EventDispatcher, RTPCEngine, BeatClock, BusController, …
 ├── spatial/    Materials, occlusion, room/reverb estimation, portals, scheduler/cache
-├── stream/     AudioStreamSymphony + playback
+├── stream/     AudioStreamSymphony + AudioStreamSymphonyMusic + playback
 ├── editor/     Graph editor (editor target only)
-└── thirdparty/pffft/   FFT used by spectral nodes
+├── thirdparty/ pffft, signalsmith-stretch, signalsmith-linear
+├── QUALIFICATION.md   V1 gates (automated vs deferred P8b/P9)
+└── tech-fix-plan.md / proc-music-plan.md
 ```
 
 ## Notes

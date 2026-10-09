@@ -8,10 +8,10 @@
 |---|---|
 | **As of** | 2026-10-09 |
 | **Branch** | `master` (ahead of `origin/master`; not pushed) |
-| **Done** | **P0–P8a**, **P10**, music **N1–N3**, composer **G1**, **MusicStream**, adaptive **G2**; **S0 / N0** closed. SFX lanes for S1–S4 prerequisites landed early (P5–P7, P8a). |
-| **Next** | **S5 / V1** qualification (or optional **P8b**, **P9**). |
-| **Stage** | S4 Adaptive ✅ → S5 Qualification |
-| **C++ tests** | 297/297 `*Symphony*` green on `bin/godot.macos.editor.arm64` |
+| **Done** | **P0–P8a**, **P10**, music **N1–N3**, **G1–G2**, **MusicStream**, **V1** automated qualification; **S0 / N0** closed. Optional **P8b** / **P9** deferred. |
+| **Next** | Optional **P8b** / **P9** (perf convention, 30‑min profiling, listening); or project work on top of V1. |
+| **Stage** | S5 Qualification ✅ (automated); listening + P9 perf gates deferred |
+| **C++ tests** | 300/300 `*Symphony*` green on `bin/godot.macos.editor.arm64` |
 | **TSan** | `.san` after P1b: **1** warning (same as P0 `DynamicRangeHigh`); new Symphony-frame races = 0 |
 
 ### Commits
@@ -36,6 +36,7 @@
 | G1 | game-template `d574207b` | Typed score resources, bounded composer, offline ledger, batch seed tests |
 | MusicStream | `98a4231b9e` | `AudioStreamSymphonyMusic` + playback: scheduler, note pools, stretch, VITAL; `test_symphony_music_stream.cpp` |
 | G2 | game-template `4f002834` | `ProceduralMusicController`; MusicSystem `PROCEDURAL` + `load_score` / intensity / tempo / key |
+| V1 | *(pending)* (+ gt pending) | Timing/callback/replace tests; DemoScoreFactory; 1000-seed batch; `QUALIFICATION.md` |
 
 ### P1 leftovers (closed — optional coverage only)
 
@@ -43,7 +44,7 @@ S0 gate items are done (TSan re-baseline, torch_fire GDScript N1, parked-package
 
 ### How to resume next session
 
-1. Read this **Progress** block. Continue **S5 / V1** qualification (or optional **P8b**/**P9**).
+1. Read this **Progress** block. Optional **P8b**/**P9** when ready; see `QUALIFICATION.md` for deferred gates.
 2. Build: `scons platform=macos target=editor arch=arm64 tests=yes module_raycast_enabled=no -j$(sysctl -n hw.ncpu)`
 3. Leave each phase green + committed on its own (plan convention).
 4. Re-run `preset_level_test` in game-template after audible DSP changes.

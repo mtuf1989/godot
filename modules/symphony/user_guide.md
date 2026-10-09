@@ -610,6 +610,18 @@ var status: Array = playback.drain_status()
 
 Ticks use 960 PPQN. Playback registers as a **VITAL** voice (never budget-stolen). Game-template `MusicSystem` PROCEDURAL mode wraps this stream.
 
+```gdscript
+# Game Audio Layer (autoload MusicSystem)
+MusicSystem.load_score(score, 42)          # → PlaybackMode.PROCEDURAL
+MusicSystem.set_state(&"tension")          # phrase-boundary section change
+MusicSystem.set_intensity(0.8)
+MusicSystem.request_tempo(140.0)           # next bar
+MusicSystem.request_key(2, &"major")       # next phrase
+# Demo factory: DemoScoreFactory.make_demonstration_score()
+```
+
+Qualification evidence and deferred P8b/P9 gates: [`QUALIFICATION.md`](QUALIFICATION.md).
+
 ---
 
 ## RTPC — Real-Time Parameter Control

@@ -1,5 +1,9 @@
 # Dev Log — Symphony Audio System
 
+## V1 (2026-10-09)
+
+Automated qualification without P8b/P9: sample-accurate note offsets + callback envelope + replace_future (`test_symphony_music_v1.cpp`); `DemoScoreFactory` (bass/chords/melody/perc/bed, explore→tension→combat, locked/authored variants); 1000-seed compose batch; `QUALIFICATION.md` lists closed vs deferred gates. Suite: 300/300. game-template: `procedural_music_v1_test.gd` (4/4).
+
 ## G2 (2026-10-09)
 
 game-template: `ProceduralMusicController` composes one phrase ahead into `AudioStreamSymphonyMusic` (track map, default MusicNoteInput instruments, clip registry, tempo/key coalesce, phrase-boundary section changes, compose fallback). `MusicSystem` gains `PlaybackMode.PROCEDURAL` and `load_score` / `set_intensity` / `request_tempo` / `request_key` without breaking `load_graph()`. Tests: `procedural_music_g2_test.gd` (4/4).
