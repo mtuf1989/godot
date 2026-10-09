@@ -1,5 +1,9 @@
 # Dev Log — Symphony Audio System
 
+## G2 (2026-10-09)
+
+game-template: `ProceduralMusicController` composes one phrase ahead into `AudioStreamSymphonyMusic` (track map, default MusicNoteInput instruments, clip registry, tempo/key coalesce, phrase-boundary section changes, compose fallback). `MusicSystem` gains `PlaybackMode.PROCEDURAL` and `load_score` / `set_intensity` / `request_tempo` / `request_key` without breaking `load_graph()`. Tests: `procedural_music_g2_test.gd` (4/4).
+
 ## MusicStream (2026-10-09)
 
 `AudioStreamSymphonyMusic` + `AudioStreamPlaybackSymphonyMusic`: track instruments from `AudioStreamSymphony`, stereo-clip registry, phrase Dictionary submit (`note_on`/`off`, `tempo`, `track_gain`, `clip_on`), `replace_future`, transport snapshot, status drain. Mix path drives scheduler → note pools + stretch pool with common-latency synth delay; registers as **VITAL** with the voice manager. Tests: `test_symphony_music_stream.cpp`. Suite: 297/297.

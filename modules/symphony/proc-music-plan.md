@@ -9,7 +9,7 @@
 >   - the resettable-state contract and ModalBank `pitch_ratio` (P10);
 >   - music-safe voice budgeting (P8a).
 >
-> **Status (2026-10-09):** tech **P0–P8a** and **P10** done; music **N0–N3**, composer **G1**, and **AudioStreamSymphonyMusic** stream done. Resume at `tech-fix-plan.md` §Progress → adaptive **G2** (game-template MusicSystem PROCEDURAL).
+> **Status (2026-10-09):** tech **P0–P8a** and **P10** done; music **N0–N3**, composer **G1**, **MusicStream**, and adaptive **G2** done. Resume at `tech-fix-plan.md` §Progress → **V1** qualification.
 
 ## 1. Goal and scope
 
@@ -273,7 +273,7 @@ Before expanding playback (all delivered in **S0** by tech plan P1/P1b):
 | **N3 — Recorded phrases** | S3 | Godot | P2 N3 (WAV decode path) | **Done:** vendored Signalsmith Stretch **1.3.0** (+ Linear **0.1.2**; plan cited 1.3.2 — tag absent upstream); `SymphonyMusicStereoCache`; stretch pool ownership; tempo/transpose envelope; common-latency hybrid synth+clip test (`test_symphony_music_n3.cpp`). |
 | **G1 — Score authoring and composer** | S3 | Game template | P1b G (seed helper) | **Done:** `addons/symphony_audio/procedural/*` resources; `ProceduralMusicComposer` stages; `ProceduralMusicLedger`; `procedural_composer_test.gd` (7 cases). |
 | **MusicStream — Native playback** | S4 prep | Godot | N1–N3, P8a, P10 | **Done:** `AudioStreamSymphonyMusic` / `AudioStreamPlaybackSymphonyMusic`; phrase submit, pools, stretch, VITAL; `test_symphony_music_stream.cpp`. |
-| **G2 — Adaptive integration** | S4 | Game template | MusicStream + **P8a** | Procedural MusicSystem mode, state/intensity controls, phrase preparation, pacing, fallback, and audition scene. Exploration→tension→combat works through one playback. |
+| **G2 — Adaptive integration** | S4 | Game template | MusicStream + **P8a** | **Done:** `ProceduralMusicController`; MusicSystem `PROCEDURAL` + `load_score`/`set_intensity`/`request_tempo`/`request_key`; phrase-ahead + fallback; `procedural_music_g2_test.gd`. |
 | **V1 — Qualification and documentation** | S5 | Both | P9 (perf convention), all phases | Regression suites, sanitizer runs, release profiling, audition review, resource examples, and public API/schema documentation. Acceptance gates below pass. |
 
 Follow the stage order in `tech-fix-plan.md` §Unified roadmap. Within it, implement native timing and a fixed hybrid playback example before adding composition heuristics. Keep native and Game Audio Layer changes in separate reviewable commits.
