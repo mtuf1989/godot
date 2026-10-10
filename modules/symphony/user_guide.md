@@ -626,7 +626,7 @@ MusicSystem.request_key(2, &"major")       # next phrase
 # Demo factory: DemoScoreFactory.make_demonstration_score()
 ```
 
-Qualification evidence and deferred P8b/P9 gates: [`QUALIFICATION.md`](QUALIFICATION.md).
+Qualification evidence (MusicStream, G2/V1, P8b, P9, denser lifetime, profile harness): [`QUALIFICATION.md`](QUALIFICATION.md). RTSan CI remains deferred (needs Linux + LLVM ≥ 20).
 
 ---
 
@@ -2102,6 +2102,14 @@ func _on_music_slider_changed(value: float):
 ---
 
 ## Changelog
+
+### MusicStream / G2 / V1 / P8b / P9 — Procedural music + voice policy (2026-10-10)
+
+- **`AudioStreamSymphonyMusic`:** native hybrid music playback — transport (960 PPQN), phrase scheduler, note pools, stretch clips, Vital voice tier.
+- **Game Audio Layer:** `MusicSystem.PlaybackMode.PROCEDURAL` via `load_score` / `set_intensity` / `request_tempo` / `request_key`; `ProceduralMusicController` + `DemoScoreFactory`.
+- **P8b:** `audio/symphony/category_caps/*`; shared `_admit` (N8); `STEAL_QUIETEST` prefers valid RMS (N12); GDScript `_admit_from` matches tiers/caps.
+- **P9:** state-in-locals hot loops; FeedbackPath zero-extra (1 micro-block via pin buffer); compile plan cache + arena freelist.
+- **Gates:** denser lifetime stress cases; `SYMPHONY_PROFILE_SECONDS` release profile harness. See [`QUALIFICATION.md`](QUALIFICATION.md).
 
 ### Music N3 — Recorded phrases (2026-10-09)
 
