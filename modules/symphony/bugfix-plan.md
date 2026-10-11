@@ -8,8 +8,8 @@
 |---|---|
 | **As of** | 2026-10-11 |
 | **Branch** | `master` |
-| **Done** | **B0**, **B1** scheduler and renderer |
-| **Next** | **B2** music thread hand-off |
+| **Done** | **B0**, **B1**, **B2** music thread hand-off |
+| **Next** | **B3** recorded clips |
 | **C++ tests** | 327/327 `*Symphony*` green on `bin/godot.macos.editor.arm64` |
 
 ### Commits
@@ -17,7 +17,8 @@
 | Phase | Commit | Notes |
 |---|---|---|
 | B0 | `0015d849eb` | Alloc counter, helpers, mixer scaffold |
-| B1 | *(this commit)* | Boundary carry, generation-scoped notes, span renderer |
+| B1 | `8f09e10cc4` | Boundary carry, generation-scoped notes, span renderer |
+| B2 | *(this commit)* | SPSC command/status rings, phrase slots, atomic stretch, restart flag |
 
 ## Finding to phase map
 

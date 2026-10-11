@@ -152,10 +152,8 @@ public:
 		return true;
 	}
 
-	// B1: generation is recorded but not yet enforced (B2 command path honours it).
 	bool replace_future(int64_t p_from_tick, int32_t p_generation) {
-		(void)p_generation;
-		if (has_next && next.start_tick >= p_from_tick) {
+		if (has_next && next.start_tick >= p_from_tick && next.generation <= p_generation) {
 			next.clear();
 			has_next = false;
 		}

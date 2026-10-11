@@ -48,7 +48,7 @@ public:
 	static constexpr int CHANNELS = 2;
 
 	signalsmith::stretch::SignalsmithStretch<float> stretch;
-	SymphonyStretchOwnership ownership = SymphonyStretchOwnership::Free;
+	std::atomic<uint8_t> ownership{ (uint8_t)SymphonyStretchOwnership::Free };
 	SymphonyMusicClipDesc clip;
 	float tempo_ratio = 1.0f;
 	float transpose_st = 0.0f;
@@ -64,11 +64,17 @@ public:
 	float *in_ptrs[CHANNELS] = {};
 	float *out_ptrs[CHANNELS] = {};
 
-	[[nodiscard]] bool is_free() const { return ownership == SymphonyStretchOwnership::Free; }
+	[[nodiscard]] SymphonyStretchOwnership get_ownership() const {
+		return (SymphonyStretchOwnership)ownership.load(std::memory_order_acquire);
+	}
+	void set_ownership(SymphonyStretchOwnership p_state) {
+		ownership.store((uint8_t)p_state, std::memory_order_release);
+	}
+	[[nodiscard]] bool is_free() const { return get_ownership() == SymphonyStretchOwnership::Free; }
 
 	// Main thread: configure stretch for music rate with split computation.
 	bool prepare(const SymphonyMusicClipDesc &p_clip, float p_tempo_ratio, float p_transpose_st) {
-		ERR_FAIL_COND_V(ownership == SymphonyStretchOwnership::Active, false);
+		ERR_FAIL_COND_V(get_ownership() == SymphonyStretchOwnership::Active, false);
 		ERR_FAIL_COND_V(p_clip.pcm == nullptr || p_clip.frames <= 0, false);
 
 		tempo_ratio = CLAMP(p_tempo_ratio, p_clip.tempo_ratio_min, p_clip.tempo_ratio_max);
@@ -94,30 +100,26 @@ public:
 		stretch.seek(in_ptrs, pre, tempo_ratio);
 		source_pos = (double)start + (double)pre;
 		finished = false;
-		ownership = SymphonyStretchOwnership::Prepared;
+		set_ownership(SymphonyStretchOwnership::Prepared);
 		return true;
 	}
 
 	// Audio thread: claim a Prepared context.
 	bool activate() {
-		if (ownership != SymphonyStretchOwnership::Prepared) {
-			return false;
-		}
-		ownership = SymphonyStretchOwnership::Active;
-		return true;
+		uint8_t expected = (uint8_t)SymphonyStretchOwnership::Prepared;
+		return ownership.compare_exchange_strong(expected, (uint8_t)SymphonyStretchOwnership::Active, std::memory_order_acq_rel, std::memory_order_acquire);
 	}
 
 	// Audio thread: mark for main-thread reclaim after playback ends.
 	void request_return() {
-		if (ownership == SymphonyStretchOwnership::Active) {
-			ownership = SymphonyStretchOwnership::Returning;
-		}
+		uint8_t expected = (uint8_t)SymphonyStretchOwnership::Active;
+		ownership.compare_exchange_strong(expected, (uint8_t)SymphonyStretchOwnership::Returning, std::memory_order_release, std::memory_order_relaxed);
 	}
 
 	// Main thread: free after audio acknowledged return.
 	void reclaim() {
-		ERR_FAIL_COND(ownership == SymphonyStretchOwnership::Active);
-		ownership = SymphonyStretchOwnership::Free;
+		ERR_FAIL_COND(get_ownership() == SymphonyStretchOwnership::Active);
+		set_ownership(SymphonyStretchOwnership::Free);
 		clip = {};
 		finished = false;
 		source_pos = 0.0;
@@ -125,7 +127,7 @@ public:
 
 	// Audio thread: render p_frames of stretched audio into p_out (additive).
 	void process_add(AudioFrame *p_out, int p_frames) {
-		if (ownership != SymphonyStretchOwnership::Active || finished || !clip.pcm || p_frames <= 0) {
+		if (get_ownership() != SymphonyStretchOwnership::Active || finished || !clip.pcm || p_frames <= 0) {
 			return;
 		}
 		_ensure_scratch(p_frames);
@@ -205,7 +207,7 @@ public:
 
 	void reclaim_returned() {
 		for (int i = 0; i < MAX_CONTEXTS; i++) {
-			if (contexts[i].ownership == SymphonyStretchOwnership::Returning) {
+			if (contexts[i].get_ownership() == SymphonyStretchOwnership::Returning) {
 				contexts[i].reclaim();
 			}
 		}
@@ -214,8 +216,8 @@ public:
 	[[nodiscard]] int common_latency() const {
 		int max_lat = 0;
 		for (int i = 0; i < MAX_CONTEXTS; i++) {
-			if (contexts[i].ownership == SymphonyStretchOwnership::Prepared ||
-					contexts[i].ownership == SymphonyStretchOwnership::Active) {
+			if (contexts[i].get_ownership() == SymphonyStretchOwnership::Prepared ||
+					contexts[i].get_ownership() == SymphonyStretchOwnership::Active) {
 				max_lat = MAX(max_lat, contexts[i].common_latency);
 			}
 		}

@@ -8,11 +8,11 @@
 
 #include "audio_stream_playback_symphony.h"
 #include "audio_stream_symphony_music.h"
+#include "../core/symphony_spsc_ring.h"
 #include "../runtime/symphony_music_scheduler.h"
 #include "../runtime/symphony_music_stretch.h"
 #include "../runtime/symphony_note_pool.h"
 
-#include "core/templates/local_vector.h"
 #include "core/templates/vector.h"
 
 #include <atomic>
@@ -35,6 +35,7 @@ public:
 			TempoApplied = 3,
 			PhraseLate = 4,
 			NoteForcedOff = 5,
+			StatusDropped = 6,
 		};
 		Kind kind = Kind::PhraseActivated;
 		int32_t generation = 0;
@@ -51,7 +52,54 @@ public:
 		uint64_t end_frame = 0;
 	};
 
+	enum class PhraseSlotState : uint8_t {
+		Free = 0,
+		Filled = 1,
+		Queued = 2,
+		Active = 3,
+		Retired = 4,
+	};
+
+	enum class MusicCmdKind : uint8_t {
+		SubmitPhrase = 0,
+		ReplaceFuture = 1,
+		TempoStep = 2,
+		TempoRamp = 3,
+		TrackGain = 4,
+		ClipPrepared = 5,
+		Reset = 6,
+	};
+
+	struct MusicCmd {
+		MusicCmdKind kind = MusicCmdKind::SubmitPhrase;
+		int32_t slot = -1;
+		int32_t generation = 0;
+		int32_t track_id = 0;
+		int32_t note_id = 0;
+		int32_t duration_ticks = 0;
+		int64_t tick = 0;
+		float value = 0.0f;
+		SymphonyStretchContext *ctx = nullptr;
+	};
+
+	struct PhraseSlot {
+		SymphonyMusicPhrase phrase;
+		std::atomic<uint8_t> state{ (uint8_t)PhraseSlotState::Free };
+	};
+
+	struct PreparedClip {
+		int64_t tick = 0;
+		int32_t note_id = 0;
+		int32_t generation = 0;
+		SymphonyStretchContext *ctx = nullptr;
+		bool claimed = false;
+	};
+
 private:
+	static constexpr int PHRASE_SLOTS = 4;
+	static constexpr int CMD_CAP = 64;
+	static constexpr int MAX_PREPARED_CLIPS = 8;
+
 	Ref<AudioStreamSymphonyMusic> music_stream;
 
 	SymphonyMusicScheduler scheduler;
@@ -65,29 +113,29 @@ private:
 	AudioFrame track_scratch[64];
 
 	SymphonyStretchPool stretch_pool;
-	struct PreparedClip {
-		int64_t tick = 0;
-		int32_t note_id = 0;
-		SymphonyStretchContext *ctx = nullptr;
-		bool claimed = false;
-	};
-	LocalVector<PreparedClip> prepared_clips;
+	PreparedClip prepared_clips[MAX_PREPARED_CLIPS];
+	int32_t prepared_clip_count = 0;
 	SymphonyStretchContext *active_clips[MAX_ACTIVE_CLIPS] = {};
 	int32_t active_clip_count = 0;
 
-	// Synth delay to align with stretch common latency.
 	Vector<AudioFrame> latency_delay;
 	int32_t latency_samples = 0;
 	int32_t latency_write = 0;
+	bool latency_active = false;
 
-	StatusEntry status_ring[STATUS_CAP];
-	std::atomic<uint32_t> status_w{ 0 };
-	std::atomic<uint32_t> status_r{ 0 };
+	PhraseSlot phrase_slots[PHRASE_SLOTS];
+	SymphonySpscRing<MusicCmd, CMD_CAP> cmd_ring;
+	SymphonySpscRing<StatusEntry, STATUS_CAP> audio_status;
+	StatusEntry main_status[STATUS_CAP];
+	int main_status_count = 0;
+	std::atomic<uint32_t> status_overflow{ 0 };
+	std::atomic<bool> restart_pending{ false };
 
 	bool prepared = false;
 	uint64_t pool_seed = 0;
 
-	void _push_status(StatusEntry::Kind p_kind, int32_t p_gen, int32_t p_track, int32_t p_note, float p_payload = 0.0f);
+	void _push_status_main(StatusEntry::Kind p_kind, int32_t p_gen, int32_t p_track, int32_t p_note, float p_payload = 0.0f);
+	void _push_status_audio(StatusEntry::Kind p_kind, int32_t p_gen, int32_t p_track, int32_t p_note, float p_payload = 0.0f);
 	void _bind_music_stream(const Ref<AudioStreamSymphonyMusic> &p_stream, uint64_t p_seed, float p_mix_rate);
 	bool _prepare_pools();
 	void _clear_runtime();
@@ -96,6 +144,11 @@ private:
 	void _arm_gain(int p_pool, float p_target, uint64_t p_start_frame, uint64_t p_end_frame);
 	[[nodiscard]] float _gain_at(int p_pool, uint64_t p_frame) const;
 	void _drain_scheduler_notices();
+	void _reclaim_phrase_slots();
+	int _acquire_phrase_slot();
+	[[nodiscard]] bool _try_push_cmd(const MusicCmd &p_cmd);
+	void _drain_commands();
+	void _audio_restart();
 	static bool _parse_phrase(const Dictionary &p_phrase, SymphonyMusicPhrase &r_out, String &r_error);
 
 protected:
