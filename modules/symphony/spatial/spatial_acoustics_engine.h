@@ -8,6 +8,7 @@
 #include "core/templates/vector.h"
 #include "../core/symphony_seqlock.h"
 #include "occlusion_solver.h"
+#include <atomic>
 #include "spatial_graph_wrapper.h"
 #include "probe_scheduler.h"
 #include "probe_cache.h"
@@ -54,6 +55,8 @@ class SpatialAcousticsEngine : public Object {
 
 public:
 	static constexpr int MAX_EMITTERS = 256;
+	// Voice pool is 8–128; tests and debug overlays may use higher slot ids.
+	static constexpr int MAX_SLOTS = 1024;
 	static constexpr float DEFAULT_SMOOTH_ALPHA = 0.75f; // IIR smoothing coefficient (Resonance production value)
 
 private:
@@ -104,8 +107,10 @@ private:
 
 	EmitterState emitters[MAX_EMITTERS];
 
-	// Map: voice slot → emitter index for O(1) lookup
+	// Map: voice slot → emitter index for O(1) lookup (main thread only).
 	HashMap<int, int> slot_to_emitter;
+	// Audio-thread lookup published by register/unregister. -1 = none.
+	std::atomic<int32_t> slot_emitter[MAX_SLOTS];
 
 	// Next free emitter slot (simple linear scan; fine for ≤256)
 	int _find_free_emitter() const;

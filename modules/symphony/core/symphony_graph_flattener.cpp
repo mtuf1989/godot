@@ -132,6 +132,11 @@ static GraphFlattener::FlattenResult _flatten_recursive(const GraphDescription &
 			return result;
 		}
 
+		GraphFlattener::FlattenChildStamp stamp;
+		stamp.id = sub_resource->get_instance_id();
+		stamp.graph_version = sub_resource->get_graph_version();
+		result.children.push_back(stamp);
+
 		const GraphDescription &sub_desc = sub_resource->get_graph_description();
 		if (sub_desc.nodes.is_empty()) {
 			result.errors.push_back(vformat("SubGraph node %d: referenced graph '%s' has no nodes.", sg_node.id, resource_path));
@@ -152,6 +157,9 @@ static GraphFlattener::FlattenResult _flatten_recursive(const GraphDescription &
 				result.errors.push_back(vformat("In SubGraph '%s' (node %d): %s", resource_path, sg_node.id, err));
 			}
 			return result;
+		}
+		for (int i = 0; i < sub_result.children.size(); i++) {
+			result.children.push_back(sub_result.children[i]);
 		}
 
 		// Remap IDs in the flattened sub-graph and collect interface nodes.

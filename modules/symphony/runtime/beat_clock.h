@@ -17,6 +17,8 @@ class BeatClock : public Object {
 	int beats_per_bar = 4;
 	bool playing = false;
 	float fire_ahead_s = 0.0f; // beats fire this early; target_time in signal args
+	bool transport_driven = false;
+	double transport_beat = 0.0;
 
 	// Playback tracking
 	double playback_position = 0.0; // Set externally by MusicSystem
@@ -66,6 +68,7 @@ public:
 	void start(float p_bpm, int p_beats_per_bar);
 	void stop();
 	void update_playback_position(double p_position);
+	void update_transport(double p_beat_position, float p_bpm, int p_beats_per_bar);
 
 	bool is_playing() const { return playing; }
 

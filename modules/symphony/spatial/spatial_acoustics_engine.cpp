@@ -15,6 +15,9 @@ SpatialAcousticsEngine::SpatialAcousticsEngine() {
 	// Phase 6: default portal backend. Held via the abstract PortalPathSolver*
 	// so a baked-probe backend can substitute without a header edit.
 	portal_solver = memnew(DijkstraPathSolver);
+	for (int i = 0; i < MAX_SLOTS; i++) {
+		slot_emitter[i].store(-1, std::memory_order_relaxed);
+	}
 	smooth_alpha = GLOBAL_DEF("audio/symphony/spatial_smooth_alpha", DEFAULT_SMOOTH_ALPHA);
 	ProjectSettings::get_singleton()->set_custom_property_info(PropertyInfo(
 			Variant::FLOAT, "audio/symphony/spatial_smooth_alpha", PROPERTY_HINT_RANGE, "0.01,0.99,0.01"));
@@ -108,6 +111,9 @@ int SpatialAcousticsEngine::register_emitter(int p_voice_slot) {
 	emitters[idx].smoothed = SpatialParams();
 
 	slot_to_emitter[p_voice_slot] = idx;
+	if (p_voice_slot >= 0 && p_voice_slot < MAX_SLOTS) {
+		slot_emitter[p_voice_slot].store(idx, std::memory_order_release);
+	}
 	return idx;
 }
 
@@ -129,6 +135,9 @@ void SpatialAcousticsEngine::unregister_emitter(int p_voice_slot) {
 
 	reverb_pool.release(p_voice_slot);
 	slot_to_emitter.erase(p_voice_slot);
+	if (p_voice_slot >= 0 && p_voice_slot < MAX_SLOTS) {
+		slot_emitter[p_voice_slot].store(-1, std::memory_order_release);
+	}
 }
 
 bool SpatialAcousticsEngine::has_emitter(int p_voice_slot) const {
@@ -940,19 +949,25 @@ void SpatialAcousticsEngine::set_emitter_apparent_position(int p_voice_slot, con
 // --- Reader access ---
 
 SpatialParams SpatialAcousticsEngine::read_params(int p_voice_slot) const {
-	const int *idx_ptr = slot_to_emitter.getptr(p_voice_slot);
-	if (!idx_ptr) {
+	if (p_voice_slot < 0 || p_voice_slot >= MAX_SLOTS) {
+		return SpatialParams();
+	}
+	const int32_t idx = slot_emitter[p_voice_slot].load(std::memory_order_acquire);
+	if (idx < 0 || idx >= MAX_EMITTERS) {
 		return SpatialParams(); // Default (unoccluded, full transmission)
 	}
-	return emitters[*idx_ptr].published.load();
+	return emitters[idx].published.load();
 }
 
 bool SpatialAcousticsEngine::try_read_params(int p_voice_slot, SpatialParams &r_params) const {
-	const int *idx_ptr = slot_to_emitter.getptr(p_voice_slot);
-	if (!idx_ptr) {
+	if (p_voice_slot < 0 || p_voice_slot >= MAX_SLOTS) {
 		return false;
 	}
-	return emitters[*idx_ptr].published.try_load(r_params);
+	const int32_t idx = slot_emitter[p_voice_slot].load(std::memory_order_acquire);
+	if (idx < 0 || idx >= MAX_EMITTERS) {
+		return false;
+	}
+	return emitters[idx].published.try_load(r_params);
 }
 
 // --- Configuration ---

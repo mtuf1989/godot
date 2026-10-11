@@ -3,6 +3,8 @@
 #include "scene/resources/audio/audio_stream.h"
 #include "../core/symphony_graph_description.h"
 #include "../core/symphony_compiled_graph.h"
+#include "../core/symphony_graph_flattener.h"
+#include "core/object/object_id.h"
 
 class AudioStreamPlaybackSymphony;
 struct PreparedGraphPackage;
@@ -24,8 +26,10 @@ private:
 	// P9: cached flatten plan + small arena freelist (SFX re-compile on main).
 	mutable GraphDescription cached_flat_graph;
 	mutable bool cached_flat_valid = false;
+	mutable Vector<GraphFlattener::FlattenChildStamp> cached_flat_children;
 	mutable uint64_t plan_build_count = 0;
 	mutable uint64_t plan_cache_hits = 0;
+	uint64_t graph_version = 1;
 	struct RecycledArena {
 		uint8_t *raw = nullptr;
 		size_t capacity = 0;
@@ -34,6 +38,7 @@ private:
 	mutable Vector<RecycledArena> arena_freelist;
 
 	void _invalidate_compile_cache();
+	void _mark_graph_dirty();
 	void _recycle_arena(uint8_t *p_raw, size_t p_capacity) const;
 	bool _take_recycled_arena(size_t p_needed, uint8_t *&r_raw, size_t &r_capacity) const;
 
@@ -89,6 +94,8 @@ public:
 	// P9 diagnostics (tests).
 	[[nodiscard]] uint64_t get_plan_build_count() const { return plan_build_count; }
 	[[nodiscard]] uint64_t get_plan_cache_hits() const { return plan_cache_hits; }
+	[[nodiscard]] uint64_t get_graph_version() const { return graph_version; }
+	[[nodiscard]] int get_arena_freelist_count() const { return arena_freelist.size(); }
 	// Return a package's arena to the freelist when possible (main thread).
 	void recycle_package(PreparedGraphPackage *p_package) const;
 	[[nodiscard]] int get_lod_count() const; // Returns 1 if no LOD graphs, up to 3 (LOD 0 + 2 variants)

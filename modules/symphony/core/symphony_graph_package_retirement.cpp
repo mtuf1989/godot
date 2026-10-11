@@ -4,7 +4,9 @@
 
 #include "symphony_graph_package_retirement.h"
 #include "symphony_realtime_scope.h"
+#include "../stream/audio_stream_symphony.h"
 
+#include "core/object/object.h"
 #include "core/os/thread.h"
 #include "servers/audio/audio_server.h"
 
@@ -67,7 +69,13 @@ void GraphPackageRetirement::drain() {
 	while (list) {
 		PreparedGraphPackage *next = list->retire_next;
 		list->retire_next = nullptr;
-		PreparedGraphPackage::destroy(list);
+		Object *obj = ObjectDB::get_instance(list->owner_stream);
+		AudioStreamSymphony *owner = Object::cast_to<AudioStreamSymphony>(obj);
+		if (owner) {
+			owner->recycle_package(list);
+		} else {
+			PreparedGraphPackage::destroy(list);
+		}
 		list = next;
 		destroyed++;
 	}

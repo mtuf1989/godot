@@ -26,7 +26,7 @@ public:
 	// Real-time safe: intrusive push onto the retirement stack.
 	static void retire(PreparedGraphPackage *p_package);
 
-	// Main thread only: destroy every retired package.
+	// Main thread only: recycle to the owning stream freelist, or destroy.
 	static void drain();
 
 	[[nodiscard]] static uint32_t get_pending_count();

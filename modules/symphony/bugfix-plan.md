@@ -8,9 +8,9 @@
 |---|---|
 | **As of** | 2026-10-11 |
 | **Branch** | `master` |
-| **Done** | **B0**, **B1**, **B2**, **B3**, **B4** engine memory safety |
-| **Next** | **B5** engine races and correctness |
-| **C++ tests** | 342/342 `*Symphony*` green on `bin/godot.macos.editor.arm64` |
+| **Done** | **B0**, **B1**, **B2**, **B3**, **B4**, **B5** engine races and correctness |
+| **Next** | **B6** controller and MusicSystem (game-template) |
+| **C++ tests** | 352/352 `*Symphony*` green on `bin/godot.macos.editor.arm64` |
 
 ### Commits
 
@@ -20,7 +20,8 @@
 | B1 | `8f09e10cc4` | Boundary carry, generation-scoped notes, span renderer |
 | B2 | `5437887899` | SPSC command/status rings, phrase slots, atomic stretch, restart flag |
 | B3 | `02bf112335` | Tempo-as-speed, Catmull-Rom resample, `register_clip_wav`, unclaimed clip return |
-| B4 | *(this commit)* | Layout keys, SpectralGate exclusion, PhaseVocoder arena fn, note-only pristine |
+| B4 | `63933d6ed2` | Layout keys, SpectralGate exclusion, PhaseVocoder arena fn, note-only pristine |
+| B5 | *(this commit)* | Oscillator/SVFilter reset, reverb last_params, spatial slot table, RTPC atomics, trigger_at pending, cache dirty, retirement recycle, BeatClock update_transport |
 
 ## Finding to phase map
 

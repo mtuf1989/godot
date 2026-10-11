@@ -1,6 +1,7 @@
 #pragma once
 
 #include "symphony_graph_description.h"
+#include "core/object/object_id.h"
 #include "core/string/ustring.h"
 
 // Pre-pass that recursively resolves SubGraph nodes into a flat GraphDescription.
@@ -10,9 +11,15 @@ class GraphFlattener {
 public:
 	static constexpr int32_t MAX_RECURSION_DEPTH = 32;
 
+	struct FlattenChildStamp {
+		ObjectID id;
+		uint64_t graph_version = 0;
+	};
+
 	struct FlattenResult {
 		GraphDescription graph;
 		Vector<String> errors;
+		Vector<FlattenChildStamp> children;
 		bool success() const { return errors.is_empty(); }
 	};
 

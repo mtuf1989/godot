@@ -10,6 +10,7 @@
 #include "../nodes/io/symphony_graph_input.h"
 #include "../nodes/io/symphony_trigger_input.h"
 
+#include "core/object/object_id.h"
 #include "core/string/string_name.h"
 #include "core/templates/vector.h"
 
@@ -52,6 +53,7 @@ struct PreparedGraphPackage {
 	size_t total_package_bytes = 0;
 	float estimated_cost_units = 0.0f;
 	int lod_tier = 0;
+	ObjectID owner_stream;
 
 	// Preallocated on main (create_from_graph); used by migrate_compatible_state on audio.
 	uint8_t *migrate_scratch = nullptr;

@@ -163,6 +163,10 @@ TEST_CASE("[Symphony][Playback] migrate_compatible_state copies bounded operator
 	for (size_t i = 0; i < seed_size; i++) {
 		seed[i] = (uint8_t)(0xA5 ^ (uint8_t)i);
 	}
+	if (seed_size >= 12) {
+		const uint32_t primed = 1;
+		memcpy(seed + 8, &primed, sizeof(uint32_t));
+	}
 	src_osc->import_state(seed, seed_size);
 
 	uint8_t before_dst[16] = {};

@@ -4,6 +4,7 @@
 #include "../../core/symphony_operator_registry.h"
 #include "../../core/symphony_arena_allocator.h"
 #include "../../core/symphony_trigger.h"
+#include "core/os/thread.h"
 
 #include <atomic>
 #include <cstdint>
@@ -23,6 +24,11 @@ private:
 	QueueEntry queue[QUEUE_CAPACITY];
 	std::atomic<uint32_t> write_pos{ 0 };
 	std::atomic<uint32_t> read_pos{ 0 };
+
+	// Audio-owned: SPSC entries are drained then sorted so a future fire_at
+	// cannot block earlier ones still sitting behind it.
+	QueueEntry pending[QUEUE_CAPACITY];
+	int pending_count = 0;
 
 	bool auto_trigger_on_play = true;
 
@@ -55,12 +61,29 @@ public:
 		}
 		uint32_t r = read_pos.load(std::memory_order_relaxed);
 		uint32_t w = write_pos.load(std::memory_order_acquire);
+		while (r != w && pending_count < (int)QUEUE_CAPACITY) {
+			pending[pending_count++] = queue[r % QUEUE_CAPACITY];
+			r++;
+		}
+		read_pos.store(r, std::memory_order_release);
+
+		for (int i = 1; i < pending_count; i++) {
+			const QueueEntry key = pending[i];
+			int j = i - 1;
+			while (j >= 0 && pending[j].target_frame > key.target_frame) {
+				pending[j + 1] = pending[j];
+				j--;
+			}
+			pending[j + 1] = key;
+		}
+
 		const uint64_t block_end = block_start_frame + (uint64_t)p_num_frames;
-		while (r != w) {
-			const QueueEntry &e = queue[r % QUEUE_CAPACITY];
+		int keep = 0;
+		for (int i = 0; i < pending_count; i++) {
+			const QueueEntry &e = pending[i];
 			if (e.target_frame != 0 && e.target_frame >= block_end) {
-				// Future — leave queued for a later block (FIFO).
-				break;
+				pending[keep++] = e;
+				continue;
 			}
 			int32_t offset = 0;
 			if (e.target_frame != 0) {
@@ -76,12 +99,13 @@ public:
 			}
 			if (!output->push(offset, e.value)) {
 				symphony_note_dropped_trigger();
-				// Leave remaining entries queued for the next block.
+				for (int k = i; k < pending_count; k++) {
+					pending[keep++] = pending[k];
+				}
 				break;
 			}
-			r++;
 		}
-		read_pos.store(r, std::memory_order_release);
+		pending_count = keep;
 	}
 
 	// Called from game thread via trigger() routing. Returns false if queue is full.
@@ -91,6 +115,9 @@ public:
 
 	// Absolute graph-rate frame; 0 = ASAP (same as fire).
 	bool fire_at(uint64_t p_target_frame, float p_value = 1.0f) {
+#ifdef DEV_ENABLED
+		DEV_ASSERT(Thread::is_main_thread());
+#endif
 		uint32_t w = write_pos.load(std::memory_order_relaxed);
 		uint32_t r = read_pos.load(std::memory_order_acquire);
 		if ((w - r) >= QUEUE_CAPACITY) {

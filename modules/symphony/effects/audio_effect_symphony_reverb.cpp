@@ -64,11 +64,12 @@ void AudioEffectSymphonyReverbInstance::_ensure_design(float rt60, float hf, flo
 }
 
 void AudioEffectSymphonyReverbInstance::process(const AudioFrame *p_src_frames, AudioFrame *p_dst_frames, int p_frame_count) {
-	AudioEffectSymphonyReverb::Params p;
-	if (!base.is_valid() || !base->params_lock.try_load(p)) {
-		// Keep last design; still process with shadow defaults if needed.
-		if (base.is_valid()) {
-			p = base->params_shadow;
+	AudioEffectSymphonyReverb::Params p = last_params;
+	if (base.is_valid()) {
+		AudioEffectSymphonyReverb::Params loaded;
+		if (base->params_lock.try_load(loaded)) {
+			p = loaded;
+			last_params = loaded;
 		}
 	}
 
@@ -284,6 +285,7 @@ Ref<AudioEffectInstance> AudioEffectSymphonyReverb::instantiate() {
 	ins->pre_smooth = (smooth_n > 1.0f) ? (1.0f - exp2f(-1.0f / smooth_n)) : 1.0f;
 
 	Params p = params_shadow;
+	ins->last_params = p;
 	ins->_ensure_design(p.rt60, p.hf_rt60_ratio, p.dim_x, p.dim_y, p.dim_z, p.er_reflection, p.predelay_ms, p.auto_predelay != 0);
 	ins->predelay_f = ins->predelay_target;
 	return ins;

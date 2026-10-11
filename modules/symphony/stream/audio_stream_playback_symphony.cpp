@@ -309,6 +309,9 @@ void AudioStreamPlaybackSymphony::_publish_restart_package() {
 		memdelete(graph);
 		return;
 	}
+	if (stream.is_valid()) {
+		pkg->owner_stream = stream->get_instance_id();
+	}
 	pkg->adopt_mode = PreparedGraphPackage::AdoptMode::Restart;
 	_pkg_pending(1);
 	PreparedGraphPackage *old_pending = pending_package.exchange(pkg, std::memory_order_acq_rel);
@@ -656,6 +659,9 @@ void AudioStreamPlaybackSymphony::swap_graph(CompiledGraph *p_graph) {
 		memdelete(p_graph);
 		return;
 	}
+	if (stream.is_valid()) {
+		pkg->owner_stream = stream->get_instance_id();
+	}
 
 	pkg->adopt_mode = PreparedGraphPackage::AdoptMode::Swap;
 	main_requested_lod = 0;
@@ -883,6 +889,9 @@ void AudioStreamPlaybackSymphony::transition_to_lod(int p_lod_tier) {
 	if (!pkg) {
 		memdelete(new_graph);
 		return;
+	}
+	if (stream.is_valid()) {
+		pkg->owner_stream = stream->get_instance_id();
 	}
 
 	pkg->adopt_mode = PreparedGraphPackage::AdoptMode::Lod;

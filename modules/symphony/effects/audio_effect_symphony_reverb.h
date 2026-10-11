@@ -10,6 +10,23 @@
 #include "modules/symphony/dsp/symphony_shoebox_er.h"
 #include "servers/audio/audio_effect.h"
 
+struct AudioEffectSymphonyReverbParams {
+	float rt60 = 1.2f;
+	float hf_rt60_ratio = 0.5f;
+	float dim_x = 8.0f;
+	float dim_y = 3.0f;
+	float dim_z = 6.0f;
+	float er_level = 1.0f;
+	float er_reflection = 0.7f;
+	float predelay_ms = 20.0f;
+	float wet = 1.0f;
+	float dry = 0.0f;
+	uint32_t auto_predelay = 1;
+	uint32_t _pad = 0;
+};
+static_assert(sizeof(AudioEffectSymphonyReverbParams) % 4 == 0, "Params must be 4-byte aligned for SeqLock");
+static_assert(sizeof(AudioEffectSymphonyReverbParams) <= 256, "Params must fit SeqLock");
+
 class AudioEffectSymphonyReverb;
 
 class AudioEffectSymphonyReverbInstance : public AudioEffectInstance {
@@ -40,6 +57,7 @@ class AudioEffectSymphonyReverbInstance : public AudioEffectInstance {
 	float cached_dx = -1.0f, cached_dy = -1.0f, cached_dz = -1.0f;
 	float cached_refl = -1.0f;
 	float cached_pred_ms = -1.0f;
+	AudioEffectSymphonyReverbParams last_params;
 
 	void _ensure_design(float rt60, float hf, float dx, float dy, float dz, float refl, float pred_ms, bool auto_pred);
 
@@ -56,22 +74,7 @@ class AudioEffectSymphonyReverb : public AudioEffect {
 	friend class AudioEffectSymphonyReverbInstance;
 
 public:
-	struct Params {
-		float rt60 = 1.2f;
-		float hf_rt60_ratio = 0.5f;
-		float dim_x = 8.0f;
-		float dim_y = 3.0f;
-		float dim_z = 6.0f;
-		float er_level = 1.0f;
-		float er_reflection = 0.7f;
-		float predelay_ms = 20.0f;
-		float wet = 1.0f;
-		float dry = 0.0f;
-		uint32_t auto_predelay = 1;
-		uint32_t _pad = 0;
-	};
-	static_assert(sizeof(Params) % 4 == 0, "Params must be 4-byte aligned for SeqLock");
-	static_assert(sizeof(Params) <= 256, "Params must fit SeqLock");
+	using Params = AudioEffectSymphonyReverbParams;
 
 private:
 	Params params_shadow;

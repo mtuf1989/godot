@@ -171,20 +171,28 @@ public:
 	}
 
 	virtual size_t export_state(uint8_t *p_buffer, size_t p_max_size) const override {
-		constexpr size_t needed = sizeof(float) * 2;
-		if (!p_buffer) return needed;
-		if (p_max_size < needed) return 0;
+		constexpr size_t needed = 12;
+		if (!p_buffer) {
+			return needed;
+		}
+		if (p_max_size < needed) {
+			return 0;
+		}
 		memcpy(p_buffer, &phase, sizeof(float));
 		memcpy(p_buffer + sizeof(float), &tri_integrator, sizeof(float));
+		const uint32_t primed = triangle_primed ? 1u : 0u;
+		memcpy(p_buffer + sizeof(float) * 2, &primed, sizeof(uint32_t));
 		return needed;
 	}
 
 	virtual void import_state(const uint8_t *p_buffer, size_t p_size) override {
-		constexpr size_t needed = sizeof(float) * 2;
+		constexpr size_t needed = 12;
 		if (p_size >= needed) {
 			memcpy(&phase, p_buffer, sizeof(float));
 			memcpy(&tri_integrator, p_buffer + sizeof(float), sizeof(float));
-			triangle_primed = true;
+			uint32_t primed = 0;
+			memcpy(&primed, p_buffer + sizeof(float) * 2, sizeof(uint32_t));
+			triangle_primed = primed != 0;
 		}
 	}
 

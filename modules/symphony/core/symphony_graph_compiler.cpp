@@ -6,6 +6,7 @@
 #include "symphony_graph_package_retirement.h"
 #include "symphony_realtime_scope.h"
 #include "symphony_seed.h"
+#include "core/error/error_macros.h"
 #include "core/math/math_funcs.h"
 
 #include <cmath>
@@ -670,7 +671,8 @@ GraphCompiler::CompileResult GraphCompiler::compile(const GraphDescription &p_de
 			!SymphonyCheckedMath::add(planned_non_arena, sizeof(int32_t) * (size_t)(node_count + 1), planned_non_arena) ||
 			!SymphonyCheckedMath::add(planned_non_arena, sizeof(float *) * (size_t)planned_audio_outs, planned_non_arena) ||
 			!SymphonyCheckedMath::add(planned_non_arena, sizeof(StringName) * (size_t)node_count, planned_non_arena) ||
-			!SymphonyCheckedMath::add(planned_non_arena, sizeof(int32_t) * (size_t)node_count, planned_non_arena)) {
+			!SymphonyCheckedMath::add(planned_non_arena, sizeof(int32_t) * (size_t)node_count, planned_non_arena) ||
+			!SymphonyCheckedMath::add(planned_non_arena, sizeof(StringName) * (size_t)node_count, planned_non_arena)) {
 		return plan_fail("Non-arena package size overflow.");
 	}
 	if (total_promotions > 0) {
@@ -1103,8 +1105,15 @@ GraphCompiler::CompileResult GraphCompiler::compile(const GraphDescription &p_de
 	SymphonyCheckedMath::add(silence_bytes, sizeof(int32_t) * (size_t)compiled->audio_input_ops_count, silence_bytes);
 	SymphonyCheckedMath::add(silence_bytes, sizeof(int32_t) * (size_t)(node_count + 1), silence_bytes); // output_buffer_offsets
 	SymphonyCheckedMath::add(silence_bytes, sizeof(float *) * (size_t)compiled->output_audio_buffers_count, silence_bytes);
-	SymphonyCheckedMath::add(silence_bytes, sizeof(StringName) * (size_t)node_count, silence_bytes);
-	SymphonyCheckedMath::add(silence_bytes, sizeof(int32_t) * (size_t)node_count, silence_bytes);
+	SymphonyCheckedMath::add(silence_bytes, sizeof(StringName) * (size_t)node_count, silence_bytes); // node_names
+	SymphonyCheckedMath::add(silence_bytes, sizeof(int32_t) * (size_t)node_count, silence_bytes); // node_ids
+	SymphonyCheckedMath::add(silence_bytes, sizeof(StringName) * (size_t)node_count, silence_bytes); // operator_types
+	if (compiled->promotions_after_offsets) {
+		SymphonyCheckedMath::add(silence_bytes, sizeof(int32_t) * (size_t)(node_count + 1), silence_bytes);
+	}
+	if (compiled->head_publish_ops) {
+		SymphonyCheckedMath::add(silence_bytes, sizeof(int32_t) * (size_t)compiled->head_publish_count, silence_bytes);
+	}
 	result.route_metadata_bytes = silence_bytes;
 	result.non_arena_bytes = silence_bytes;
 	result.total_package_bytes = result.arena_bytes + result.non_arena_bytes;
@@ -1125,5 +1134,7 @@ GraphCompiler::CompileResult GraphCompiler::compile(const GraphDescription &p_de
 		}
 		compiled->budgeted_bytes = result.total_package_bytes;
 	}
+	DEV_ASSERT(!budget || compiled->budgeted_bytes == result.total_package_bytes);
+	DEV_ASSERT(result.non_arena_bytes == silence_bytes);
 	return result;
 }

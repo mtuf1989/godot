@@ -21,6 +21,7 @@ void BeatClock::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("start", "bpm", "beats_per_bar"), &BeatClock::start);
 	ClassDB::bind_method(D_METHOD("stop"), &BeatClock::stop);
 	ClassDB::bind_method(D_METHOD("update_playback_position", "position"), &BeatClock::update_playback_position);
+	ClassDB::bind_method(D_METHOD("update_transport", "beat_position", "bpm", "beats_per_bar"), &BeatClock::update_transport);
 
 	ClassDB::bind_method(D_METHOD("get_current_beat"), &BeatClock::get_current_beat);
 	ClassDB::bind_method(D_METHOD("get_current_bar"), &BeatClock::get_current_bar);
@@ -78,6 +79,8 @@ void BeatClock::start(float p_bpm, int p_beats_per_bar) {
 	prev_playback_position = 0.0;
 	logic_time = 0.0;
 	beat_acc = 0.0;
+	transport_driven = false;
+	transport_beat = 0.0;
 	prev_beat_index = -1;
 	prev_bar_index = -1;
 	last_process_frame = UINT64_MAX;
@@ -93,6 +96,13 @@ void BeatClock::stop() {
 
 void BeatClock::update_playback_position(double p_position) {
 	playback_position = p_position;
+}
+
+void BeatClock::update_transport(double p_beat_position, float p_bpm, int p_beats_per_bar) {
+	bpm = CLAMP(p_bpm, 1.0f, 999.0f);
+	beats_per_bar = CLAMP(p_beats_per_bar, 1, 32);
+	transport_beat = MAX(0.0, p_beat_position);
+	transport_driven = true;
 }
 
 void BeatClock::_refresh_latency_cache() {
@@ -193,15 +203,34 @@ void BeatClock::process(double p_delta) {
 	}
 
 	uint64_t current_frame = Engine::get_singleton()->get_process_frames();
+	const double guard_pos = transport_driven ? transport_beat : playback_position;
 	// Skip duplicate calls in one engine frame when position is unchanged.
 	// Headless tests keep process_frames at 0, so still allow position advances.
-	if (current_frame == last_process_frame && playback_position == last_processed_position) {
+	if (current_frame == last_process_frame && guard_pos == last_processed_position) {
 		return;
 	}
 	last_process_frame = current_frame;
-	last_processed_position = playback_position;
+	last_processed_position = guard_pos;
 
 	_refresh_latency_cache();
+
+	const double ahead_beats = (bpm > 0.0f) ? ((double)fire_ahead_s * (double)bpm / 60.0) : 0.0;
+	if (transport_driven) {
+		const double before = beat_acc;
+		beat_acc = transport_beat;
+		if (prev_beat_index < 0) {
+			prev_beat_index = (int)Math::floor(beat_acc);
+			prev_bar_index = beats_per_bar > 0 ? prev_beat_index / beats_per_bar : 0;
+			if (before <= 0.0 && beat_acc >= 0.0 && prev_beat_index == 0) {
+				emit_signal(SNAME("beat_hit"), 0, 0.0f);
+				emit_signal(SNAME("bar_hit"), 0, 0.0f);
+			}
+			_emit_crossed(beat_acc, beat_acc + ahead_beats);
+			return;
+		}
+		_emit_crossed(before + ahead_beats, beat_acc + ahead_beats);
+		return;
+	}
 
 	const double audio_time = _get_corrected_time();
 	const double prev_pos = prev_playback_position;
@@ -229,7 +258,7 @@ void BeatClock::process(double p_delta) {
 				const double before = beat_acc;
 				beat_acc = new_pos * (double)bpm / 60.0;
 				// Force bar 0 / beat 0 emission on loop.
-				_emit_crossed(before - 0.001, beat_acc + 0.001);
+				_emit_crossed(before + ahead_beats - 0.001, beat_acc + ahead_beats + 0.001);
 				// Also ensure beat 0 fires when rebased to near-zero.
 				if (prev_beat_index != 0) {
 					emit_signal(SNAME("beat_hit"), 0, 0.0f);
@@ -244,7 +273,7 @@ void BeatClock::process(double p_delta) {
 			// Stream switch / scrub: re-base accumulator.
 			const double before = beat_acc;
 			beat_acc = new_pos * (double)bpm / 60.0;
-			_emit_crossed(before, beat_acc);
+			_emit_crossed(before + ahead_beats, beat_acc + ahead_beats);
 			logic_time = audio_time;
 			return;
 		}
@@ -277,10 +306,11 @@ void BeatClock::process(double p_delta) {
 			emit_signal(SNAME("beat_hit"), 0, 0.0f);
 			emit_signal(SNAME("bar_hit"), 0, 0.0f);
 		}
+		_emit_crossed(beat_acc, beat_acc + ahead_beats);
 		return;
 	}
 
-	_emit_crossed(before, beat_acc);
+	_emit_crossed(before + ahead_beats, beat_acc + ahead_beats);
 }
 
 float BeatClock::calculate_time_stretch_for_alignment(float p_target_time_sec, float p_tolerance_percent, float p_max_stretch) const {

@@ -168,6 +168,10 @@ public:
 		}
 		memcpy(&ic1eq, p_buffer, sizeof(float));
 		memcpy(&ic2eq, p_buffer + sizeof(float), sizeof(float));
+		cached_cutoff = -1.0f;
+		cached_resonance = -1.0f;
+		silent_blocks = 0;
+		activity = 1;
 	}
 
 	static void register_operator() {

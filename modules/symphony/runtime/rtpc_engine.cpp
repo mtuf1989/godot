@@ -11,11 +11,11 @@ RTPCEngine *RTPCEngine::singleton = nullptr;
 RTPCEngine::RTPCEngine() {
 	singleton = this;
 	if (AudioServer::get_singleton()) {
-		sample_rate = AudioServer::get_singleton()->get_mix_rate();
+		sample_rate.store(AudioServer::get_singleton()->get_mix_rate(), std::memory_order_relaxed);
 		AudioServer::get_singleton()->add_mix_callback(_mix_callback, this);
 		mix_callback_registered = true;
 	} else {
-		sample_rate = 48000.0f;
+		sample_rate.store(48000.0f, std::memory_order_relaxed);
 		mix_callback_registered = false;
 	}
 }
@@ -67,15 +67,16 @@ float RTPCEngine::_compute_block_alpha(float p_smooth_time_ms, int p_num_frames)
 		return 1.0f;
 	}
 	float time_sec = p_smooth_time_ms / 1000.0f;
-	return 1.0f - expf(-(float)p_num_frames / (time_sec * sample_rate));
+	const float sr = sample_rate.load(std::memory_order_relaxed);
+	return 1.0f - expf(-(float)p_num_frames / (time_sec * sr));
 }
 
 void RTPCEngine::_recompute_block_alphas(int p_num_frames) {
 	const int count = global_param_count.load(std::memory_order_acquire);
 	for (int i = 0; i < count; i++) {
 		if (global_params[i].active) {
-			global_params[i].block_alpha_attack = _compute_block_alpha(global_params[i].attack_ms, p_num_frames);
-			global_params[i].block_alpha_release = _compute_block_alpha(global_params[i].release_ms, p_num_frames);
+			global_params[i].block_alpha_attack = _compute_block_alpha(global_params[i].attack_ms.load(std::memory_order_relaxed), p_num_frames);
+			global_params[i].block_alpha_release = _compute_block_alpha(global_params[i].release_ms.load(std::memory_order_relaxed), p_num_frames);
 		}
 	}
 	cached_mix_frames = p_num_frames;
@@ -117,8 +118,8 @@ RTPCEngine::Handle RTPCEngine::register_parameter(const StringName &p_name, floa
 	global_params[idx].current_value.store(p_default_value, std::memory_order_relaxed);
 	global_params[idx].target_value.store(p_default_value, std::memory_order_relaxed);
 	const float smooth = MAX(0.0f, p_smooth_time_ms);
-	global_params[idx].attack_ms = smooth;
-	global_params[idx].release_ms = smooth;
+	global_params[idx].attack_ms.store(smooth, std::memory_order_relaxed);
+	global_params[idx].release_ms.store(smooth, std::memory_order_relaxed);
 	const int frames = cached_mix_frames > 0 ? cached_mix_frames : SYMPHONY_MICRO_BLOCK_SIZE;
 	global_params[idx].block_alpha_attack = _compute_block_alpha(smooth, frames);
 	global_params[idx].block_alpha_release = global_params[idx].block_alpha_attack;
@@ -136,8 +137,8 @@ bool RTPCEngine::set_parameter_smoothing(Handle p_handle, float p_attack_ms, flo
 		missing_handle_count.fetch_add(1, std::memory_order_relaxed);
 		return false;
 	}
-	global_params[p_handle].attack_ms = MAX(0.0f, p_attack_ms);
-	global_params[p_handle].release_ms = MAX(0.0f, p_release_ms);
+	global_params[p_handle].attack_ms.store(MAX(0.0f, p_attack_ms), std::memory_order_relaxed);
+	global_params[p_handle].release_ms.store(MAX(0.0f, p_release_ms), std::memory_order_relaxed);
 	alphas_dirty.store(true, std::memory_order_release);
 	return true;
 }
@@ -156,7 +157,7 @@ float RTPCEngine::get_attack_ms(Handle p_handle) const {
 	if (p_handle < 0 || p_handle >= count || !global_params[p_handle].active) {
 		return DEFAULT_SMOOTH_TIME_MS;
 	}
-	return global_params[p_handle].attack_ms;
+	return global_params[p_handle].attack_ms.load(std::memory_order_relaxed);
 }
 
 float RTPCEngine::get_release_ms(Handle p_handle) const {
@@ -164,7 +165,7 @@ float RTPCEngine::get_release_ms(Handle p_handle) const {
 	if (p_handle < 0 || p_handle >= count || !global_params[p_handle].active) {
 		return DEFAULT_SMOOTH_TIME_MS;
 	}
-	return global_params[p_handle].release_ms;
+	return global_params[p_handle].release_ms.load(std::memory_order_relaxed);
 }
 
 RTPCEngine::Handle RTPCEngine::find_parameter(const StringName &p_name) const {
@@ -230,7 +231,7 @@ float RTPCEngine::evaluate_curve(const Ref<Curve> &p_curve, float p_input, float
 }
 
 void RTPCEngine::set_sample_rate(float p_rate) {
-	sample_rate = p_rate;
+	sample_rate.store(p_rate, std::memory_order_relaxed);
 	alphas_dirty.store(true, std::memory_order_release);
 }
 

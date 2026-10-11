@@ -29,10 +29,10 @@ public:
 		std::atomic<float> current_value{ 0.0f };
 		float block_alpha_attack = 1.0f; // Audio-owned; recomputed when alphas_dirty
 		float block_alpha_release = 1.0f;
-		float attack_ms = DEFAULT_SMOOTH_TIME_MS; // toward higher targets
-		float release_ms = DEFAULT_SMOOTH_TIME_MS; // toward lower targets
+		std::atomic<float> attack_ms{ DEFAULT_SMOOTH_TIME_MS }; // toward higher targets
+		std::atomic<float> release_ms{ DEFAULT_SMOOTH_TIME_MS }; // toward lower targets
 		bool active = false;
-		char _pad[CACHE_LINE_SIZE - sizeof(std::atomic<float>) - sizeof(float) * 4 - sizeof(bool)];
+		char _pad[CACHE_LINE_SIZE - sizeof(std::atomic<float>) * 3 - sizeof(float) * 2 - sizeof(bool)];
 		std::atomic<float> target_value{ 0.0f };
 		StringName name;
 	};
@@ -54,7 +54,7 @@ private:
 	std::atomic<int> analysis_output_count{ 0 };
 	HashMap<StringName, Handle> analysis_output_index; // Main-thread lookup only
 
-	float sample_rate = 44100.0f;
+	std::atomic<float> sample_rate{ 44100.0f };
 	float default_smooth_time_ms = DEFAULT_SMOOTH_TIME_MS;
 	int cached_mix_frames = 0; // Audio-owned
 	std::atomic<bool> alphas_dirty{ true };
@@ -117,7 +117,7 @@ public:
 	float get_analysis_value_at(int p_index) const;
 
 	void set_sample_rate(float p_rate);
-	float get_sample_rate() const { return sample_rate; }
+	float get_sample_rate() const { return sample_rate.load(std::memory_order_relaxed); }
 	void set_default_smooth_time(float p_ms);
 	float get_default_smooth_time() const { return default_smooth_time_ms; }
 	int get_parameter_count() const { return global_param_count.load(std::memory_order_acquire); }

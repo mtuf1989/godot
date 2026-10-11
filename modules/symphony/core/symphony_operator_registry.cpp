@@ -61,7 +61,7 @@ void OperatorRegistry::mark_resettable_operators() {
 		size_t export_bytes;
 	};
 	static const Entry k_entries[] = {
-		{ "Oscillator", 8 },
+		{ "Oscillator", 12 },
 		{ "FMOscillator", 32 },
 		{ "FormantOsc", 32 },
 		{ "Noise", 44 },

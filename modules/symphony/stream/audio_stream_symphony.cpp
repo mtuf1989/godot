@@ -10,6 +10,7 @@
 #include "../core/symphony_seed.h"
 
 #include "core/object/class_db.h"
+#include "core/object/object.h"
 #include "core/io/resource.h"
 #include "core/os/thread.h"
 
@@ -417,13 +418,14 @@ bool AudioStreamSymphony::_set(const StringName &p_name, const Variant &p_value)
 	if (name.begins_with("graph/")) {
 		const bool ok = _set_graph_property(name.substr(String("graph/").length()), graph_desc, p_value);
 		if (ok) {
-			_invalidate_compile_cache();
+			_mark_graph_dirty();
 		}
 		return ok;
 	}
 	if (name == "lod/variant_count") {
 		int count = CLAMP((int)p_value, 0, 2);
 		lod_graphs.resize(count);
+		_mark_graph_dirty();
 		return true;
 	}
 	if (name.begins_with("lod/")) {
@@ -441,7 +443,11 @@ bool AudioStreamSymphony::_set(const StringName &p_name, const Variant &p_value)
 		if (lod_graphs.size() <= idx) {
 			lod_graphs.resize(idx + 1);
 		}
-		return _set_graph_property(relative, lod_graphs.write[idx], p_value);
+		const bool ok = _set_graph_property(relative, lod_graphs.write[idx], p_value);
+		if (ok) {
+			_mark_graph_dirty();
+		}
+		return ok;
 	}
 
 	return false;
@@ -462,6 +468,7 @@ float AudioStreamSymphony::get_mix_rate() const {
 void AudioStreamSymphony::_invalidate_compile_cache() {
 	cached_flat_valid = false;
 	cached_flat_graph = GraphDescription();
+	cached_flat_children.clear();
 	for (RecycledArena &slot : arena_freelist) {
 		if (slot.raw) {
 			memfree(slot.raw);
@@ -470,6 +477,13 @@ void AudioStreamSymphony::_invalidate_compile_cache() {
 		}
 	}
 	arena_freelist.clear();
+}
+
+void AudioStreamSymphony::_mark_graph_dirty() {
+	graph_version++;
+	cached_flat_valid = false;
+	cached_flat_graph = GraphDescription();
+	cached_flat_children.clear();
 }
 
 void AudioStreamSymphony::_recycle_arena(uint8_t *p_raw, size_t p_capacity) const {
@@ -536,7 +550,7 @@ void AudioStreamSymphony::recycle_package(PreparedGraphPackage *p_package) const
 
 void AudioStreamSymphony::set_graph_description(const GraphDescription &p_desc) {
 	graph_desc = p_desc;
-	_invalidate_compile_cache();
+	_mark_graph_dirty();
 }
 
 const GraphDescription &AudioStreamSymphony::get_graph_description() const {
@@ -553,6 +567,7 @@ const GraphDescription &AudioStreamSymphony::get_graph_for_tier(int p_tier) cons
 }
 
 GraphDescription &AudioStreamSymphony::get_graph_for_tier_mut(int p_tier) {
+	_mark_graph_dirty();
 	if (p_tier <= 0) {
 		return graph_desc;
 	}
@@ -570,6 +585,7 @@ GraphDescription &AudioStreamSymphony::get_graph_for_tier_mut(int p_tier) {
 void AudioStreamSymphony::set_graph_for_tier(int p_tier, const GraphDescription &p_desc) {
 	if (p_tier <= 0) {
 		graph_desc = p_desc;
+		_mark_graph_dirty();
 		return;
 	}
 	set_lod_variant(p_tier, p_desc);
@@ -578,6 +594,17 @@ void AudioStreamSymphony::set_graph_for_tier(int p_tier, const GraphDescription 
 CompiledGraph *AudioStreamSymphony::compile_graph(uint64_t p_voice_seed) const {
 	String owner_path = get_path();
 	const GraphDescription *flat_graph = nullptr;
+	if (cached_flat_valid) {
+		for (int i = 0; i < cached_flat_children.size(); i++) {
+			const GraphFlattener::FlattenChildStamp &stamp = cached_flat_children[i];
+			Object *obj = ObjectDB::get_instance(stamp.id);
+			AudioStreamSymphony *child = Object::cast_to<AudioStreamSymphony>(obj);
+			if (!child || child->get_graph_version() != stamp.graph_version) {
+				cached_flat_valid = false;
+				break;
+			}
+		}
+	}
 	if (cached_flat_valid) {
 		flat_graph = &cached_flat_graph;
 		plan_cache_hits++;
@@ -590,6 +617,7 @@ CompiledGraph *AudioStreamSymphony::compile_graph(uint64_t p_voice_seed) const {
 			return nullptr;
 		}
 		cached_flat_graph = flat.graph;
+		cached_flat_children = flat.children;
 		cached_flat_valid = true;
 		plan_build_count++;
 		flat_graph = &cached_flat_graph;
@@ -718,14 +746,17 @@ GraphDescription AudioStreamSymphony::build_test_graph_10_nodes() {
 
 void AudioStreamSymphony::load_test_graph() {
 	graph_desc = build_test_graph_10_nodes();
+	_mark_graph_dirty();
 }
 
 void AudioStreamSymphony::load_test_graph_30() {
 	graph_desc = build_test_graph_30_nodes();
+	_mark_graph_dirty();
 }
 
 void AudioStreamSymphony::load_test_graph_50() {
 	graph_desc = build_test_graph_50_nodes();
+	_mark_graph_dirty();
 }
 
 GraphDescription AudioStreamSymphony::build_test_graph_30_nodes() {
@@ -1021,7 +1052,13 @@ CompiledGraph *AudioStreamSymphony::compile_lod_graph(int p_lod_tier, uint64_t p
 		}
 		return nullptr;
 	}
-	GraphCompiler::CompileResult result = GraphCompiler::compile(flat.graph, mix_rate, owner_path, p_voice_seed);
+	uint8_t *recycled_raw = nullptr;
+	size_t recycled_cap = 0;
+	_take_recycled_arena(1, recycled_raw, recycled_cap);
+	GraphCompiler::CompileResult result = GraphCompiler::compile(flat.graph, mix_rate, owner_path, p_voice_seed, &recycled_raw, &recycled_cap);
+	if (recycled_raw) {
+		_recycle_arena(recycled_raw, recycled_cap);
+	}
 	if (!result.success()) {
 		for (const String &err : result.errors) {
 			ERR_PRINT(vformat("Symphony LOD compile error (tier %d): %s", p_lod_tier, err));
@@ -1069,6 +1106,7 @@ int AudioStreamSymphony::add_lod_variant() {
 		return -1;
 	}
 	lod_graphs.push_back(GraphDescription());
+	_mark_graph_dirty();
 	notify_property_list_changed();
 	emit_changed();
 	return lod_graphs.size(); // tier = size after push (1 or 2)
@@ -1079,6 +1117,7 @@ int AudioStreamSymphony::duplicate_main_to_lod() {
 		return -1;
 	}
 	lod_graphs.push_back(graph_desc);
+	_mark_graph_dirty();
 	notify_property_list_changed();
 	emit_changed();
 	return lod_graphs.size();
@@ -1093,6 +1132,7 @@ bool AudioStreamSymphony::set_lod_variant(int p_tier, const GraphDescription &p_
 		lod_graphs.resize(idx + 1);
 	}
 	lod_graphs.write[idx] = p_desc;
+	_mark_graph_dirty();
 	notify_property_list_changed();
 	emit_changed();
 	return true;
@@ -1103,6 +1143,7 @@ bool AudioStreamSymphony::remove_lod_variant(int p_tier) {
 		return false;
 	}
 	lod_graphs.remove_at(p_tier - 1);
+	_mark_graph_dirty();
 	notify_property_list_changed();
 	emit_changed();
 	return true;

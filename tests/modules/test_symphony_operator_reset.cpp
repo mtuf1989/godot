@@ -398,4 +398,125 @@ TEST_CASE("[Symphony][Reset] migrate_compatible_state handles >256-byte ModalBan
 	memdelete(b.graph);
 }
 
+static void _check_reset_matches(const GraphDescription &p_desc, const String &p_label) {
+	GraphCompiler::CompileOptions note_opts;
+	note_opts.capture_pristine = true;
+	const uint64_t seed = 0xC0FFEEu;
+	const int frames = SYMPHONY_MICRO_BLOCK_SIZE * 4;
+	GraphCompiler::CompileResult fresh = GraphCompiler::compile(p_desc, 48000.0f, String(), seed, nullptr, nullptr, note_opts);
+	REQUIRE_MESSAGE(fresh.success(), p_label);
+	GraphCompiler::CompileResult reused = GraphCompiler::compile(p_desc, 48000.0f, String(), seed, nullptr, nullptr, note_opts);
+	REQUIRE(reused.success());
+	(void)_render_compiled(reused.graph, frames);
+	for (int32_t oi = 0; oi < reused.graph->operator_count; oi++) {
+		reused.graph->operators[oi]->reset_for_note(seed);
+	}
+	Vector<float> a = _render_compiled(fresh.graph, frames);
+	Vector<float> b = _render_compiled(reused.graph, frames);
+	float max_abs_diff = 0.0f;
+	for (int s = 0; s < a.size(); s++) {
+		max_abs_diff = MAX(max_abs_diff, Math::abs(a[s] - b[s]));
+	}
+	CHECK_MESSAGE(max_abs_diff == 0.0f, p_label);
+	memdelete(fresh.graph);
+	memdelete(reused.graph);
+}
+
+TEST_CASE("[Symphony][Reset] Oscillator waveform variants, SVF, Noise, custom Waveshaper") {
+	for (int wf = 0; wf <= 4; wf++) {
+		GraphDescription desc;
+		desc.smooth_parameters = false;
+		NodeDesc osc;
+		osc.id = 1;
+		osc.type_name = "Oscillator";
+		osc.params["frequency"] = 220.0f;
+		osc.params["waveform"] = (float)wf;
+		if (wf == 4) {
+			osc.params["pulse_width"] = 0.25f;
+		}
+		desc.nodes.push_back(osc);
+		NodeDesc out;
+		out.id = 2;
+		out.type_name = "GraphOutput";
+		desc.nodes.push_back(out);
+		desc.connections.push_back({ 1, 0, 2, 0, false });
+		_check_reset_matches(desc, vformat("Oscillator waveform %d", wf));
+	}
+
+	{
+		GraphDescription desc;
+		desc.smooth_parameters = false;
+		NodeDesc osc;
+		osc.id = 1;
+		osc.type_name = "Oscillator";
+		osc.params["frequency"] = 220.0f;
+		desc.nodes.push_back(osc);
+		NodeDesc cutoff;
+		cutoff.id = 2;
+		cutoff.type_name = "GraphInput";
+		cutoff.params["parameter_name"] = String("cutoff");
+		cutoff.params["default_value"] = 2000.0f;
+		desc.nodes.push_back(cutoff);
+		NodeDesc svf;
+		svf.id = 3;
+		svf.type_name = "SVFilter";
+		svf.params["cutoff"] = 400.0f;
+		svf.params["resonance"] = 0.4f;
+		desc.nodes.push_back(svf);
+		NodeDesc out;
+		out.id = 4;
+		out.type_name = "GraphOutput";
+		desc.nodes.push_back(out);
+		desc.connections.push_back({ 1, 0, 3, 0, false });
+		desc.connections.push_back({ 2, 0, 3, 1, false });
+		desc.connections.push_back({ 3, 0, 4, 0, false });
+		_check_reset_matches(desc, "SVFilter modulated cutoff");
+	}
+
+	for (int mode = 0; mode <= 1; mode++) {
+		GraphDescription desc;
+		desc.smooth_parameters = false;
+		NodeDesc noise;
+		noise.id = 1;
+		noise.type_name = "Noise";
+		noise.params["mode"] = (float)mode;
+		noise.params["deterministic_seed"] = 1.0f;
+		noise.params["seed"] = 7.0f;
+		desc.nodes.push_back(noise);
+		NodeDesc out;
+		out.id = 2;
+		out.type_name = "GraphOutput";
+		desc.nodes.push_back(out);
+		desc.connections.push_back({ 1, 0, 2, 0, false });
+		_check_reset_matches(desc, vformat("Noise mode %d", mode));
+	}
+
+	{
+		GraphDescription desc;
+		desc.smooth_parameters = false;
+		NodeDesc osc;
+		osc.id = 1;
+		osc.type_name = "Oscillator";
+		desc.nodes.push_back(osc);
+		NodeDesc shaper;
+		shaper.id = 2;
+		shaper.type_name = "Waveshaper";
+		PackedFloat32Array table;
+		table.resize(128);
+		for (int i = 0; i < 128; i++) {
+			table.write[i] = ((float)i / 127.0f) * 2.0f - 1.0f;
+		}
+		shaper.params["table_data"] = table;
+		shaper.params["table_size"] = 128.0f;
+		desc.nodes.push_back(shaper);
+		NodeDesc out;
+		out.id = 3;
+		out.type_name = "GraphOutput";
+		desc.nodes.push_back(out);
+		desc.connections.push_back({ 1, 0, 2, 0, false });
+		desc.connections.push_back({ 2, 0, 3, 0, false });
+		_check_reset_matches(desc, "custom Waveshaper");
+	}
+}
+
 } // namespace TestSymphonyOperatorReset
