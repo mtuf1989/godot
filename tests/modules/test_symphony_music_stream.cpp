@@ -264,4 +264,60 @@ TEST_CASE("[Symphony][MusicStream] replace_future clears pending phrase") {
 	pb->stop();
 }
 
+TEST_CASE("[Symphony][B7] render_offline duration, repeatability, and player refusal") {
+	Ref<AudioStreamSymphonyMusic> music;
+	music.instantiate();
+	music->set_mix_rate(symphony_offline_rate());
+	music->set_initial_bpm(120.0f);
+	REQUIRE(music->set_track_instrument(0, _make_instrument_stream(), 4, true) == OK);
+
+	Dictionary phrase;
+	phrase["start_tick"] = 0;
+	phrase["generation"] = 1;
+	Array events;
+	Dictionary on;
+	on["kind"] = "note_on";
+	on["tick"] = 0;
+	on["track"] = 0;
+	on["note_id"] = 1;
+	on["midi"] = 60;
+	on["velocity"] = 0.9;
+	on["duration_ticks"] = 960;
+	events.push_back(on);
+	phrase["events"] = events;
+
+	const int frames = (int)symphony_offline_rate(); // 1 s
+	PackedVector2Array a;
+	PackedVector2Array b;
+	{
+		Ref<AudioStreamPlaybackSymphonyMusic> pb = music->instantiate_playback();
+		REQUIRE(pb.is_valid());
+		REQUIRE_FALSE(pb->is_registered_with_voice_manager());
+		REQUIRE(pb->submit_phrase(phrase) == OK);
+		a = pb->render_offline(frames);
+	}
+	{
+		Ref<AudioStreamPlaybackSymphonyMusic> pb = music->instantiate_playback();
+		REQUIRE(pb->submit_phrase(phrase) == OK);
+		b = pb->render_offline(frames);
+	}
+	REQUIRE(a.size() == frames);
+	REQUIRE(b.size() == frames);
+	CHECK(a == b);
+	float peak = 0.0f;
+	for (int i = 0; i < frames; i++) {
+		peak = MAX(peak, MAX(Math::abs(a[i].x), Math::abs(a[i].y)));
+		CHECK(Math::is_finite(a[i].x));
+		CHECK(Math::is_finite(a[i].y));
+	}
+	CHECK(peak > 0.01f);
+
+	Ref<AudioStreamPlaybackSymphonyMusic> live = music->instantiate_playback();
+	live->start();
+	CHECK(live->is_registered_with_voice_manager());
+	PackedVector2Array refused = live->render_offline(64);
+	CHECK(refused.is_empty());
+	live->stop();
+}
+
 } // namespace TestSymphonyMusicStream

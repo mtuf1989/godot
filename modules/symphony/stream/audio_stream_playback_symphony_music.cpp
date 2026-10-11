@@ -7,6 +7,7 @@
 #include "../core/symphony_voice_manager.h"
 #include "../runtime/sound_event.h"
 
+#include "core/math/vector2.h"
 #include "core/object/class_db.h"
 #include "core/os/thread.h"
 #include "core/string/ustring.h"
@@ -29,6 +30,7 @@ void AudioStreamPlaybackSymphonyMusic::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("schedule_track_gain", "track_id", "gain", "start_tick", "fade_ticks"), &AudioStreamPlaybackSymphonyMusic::schedule_track_gain, DEFVAL(0));
 	ClassDB::bind_method(D_METHOD("get_transport_snapshot"), &AudioStreamPlaybackSymphonyMusic::get_transport_snapshot);
 	ClassDB::bind_method(D_METHOD("drain_status"), &AudioStreamPlaybackSymphonyMusic::drain_status);
+	ClassDB::bind_method(D_METHOD("render_offline", "frames"), &AudioStreamPlaybackSymphonyMusic::render_offline);
 }
 
 void AudioStreamPlaybackSymphonyMusic::_bind_music_stream(const Ref<AudioStreamSymphonyMusic> &p_stream, uint64_t p_seed, float p_mix_rate) {
@@ -514,6 +516,48 @@ Array AudioStreamPlaybackSymphonyMusic::drain_status() {
 	}
 	stretch_pool.reclaim_returned();
 	_reclaim_phrase_slots();
+	return out;
+}
+
+PackedVector2Array AudioStreamPlaybackSymphonyMusic::render_offline(int p_frames) {
+	PackedVector2Array out;
+	ERR_FAIL_COND_V_MSG(!Thread::is_main_thread(), out, "AudioStreamPlaybackSymphonyMusic::render_offline is main-thread only.");
+	ERR_FAIL_COND_V_MSG(registered_with_manager, out, "AudioStreamPlaybackSymphonyMusic::render_offline refuses playbacks attached to a player.");
+	ERR_FAIL_COND_V(p_frames <= 0, out);
+
+	const float rate = symphony_offline_rate();
+	mix_rate_cached.store(rate, std::memory_order_relaxed);
+	output_rate_cached.store(rate, std::memory_order_relaxed);
+	if (!prepared) {
+		if (!_prepare_pools()) {
+			return out;
+		}
+	}
+	set_voice_tier((int)SoundEvent::TIER_VITAL);
+	set_voice_importance(SoundEvent::TIER_BAND_VITAL);
+	active.store(true, std::memory_order_release);
+
+	out.resize(p_frames);
+	Vector2 *dst = out.ptrw();
+	AudioFrame block[256];
+	int written = 0;
+	while (written < p_frames && active.load(std::memory_order_acquire)) {
+		const int n = MIN(256, p_frames - written);
+		const int got = _mix_internal(block, n);
+		if (got <= 0) {
+			break;
+		}
+		for (int i = 0; i < got; i++) {
+			dst[written + i] = Vector2(block[i].left, block[i].right);
+		}
+		written += got;
+	}
+	if (written < p_frames) {
+		for (int i = written; i < p_frames; i++) {
+			dst[i] = Vector2();
+		}
+	}
+	active.store(false, std::memory_order_release);
 	return out;
 }
 

@@ -172,6 +172,7 @@ public:
 	Error schedule_track_gain(int32_t p_track_id, float p_gain, int64_t p_start_tick, int32_t p_fade_ticks = 0);
 	Dictionary get_transport_snapshot() const;
 	Array drain_status();
+	PackedVector2Array render_offline(int p_frames);
 
 	int _test_active_voice_count() const;
 	int _test_transport_segment_count() const;

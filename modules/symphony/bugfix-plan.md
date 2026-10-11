@@ -8,9 +8,9 @@
 |---|---|
 | **As of** | 2026-10-11 |
 | **Branch** | `master` |
-| **Done** | **B0**, **B1**, **B2**, **B3**, **B4**, **B5**, **B6** native `phrase_activated` notice |
-| **Next** | **B6** controller and MusicSystem (game-template) |
-| **C++ tests** | 352/352 `*Symphony*` green on `bin/godot.macos.editor.arm64` |
+| **Done** | **B0**–**B6**, **B7** native `render_offline` |
+| **Next** | **B7** composer and `render_offline_wav` (game-template) |
+| **C++ tests** | 353/353 `*Symphony*` green on `bin/godot.macos.editor.arm64` |
 
 ### Commits
 
@@ -22,7 +22,9 @@
 | B3 | `02bf112335` | Tempo-as-speed, Catmull-Rom resample, `register_clip_wav`, unclaimed clip return |
 | B4 | `63933d6ed2` | Layout keys, SpectralGate exclusion, PhaseVocoder arena fn, note-only pristine |
 | B5 | `a94c26faf9` | Oscillator/SVFilter reset, reverb last_params, spatial slot table, RTPC atomics, trigger_at pending, cache dirty, retirement recycle, BeatClock update_transport |
-| B6 native | *(this commit)* | `PhraseActivated` from scheduler activation, not `submit_phrase` |
+| B6 native | `afff33687d` | `PhraseActivated` from scheduler activation, not `submit_phrase` |
+| B6 game-template | `ff0fe288` | Activation-driven submit, status fallback, MusicSystem completion signals |
+| B7 native | *(this commit)* | `AudioStreamPlaybackSymphonyMusic.render_offline` at 48 kHz, no voice-manager register |
 
 ## Finding to phase map
 
