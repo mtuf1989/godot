@@ -1,5 +1,5 @@
 /**************************************************************************/
-/*  jolt_custom_double_sided_shape.h                                      */
+/*  visionos_spatial_events.h                                             */
 /**************************************************************************/
 /*                         This file is part of:                          */
 /*                             GODOT ENGINE                               */
@@ -30,44 +30,66 @@
 
 #pragma once
 
-#include "jolt_custom_decorated_shape.h"
-#include "jolt_custom_shape_type.h"
+#ifdef VISIONOS_ENABLED
 
-class JoltCustomDoubleSidedShapeSettings final : public JoltCustomDecoratedShapeSettings {
-public:
-	bool back_face_collision = false;
+#include "visionos_definitions.h"
 
-	JoltCustomDoubleSidedShapeSettings() = default;
+#include "core/math/transform_3d.h"
+#include "servers/xr/xr_controller_tracker.h"
 
-	JoltCustomDoubleSidedShapeSettings(const ShapeSettings *p_inner_settings, bool p_back_face_collision) :
-			JoltCustomDecoratedShapeSettings(p_inner_settings), back_face_collision(p_back_face_collision) {}
+// Equivalent to https://developer.apple.com/documentation/swiftui/spatialeventcollection/event
+struct VisionOSSpatialEvent {
+	// Ray
+	bool has_ray;
+	Transform3D ray;
 
-	JoltCustomDoubleSidedShapeSettings(const JPH::Shape *p_inner_shape, bool p_back_face_collision) :
-			JoltCustomDecoratedShapeSettings(p_inner_shape), back_face_collision(p_back_face_collision) {}
+	// Hand
+	enum class Chirality : int {
+		none = 0,
+		left = 1,
+		right = 2
+	};
+	Chirality chirality;
+	Transform3D hand_pose;
 
-	virtual JPH::Shape::ShapeResult Create() const override;
+	// Phase
+	enum class Phase : int {
+		unknown = 0,
+		active = 1,
+		cancelled = 2,
+		ended = 3
+	};
+	Phase phase;
 };
 
-class JoltCustomDoubleSidedShape final : public JoltCustomDecoratedShape {
-	bool back_face_collision = false;
+// Godot representation of visionOS spatial events.
+struct VisionOSSpatialEventTracking {
+	// Ray from center of the head to
+	// the direction of the eyes, when a
+	// pinch gesture begins.
+	Ref<XRControllerTracker> eyes_ray;
 
-public:
-	static void register_type();
+	struct Hand {
+		// Hand pose when pinching and dragging.
+		VisionOSSharedController *controller = nullptr;
 
-	JoltCustomDoubleSidedShape() :
-			JoltCustomDecoratedShape(JoltCustomShapeSubType::DOUBLE_SIDED) {}
+		// Update the ray only once per gesture.
+		bool ray_submitted = false;
 
-	JoltCustomDoubleSidedShape(const JoltCustomDoubleSidedShapeSettings &p_settings, JPH::Shape::ShapeResult &p_result) :
-			JoltCustomDecoratedShape(JoltCustomShapeSubType::DOUBLE_SIDED, p_settings, p_result), back_face_collision(p_settings.back_face_collision) {
-		if (!p_result.HasError()) {
-			p_result.Set(this);
-		}
-	}
+		// Correcting the transforms from each hand to
+		// map to the Godot and OpenXR convention:
+		// https://registry.khronos.org/OpenXR/specs/1.1/html/xrspec.html#XR_EXT_hand_interaction
+		Transform3D transform_correction;
+	};
 
-	JoltCustomDoubleSidedShape(const JPH::Shape *p_inner_shape, bool p_back_face_collision) :
-			JoltCustomDecoratedShape(JoltCustomShapeSubType::DOUBLE_SIDED, p_inner_shape), back_face_collision(p_back_face_collision) {}
+	// Left and right hands.
+	Hand left_hand, right_hand;
 
-	virtual void CastRay(const JPH::RayCast &p_ray, const JPH::RayCastSettings &p_ray_cast_settings, const JPH::SubShapeIDCreator &p_sub_shape_id_creator, JPH::CastRayCollector &p_collector, const JPH::ShapeFilter &p_shape_filter = JPH::ShapeFilter()) const override;
+	void initialize(XRServer *p_xr_server, VisionOSSharedController &p_left_hand,
+			VisionOSSharedController &p_right_hand);
+	void uninitialize(XRServer *p_xr_server);
 
-	bool should_collide_with_back_faces() const { return back_face_collision; }
+	void on_spatial_event(const VisionOSSpatialEvent &);
 };
+
+#endif // VISIONOS_ENABLED

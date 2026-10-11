@@ -47,6 +47,7 @@
 #include "scene/main/canvas_layer.h"
 #include "scene/main/scene_tree.h"
 #include "scene/resources/mesh.h"
+#include "scene/resources/texture.h"
 #include "scene/theme/theme_db.h"
 #include "servers/display/display_server.h"
 #include "servers/rendering/rendering_server.h"
@@ -510,6 +511,12 @@ void RuntimeNodeSelect::_root_window_input(const Ref<InputEvent> &p_event) {
 	if (node_select_type == NODE_TYPE_2D) {
 		bool was_input_disabled = Input::get_singleton()->is_input_disabled();
 		Input::get_singleton()->set_disable_input(false);
+
+		Ref<InputEventMouse> me = p_event;
+		if (me.is_valid()) {
+			// Offset the mouse position by the embedding's transform.
+			me->set_position(root->get_popup_base_transform().xform(me->get_position()));
+		}
 
 		if (!ci_manipulator->gui_input(p_event)) {
 			// Remind the user to enable the camera override when panning.
@@ -1080,10 +1087,10 @@ void RuntimeNodeSelect::_update_selection() {
 		}
 	}
 
-	if (node_select_type == NODE_TYPE_2D) {
+	if (node_select_type == NODE_TYPE_2D && !selected_ci_nodes.is_empty()) {
 		Point2 temp_pivot = ci_manipulator->get_temp_pivot();
 
-		if (!selected_ci_nodes.is_empty() && ci_manipulator->is_showing_transformation_gizmos()) {
+		if (ci_manipulator->is_showing_transformation_gizmos()) {
 			CanvasItem *ci = nullptr;
 
 			// Find the first movable node.
@@ -1121,6 +1128,7 @@ void RuntimeNodeSelect::_update_selection() {
 				RS::get_singleton()->canvas_item_add_set_transform(srect_ci, simple_xform);
 
 				// Move Handles
+
 				if (is_moving) {
 					Vector<Point2> points = {
 						Point2(CanvasItemManipulator::GIZMO_HANDLE_X_RECT.position.x, CanvasItemManipulator::GIZMO_HANDLE_X_RECT.size.height / 2.0),
@@ -1144,6 +1152,7 @@ void RuntimeNodeSelect::_update_selection() {
 				}
 
 				// Scale Handles
+
 				if (tool == CanvasItemManipulator::TOOL_SCALE || drag == CanvasItemManipulator::DRAG_SCALE_X || drag == CanvasItemManipulator::DRAG_SCALE_Y || (tool == CanvasItemManipulator::TOOL_SELECT && is_alt && is_ctrl)) {
 					Size2 scale_factor(CanvasItemManipulator::GIZMO_HANDLE_DISTANCE, CanvasItemManipulator::GIZMO_HANDLE_DISTANCE);
 					bool uniform = Input::get_singleton()->is_key_pressed(Key::SHIFT);
@@ -1170,22 +1179,28 @@ void RuntimeNodeSelect::_update_selection() {
 					RS::get_singleton()->canvas_item_add_line(srect_ci, Point2(), Point2(0, scale_factor.y), axis_y_color, scale);
 				}
 
-				RS::get_singleton()->canvas_item_add_set_transform(srect_ci, Transform2D());
-
 				Input::get_singleton()->set_disable_input(was_input_disabled);
-
-				// Rotation Line
-				if (drag == CanvasItemManipulator::DRAG_ROTATE) {
-					RS::get_singleton()->canvas_item_add_line(srect_ci, ci_manipulator->get_drag_rotation_center(), ci_manipulator->get_drag_to(), accent_color * Color(1, 1, 1, 0.6), 2 * scale);
-				}
 			}
 		}
+
+		// Compensate the mouse position offset from the embedding.
+		RS::get_singleton()->canvas_item_add_set_transform(srect_ci, SceneTree::get_singleton()->get_root()->get_popup_base_transform().affine_inverse());
+
+		// Rotation Line
+
+		if (drag == CanvasItemManipulator::DRAG_ROTATE) {
+			RS::get_singleton()->canvas_item_add_line(srect_ci, ci_manipulator->get_drag_rotation_center(), ci_manipulator->get_drag_to(), accent_color * Color(1, 1, 1, 0.6), 2 * scale);
+		}
+
+		// Temporary Pivot
 
 		if (!Math::is_inf(temp_pivot.x) && !Math::is_inf(temp_pivot.y)) {
 			Size2 pivot_size = pivot_icon->get_size() * scale;
 			Rect2 rect(((temp_pivot - view_2d_offset) * view_2d_zoom - (pivot_size / 2.0)).floor(), pivot_size);
 			RS::get_singleton()->canvas_item_add_texture_rect(srect_ci, rect, pivot_icon->get_rid(), false, accent_color);
 		}
+
+		RS::get_singleton()->canvas_item_add_set_transform(srect_ci, Transform2D());
 	}
 
 #ifndef _3D_DISABLED
@@ -1724,6 +1739,7 @@ Vector3 RuntimeNodeSelect::_get_screen_to_space(const Vector3 &p_vector3) {
 	Vector2 screen_he = cm.get_viewport_half_extents();
 	return camera_transform.xform(Vector3(((p_vector3.x / size.width) * 2.0 - 1.0) * screen_he.x, ((1.0 - (p_vector3.y / size.height)) * 2.0 - 1.0) * screen_he.y, -(znear + p_vector3.z)));
 }
+#endif // _3D_DISABLED
 
 void RuntimeNodeSelect::_box_selected_ci(const Array &p_selection) {
 	Vector<Node *> nodes;
@@ -1776,6 +1792,7 @@ void RuntimeNodeSelect::_commit_canvas_state_requested(const Array &p_selection,
 	}
 }
 
+#ifndef _3D_DISABLED
 void RuntimeNodeSelect::_fov_scaled() {
 	SceneTree::get_singleton()->get_root()->get_override_camera_3d()->set_perspective(camera_fov * view_3d_controller->cursor.fov_scale, camera_znear, camera_zfar);
 }

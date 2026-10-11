@@ -1,5 +1,5 @@
 /**************************************************************************/
-/*  jolt_custom_user_data_shape.h                                         */
+/*  type_info.cpp                                                         */
 /**************************************************************************/
 /*                         This file is part of:                          */
 /*                             GODOT ENGINE                               */
@@ -28,31 +28,17 @@
 /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
-#pragma once
+#include "core/variant/type_info.h"
 
-#include "jolt_custom_decorated_shape.h"
-#include "jolt_custom_shape_type.h"
-
-class JoltCustomUserDataShapeSettings final : public JoltCustomDecoratedShapeSettings {
-public:
-	using JoltCustomDecoratedShapeSettings::JoltCustomDecoratedShapeSettings;
-
-	virtual ShapeResult Create() const override;
-};
-
-class JoltCustomUserDataShape final : public JoltCustomDecoratedShape {
-public:
-	static void register_type();
-
-	JoltCustomUserDataShape() :
-			JoltCustomDecoratedShape(JoltCustomShapeSubType::OVERRIDE_USER_DATA) {}
-
-	JoltCustomUserDataShape(const JoltCustomUserDataShapeSettings &p_settings, ShapeResult &p_result) :
-			JoltCustomDecoratedShape(JoltCustomShapeSubType::OVERRIDE_USER_DATA, p_settings, p_result) {
-		if (!p_result.HasError()) {
-			p_result.Set(this);
-		}
+namespace GodotTypeInfo {
+namespace Internal {
+String enum_qualified_name_to_class_info_name(const char *p_qualified_name) {
+	Vector<String> parts = String(p_qualified_name).split("::", false);
+	if (parts.size() <= 2) {
+		return String(".").join(parts);
 	}
-
-	virtual JPH::uint64 GetSubShapeUserData(const JPH::SubShapeID &p_sub_shape_id) const override { return GetUserData(); }
-};
+	// Contains namespace. We only want the class and enum names.
+	return parts[parts.size() - 2] + "." + parts[parts.size() - 1];
+}
+} // namespace Internal
+} // namespace GodotTypeInfo

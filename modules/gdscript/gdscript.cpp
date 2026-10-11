@@ -48,7 +48,10 @@
 #endif
 
 #ifdef TESTS_ENABLED
-#include "tests/gdscript_test_runner.h"
+#ifndef DISABLE_DEPRECATED
+#include "core/error/error_macros.h"
+#include "core/os/os.h"
+#endif
 #endif
 
 #include "core/config/engine.h"
@@ -2038,8 +2041,8 @@ String GDScriptInstance::to_string(bool *r_valid) {
 	return String();
 }
 
-Ref<Script> GDScriptInstance::get_script() const {
-	return script;
+Script *GDScriptInstance::get_script() const {
+	return *script;
 }
 
 ScriptLanguage *GDScriptInstance::get_language() {
@@ -2188,7 +2191,12 @@ void GDScriptLanguage::init() {
 #endif // DEBUG_ENABLED
 
 #ifdef TESTS_ENABLED
-	GDScriptTests::GDScriptTestRunner::handle_cmdline();
+#ifndef DISABLE_DEPRECATED
+	if (OS::get_singleton()->get_cmdline_args().find("--gdscript-generate-tests")) {
+		ERR_PRINT(R"(The command for generating GDScript test output has changed to "--test gdscript-generate-tests")");
+		exit(-1);
+	}
+#endif // !DISABLE_DEPRECATED
 #endif // TESTS_ENABLED
 }
 

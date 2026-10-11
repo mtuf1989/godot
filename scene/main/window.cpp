@@ -445,8 +445,7 @@ void Window::move_to_center() {
 		parent_rect = get_embedder()->get_visible_rect();
 	} else {
 		int parent_screen = DisplayServer::get_singleton()->window_get_current_screen(get_window_id());
-		parent_rect.position = DisplayServer::get_singleton()->screen_get_position(parent_screen);
-		parent_rect.size = DisplayServer::get_singleton()->screen_get_size(parent_screen);
+		parent_rect = DisplayServer::get_singleton()->screen_get_usable_rect(parent_screen);
 	}
 
 	if (parent_rect != Rect2()) {
@@ -1750,7 +1749,7 @@ void Window::_notification(int p_what) {
 					_update_viewport_size(); // Then feed back to the viewport.
 					_update_window_callbacks();
 					// Simulate mouse-enter event when mouse is over the window, since OS event might arrive before setting callbacks.
-					if (!mouse_in_window && Rect2(position, size).has_point(DisplayServer::get_singleton()->mouse_get_position())) {
+					if (!mouse_in_window && DisplayServer::get_singleton()->has_feature(DisplayServerEnums::FEATURE_MOUSE) && Rect2(position, size).has_point(DisplayServer::get_singleton()->mouse_get_position())) {
 						_event_callback(DisplayServerEnums::WINDOW_EVENT_MOUSE_ENTER);
 					}
 					RS::get_singleton()->viewport_set_update_mode(get_viewport_rid(), RSE::VIEWPORT_UPDATE_WHEN_VISIBLE);

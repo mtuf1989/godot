@@ -147,6 +147,7 @@
 #include "editor/settings/editor_settings_dialog.h"
 #include "editor/settings/project_settings_editor.h"
 #include "editor/shader/editor_native_shader_source_visualizer.h"
+#include "editor/shader/shader_editor_plugin.h"
 #include "editor/shader/shader_text_editor.h"
 #include "editor/themes/editor_color_map.h"
 #include "editor/themes/editor_scale.h"
@@ -974,6 +975,16 @@ void EditorNode::_notification(int p_what) {
 				EditorSettings::get_singleton()->emit_signal(SNAME("settings_changed"));
 				settings_overrides_changed = false;
 			}
+
+#ifdef ANDROID_ENABLED
+			if (portrait_mode) {
+				const int vk_height = DisplayServer::get_singleton()->virtual_keyboard_get_height();
+				if (vk_height != last_vk_height) {
+					last_vk_height = vk_height;
+					vk_spacer->set_custom_minimum_size(Size2(0, vk_height));
+				}
+			}
+#endif
 		} break;
 
 		case NOTIFICATION_ENTER_TREE: {
@@ -1002,6 +1013,7 @@ void EditorNode::_notification(int p_what) {
 			if (is_fullscreen) {
 				DisplayServer::get_singleton()->window_set_mode(DisplayServerEnums::WINDOW_MODE_FULLSCREEN);
 			}
+			DisplayServer::get_singleton()->connect("orientation_changed", callable_mp(this, &EditorNode::_screen_orientation_changed));
 #endif
 			get_tree()->get_root()->connect("files_dropped", callable_mp(this, &EditorNode::_dropped_files));
 
@@ -1625,7 +1637,7 @@ void EditorNode::_scan_external_changes() {
 			TreeItem *ti = disk_changed_list->create_item(r);
 			ti->set_text(0, scene_path.get_file());
 			need_reload = true;
-			disk_changed_scenes.push_back(scene_path);
+			disk_changed_scenes.insert(scene_path);
 		}
 	}
 
@@ -1643,9 +1655,7 @@ void EditorNode::_scan_external_changes() {
 }
 
 void EditorNode::_resave_externally_modified_scenes(String p_str) {
-	for (const String &scene_path : disk_changed_scenes) {
-		_save_scene(scene_path);
-	}
+	save_scene_list(disk_changed_scenes);
 
 	if (disk_changed_project) {
 		ProjectSettings::get_singleton()->save();
@@ -4167,10 +4177,19 @@ void EditorNode::_check_system_theme_changed() {
 	}
 
 	if (system_theme_changed) {
-		class_icon_cache.clear();
-		_update_theme();
-		_build_icon_type_cache();
-		recent_scenes->reset_size();
+		EditorThemeManager::set_theme_outdated();
+
+		SceneTree *sml = Object::cast_to<SceneTree>(OS::get_singleton()->get_main_loop());
+		if (!sml) {
+			return;
+		}
+		Node *root = sml->get_root()->get_child(0);
+		if (!root) {
+			return;
+		}
+		// Some theme related settings are updated in editor settings change handlers.
+		// Using "NOTIFICATION_EDITOR_SETTINGS_CHANGED" to simulate manual theme change from the editor settings and ensure all parts of the editor are updated correctly.
+		root->propagate_notification(EditorSettings::NOTIFICATION_EDITOR_SETTINGS_CHANGED);
 	} else if (menu_type == MENU_TYPE_GLOBAL && display_server->is_dark_mode_supported() && display_server->is_dark_mode() != last_dark_mode_state) {
 		last_dark_mode_state = display_server->is_dark_mode();
 
@@ -8451,6 +8470,11 @@ void EditorNode::_touch_actions_panel_mode_changed() {
 			break;
 	}
 }
+
+void EditorNode::_screen_orientation_changed(int p_new_orientation) {
+	portrait_mode = p_new_orientation == DisplayServerEnums::SENSOR_ORIENTATION_PORTRAIT;
+	vk_spacer->set_custom_minimum_size(Size2()); // Reset size.
+}
 #endif
 
 #ifdef MACOS_ENABLED
@@ -8838,6 +8862,9 @@ EditorNode::EditorNode() {
 	base_vbox->add_child(main_box);
 
 	_touch_actions_panel_mode_changed();
+
+	vk_spacer = memnew(Control);
+	base_vbox->add_child(vk_spacer);
 
 	gui_base->add_child(base_vbox);
 #else
@@ -9825,7 +9852,7 @@ EditorNode::EditorNode() {
 	{
 		const String output_key = log->get_effective_layout_key();
 		const String audio_key = audio_bus_editor->get_effective_layout_key();
-		const String shader_key = ScriptEditor::get_bottom_script_editor()->get_effective_layout_key();
+		const String shader_key = ShaderEditorPlugin::get_singleton()->get_shader_dock()->get_effective_layout_key();
 
 		Dictionary offsets;
 		offsets[output_key] = -270;

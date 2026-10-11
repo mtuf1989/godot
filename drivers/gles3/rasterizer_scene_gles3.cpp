@@ -3147,7 +3147,7 @@ void RasterizerSceneGLES3::_render_post_processing(const RenderDataGLES3 *p_rend
 			// Copy depth buffer
 			glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo_int);
 			glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo_rt);
-			glBlitFramebuffer(0, 0, internal_size.x, internal_size.y, 0, 0, target_size.x, target_size.y, GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT, GL_NEAREST);
+			glBlitFramebuffer(0, 0, internal_size.x, internal_size.y, 0, 0, target_size.x, target_size.y, GL_DEPTH_BUFFER_BIT, GL_NEAREST);
 		}
 
 		glBindFramebuffer(GL_FRAMEBUFFER, fbo_rt);
@@ -3229,7 +3229,7 @@ void RasterizerSceneGLES3::_render_post_processing(const RenderDataGLES3 *p_rend
 				glFramebufferTextureLayer(GL_READ_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, read_depth, 0, v);
 				glFramebufferTextureLayer(GL_DRAW_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, write_depth, 0, v);
 
-				glBlitFramebuffer(0, 0, internal_size.x, internal_size.y, 0, 0, target_size.x, target_size.y, GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT, GL_NEAREST);
+				glBlitFramebuffer(0, 0, internal_size.x, internal_size.y, 0, 0, target_size.x, target_size.y, GL_DEPTH_BUFFER_BIT, GL_NEAREST);
 			}
 		}
 
@@ -3652,14 +3652,6 @@ void RasterizerSceneGLES3::_render_list_template(RenderListParameters *p_params,
 							spec_constants |= SceneShaderGLES3::SECOND_REFLECTION_PROBE;
 						}
 
-						if (inst->decals_count > 0) {
-							spec_constants |= SceneShaderGLES3::USE_DECALS;
-
-							if (decals_filter == RSE::DECAL_FILTER_NEAREST_MIPMAPS || decals_filter == RSE::DECAL_FILTER_LINEAR_MIPMAPS || decals_filter == RSE::DECAL_FILTER_NEAREST_MIPMAPS_ANISOTROPIC || decals_filter == RSE::DECAL_FILTER_LINEAR_MIPMAPS_ANISOTROPIC) {
-								spec_constants |= SceneShaderGLES3::USE_DECAL_MIPMAPS;
-							}
-						}
-
 						if (inst->lightmap_instance.is_valid()) {
 							spec_constants |= SceneShaderGLES3::USE_LIGHTMAP;
 
@@ -3766,6 +3758,15 @@ void RasterizerSceneGLES3::_render_list_template(RenderListParameters *p_params,
 						} else if (scene_state.directional_shadow_quality >= RSE::SHADOW_QUALITY_SOFT_LOW) {
 							spec_constants |= SceneShaderGLES3::SHADOW_MODE_PCF_5;
 						}
+					}
+				}
+
+				// Decals apply in all color passes.
+				if (inst->decals_count > 0) {
+					spec_constants |= SceneShaderGLES3::USE_DECALS;
+
+					if (decals_filter == RSE::DECAL_FILTER_NEAREST_MIPMAPS || decals_filter == RSE::DECAL_FILTER_LINEAR_MIPMAPS || decals_filter == RSE::DECAL_FILTER_NEAREST_MIPMAPS_ANISOTROPIC || decals_filter == RSE::DECAL_FILTER_LINEAR_MIPMAPS_ANISOTROPIC) {
+						spec_constants |= SceneShaderGLES3::USE_DECAL_MIPMAPS;
 					}
 				}
 			}

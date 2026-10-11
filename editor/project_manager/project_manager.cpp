@@ -45,6 +45,7 @@
 #include "editor/editor_string_names.h"
 #include "editor/gui/editor_about.h"
 #include "editor/gui/editor_file_dialog.h"
+#include "editor/gui/editor_icon_manager.h"
 #include "editor/gui/editor_title_bar.h"
 #include "editor/gui/editor_version_button.h"
 #include "editor/inspector/editor_inspector.h"
@@ -502,6 +503,9 @@ void ProjectManager::_show_quick_settings() {
 	if (!EditorPropertyNameProcessor::get_singleton()) {
 		EditorPropertyNameProcessor *epnp = memnew(EditorPropertyNameProcessor);
 		add_child(epnp);
+
+		EditorIconManager *icon_manager = memnew(EditorIconManager);
+		add_child(icon_manager);
 
 		EditorHelp::generate_doc();
 	}
@@ -1280,9 +1284,6 @@ void ProjectManager::shortcut_input(const Ref<InputEvent> &p_ev) {
 		bool keycode_handled = true;
 
 		switch (k->get_keycode()) {
-			case Key::ENTER: {
-				_open_selected_projects_check_recovery_mode();
-			} break;
 			case Key::HOME: {
 				if (project_list->get_project_count() > 0) {
 					project_list->ensure_project_visible(0);
