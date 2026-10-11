@@ -8,15 +8,16 @@
 |---|---|
 | **As of** | 2026-10-11 |
 | **Branch** | `master` |
-| **Done** | **B0** test infrastructure |
-| **Next** | **B1** scheduler and renderer |
+| **Done** | **B0**, **B1** scheduler and renderer |
+| **Next** | **B2** music thread hand-off |
 | **C++ tests** | 327/327 `*Symphony*` green on `bin/godot.macos.editor.arm64` |
 
 ### Commits
 
 | Phase | Commit | Notes |
 |---|---|---|
-| B0 | *(this commit)* | Alloc counter, helpers, mixer scaffold |
+| B0 | `0015d849eb` | Alloc counter, helpers, mixer scaffold |
+| B1 | *(this commit)* | Boundary carry, generation-scoped notes, span renderer |
 
 ## Finding to phase map
 

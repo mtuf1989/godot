@@ -11,6 +11,17 @@
 #include "core/os/thread.h"
 #include "core/string/ustring.h"
 
+AudioStreamPlaybackSymphonyMusic::AudioStreamPlaybackSymphonyMusic() {
+	for (int i = 0; i < 256; i++) {
+		track_to_pool[i] = -1;
+	}
+	for (int i = 0; i < AudioStreamSymphonyMusic::MAX_TRACKS; i++) {
+		track_gains[i] = 1.0f;
+		track_release_frames[i] = 1.0f;
+		gain_ramps[i] = GainRamp{};
+	}
+}
+
 void AudioStreamPlaybackSymphonyMusic::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("submit_phrase", "phrase"), &AudioStreamPlaybackSymphonyMusic::submit_phrase);
 	ClassDB::bind_method(D_METHOD("replace_future", "from_tick", "generation"), &AudioStreamPlaybackSymphonyMusic::replace_future);
@@ -97,6 +108,7 @@ bool AudioStreamPlaybackSymphonyMusic::_prepare_pools() {
 		}
 		track_gains[pool_count] = tc.gain;
 		track_release_frames[pool_count] = MAX(1.0f, tc.release_seconds * rate);
+		gain_ramps[pool_count] = GainRamp{};
 		pool_count++;
 	}
 	prepared = true;
@@ -172,7 +184,6 @@ bool AudioStreamPlaybackSymphonyMusic::_parse_phrase(const Dictionary &p_phrase,
 			ev.payload = (float)d.get("clip_index", d.get("payload", -1.0));
 			ev.midi = (int32_t)d.get("transpose", d.get("midi", 0));
 			ev.velocity = (float)d.get("tempo_ratio", d.get("velocity", 1.0));
-			// clip_key → index resolved in submit_phrase (needs music_stream).
 			if (!r_out.push(ev)) {
 				r_error = "phrase event capacity exceeded";
 				return false;
@@ -196,14 +207,12 @@ Error AudioStreamPlaybackSymphonyMusic::submit_phrase(const Dictionary &p_phrase
 		return ERR_INVALID_PARAMETER;
 	}
 
-	// Resolve clip_key → clip_index and prepare stretch contexts on main.
 	const Array events = p_phrase.get("events", Array());
 	int clip_event_i = 0;
 	for (int i = 0; i < phrase.event_count; i++) {
 		if (phrase.events[i].kind != SymphonyMusicEventKind::ClipOn) {
 			continue;
 		}
-		// Find matching dictionary among clip_on entries.
 		Dictionary d;
 		int seen = 0;
 		for (int e = 0; e < events.size(); e++) {
@@ -245,7 +254,6 @@ Error AudioStreamPlaybackSymphonyMusic::submit_phrase(const Dictionary &p_phrase
 		prepared_clips.push_back(pc);
 	}
 
-	// Update synth delay to common stretch latency.
 	const int lat = stretch_pool.common_latency();
 	if (lat > latency_samples) {
 		latency_samples = lat;
@@ -286,8 +294,6 @@ Error AudioStreamPlaybackSymphonyMusic::schedule_tempo(float p_bpm, int64_t p_st
 
 Error AudioStreamPlaybackSymphonyMusic::schedule_track_gain(int32_t p_track_id, float p_gain, int64_t p_start_tick, int32_t p_fade_ticks) {
 	ERR_FAIL_COND_V(!Thread::is_main_thread(), ERR_UNAVAILABLE);
-	(void)p_fade_ticks;
-	(void)p_start_tick; // Immediate for v1; timed gains belong in submit_phrase events.
 	if (p_track_id < 0 || p_track_id >= 256) {
 		return ERR_INVALID_PARAMETER;
 	}
@@ -295,8 +301,61 @@ Error AudioStreamPlaybackSymphonyMusic::schedule_track_gain(int32_t p_track_id, 
 	if (pi < 0) {
 		return ERR_DOES_NOT_EXIST;
 	}
-	track_gains[pi] = CLAMP(p_gain, 0.0f, 4.0f);
+	const uint64_t start_frame = scheduler.transport.tick_to_frame(MAX(p_start_tick, (int64_t)0));
+	uint64_t end_frame = start_frame;
+	if (p_fade_ticks > 0) {
+		end_frame = scheduler.transport.tick_to_frame(p_start_tick + (int64_t)p_fade_ticks);
+	}
+	_arm_gain(pi, p_gain, start_frame, end_frame);
 	return OK;
+}
+
+void AudioStreamPlaybackSymphonyMusic::_arm_gain(int p_pool, float p_target, uint64_t p_start_frame, uint64_t p_end_frame) {
+	if (p_pool < 0 || p_pool >= pool_count) {
+		return;
+	}
+	GainRamp &ramp = gain_ramps[p_pool];
+	ramp.armed = true;
+	ramp.from = track_gains[p_pool];
+	ramp.to = CLAMP(p_target, 0.0f, 4.0f);
+	ramp.start_frame = p_start_frame;
+	ramp.end_frame = MAX(p_end_frame, p_start_frame);
+}
+
+float AudioStreamPlaybackSymphonyMusic::_gain_at(int p_pool, uint64_t p_frame) const {
+	if (p_pool < 0 || p_pool >= pool_count) {
+		return 1.0f;
+	}
+	const GainRamp &ramp = gain_ramps[p_pool];
+	if (!ramp.armed) {
+		return track_gains[p_pool];
+	}
+	if (p_frame <= ramp.start_frame) {
+		return ramp.from;
+	}
+	if (p_frame >= ramp.end_frame || ramp.end_frame <= ramp.start_frame) {
+		return ramp.to;
+	}
+	const float t = (float)(p_frame - ramp.start_frame) / (float)(ramp.end_frame - ramp.start_frame);
+	return ramp.from + (ramp.to - ramp.from) * CLAMP(t, 0.0f, 1.0f);
+}
+
+void AudioStreamPlaybackSymphonyMusic::_drain_scheduler_notices() {
+	SymphonyMusicScheduler::Notice notices[SymphonyMusicScheduler::NOTICE_CAP];
+	const int n = scheduler.drain_notices(notices, SymphonyMusicScheduler::NOTICE_CAP);
+	for (int i = 0; i < n; i++) {
+		const StatusEntry::Kind kind = notices[i].kind == SymphonyMusicScheduler::NoticeKind::PhraseLate
+				? StatusEntry::Kind::PhraseLate
+				: StatusEntry::Kind::NoteForcedOff;
+		_push_status(kind, notices[i].generation, notices[i].track_id, notices[i].note_id, notices[i].payload);
+	}
+	SymphonyNotePool::ForcedOff forced[SymphonyNotePool::MAX_VOICES];
+	for (int p = 0; p < pool_count; p++) {
+		const int fn = pools[p].drain_forced(forced, SymphonyNotePool::MAX_VOICES);
+		for (int i = 0; i < fn; i++) {
+			_push_status(StatusEntry::Kind::NoteForcedOff, forced[i].generation, pools[p].track_id, forced[i].note_id, 1.0f);
+		}
+	}
 }
 
 Dictionary AudioStreamPlaybackSymphonyMusic::get_transport_snapshot() const {
@@ -309,7 +368,8 @@ Dictionary AudioStreamPlaybackSymphonyMusic::get_transport_snapshot() const {
 	d["beat_unit"] = snap.beat_unit;
 	d["bar_index"] = snap.bar_index;
 	d["beat_in_bar"] = snap.beat_in_bar;
-	d["generation"] = scheduler.active_generation;
+	d["generation"] = snap.generation;
+	d["sample_rate"] = snap.sample_rate;
 	d["playing"] = is_playing();
 	return d;
 }
@@ -334,6 +394,12 @@ Array AudioStreamPlaybackSymphonyMusic::drain_status() {
 			case StatusEntry::Kind::TempoApplied:
 				d["kind"] = "tempo_applied";
 				break;
+			case StatusEntry::Kind::PhraseLate:
+				d["kind"] = "phrase_late";
+				break;
+			case StatusEntry::Kind::NoteForcedOff:
+				d["kind"] = "note_forced_off";
+				break;
 		}
 		d["generation"] = e.generation;
 		d["track_id"] = e.track_id;
@@ -357,7 +423,7 @@ void AudioStreamPlaybackSymphonyMusic::_apply_event(const SymphonyMusicEvent &p_
 			if (pi < 0) {
 				return;
 			}
-			const int32_t vi = pools[pi].note_on(p_ev.note_id, p_ev.midi, p_ev.velocity, p_frame, p_offset);
+			const int32_t vi = pools[pi].note_on(p_ev.note_id, p_ev.midi, p_ev.velocity, p_frame, p_offset, p_ev.generation);
 			if (vi < 0) {
 				_push_status(StatusEntry::Kind::NoteDropped, scheduler.active_generation, p_ev.track_id, p_ev.note_id, 0.0f);
 			}
@@ -371,14 +437,14 @@ void AudioStreamPlaybackSymphonyMusic::_apply_event(const SymphonyMusicEvent &p_
 			if (pi < 0) {
 				return;
 			}
-			pools[pi].note_off(p_ev.note_id, p_frame, p_offset, (uint64_t)track_release_frames[pi]);
+			pools[pi].note_off(p_ev.note_id, p_frame, p_offset, (uint64_t)track_release_frames[pi], p_ev.generation);
 			break;
 		}
 		case SymphonyMusicEventKind::TempoStep: {
 			if (p_ev.duration_ticks > 0) {
-				scheduler.transport.schedule_tempo_ramp(p_ev.payload, p_ev.tick, p_ev.duration_ticks);
+				(void)scheduler.transport.schedule_tempo_ramp(p_ev.payload, p_ev.tick, p_ev.duration_ticks);
 			} else {
-				scheduler.transport.schedule_tempo_step(p_ev.payload, p_ev.tick);
+				(void)scheduler.transport.schedule_tempo_step(p_ev.payload, p_ev.tick);
 			}
 			break;
 		}
@@ -388,7 +454,11 @@ void AudioStreamPlaybackSymphonyMusic::_apply_event(const SymphonyMusicEvent &p_
 			}
 			const int pi = track_to_pool[p_ev.track_id];
 			if (pi >= 0) {
-				track_gains[pi] = CLAMP(p_ev.payload, 0.0f, 4.0f);
+				uint64_t end_frame = p_frame;
+				if (p_ev.duration_ticks > 0) {
+					end_frame = scheduler.transport.tick_to_frame(p_ev.tick + p_ev.duration_ticks);
+				}
+				_arm_gain(pi, p_ev.payload, p_frame, end_frame);
 			}
 			break;
 		}
@@ -422,7 +492,6 @@ void AudioStreamPlaybackSymphonyMusic::_render_block(AudioFrame *p_buffer, int p
 		p_buffer[i] = AudioFrame(0, 0);
 	}
 
-	// Stretch clips (additive).
 	for (int c = 0; c < active_clip_count;) {
 		SymphonyStretchContext *ctx = active_clips[c];
 		if (!ctx || ctx->ownership != SymphonyStretchOwnership::Active || ctx->finished) {
@@ -439,32 +508,32 @@ void AudioStreamPlaybackSymphonyMusic::_render_block(AudioFrame *p_buffer, int p
 		c++;
 	}
 
-	// Synth pools → optional latency delay → mix with gains.
-	Vector<AudioFrame> synth;
-	synth.resize(p_frames);
-	for (int i = 0; i < p_frames; i++) {
-		synth.write[i] = AudioFrame(0, 0);
+	const int frames = MIN(p_frames, 64);
+	for (int i = 0; i < frames; i++) {
+		synth_scratch[i] = AudioFrame(0, 0);
 	}
-	Vector<AudioFrame> track_buf;
-	track_buf.resize(p_frames);
 	for (int p = 0; p < pool_count; p++) {
-		for (int i = 0; i < p_frames; i++) {
-			track_buf.write[i] = AudioFrame(0, 0);
+		for (int i = 0; i < frames; i++) {
+			track_scratch[i] = AudioFrame(0, 0);
 		}
-		pools[p].render(track_buf.ptrw(), p_frames, p_block_start);
-		const float g = track_gains[p];
-		for (int i = 0; i < p_frames; i++) {
-			synth.write[i].left += track_buf[i].left * g;
-			synth.write[i].right += track_buf[i].right * g;
+		pools[p].render(track_scratch, frames, p_block_start);
+		for (int i = 0; i < frames; i++) {
+			const float g = _gain_at(p, p_block_start + (uint64_t)i);
+			synth_scratch[i].left += track_scratch[i].left * g;
+			synth_scratch[i].right += track_scratch[i].right * g;
+		}
+		if (gain_ramps[p].armed && p_block_start + (uint64_t)frames >= gain_ramps[p].end_frame) {
+			track_gains[p] = gain_ramps[p].to;
+			gain_ramps[p].armed = false;
 		}
 	}
 
 	if (latency_samples > 0 && latency_delay.size() > 0) {
 		const int cap = latency_delay.size();
-		for (int i = 0; i < p_frames; i++) {
-			latency_delay.write[(latency_write + i) % cap] = synth[i];
+		for (int i = 0; i < frames; i++) {
+			latency_delay.write[(latency_write + i) % cap] = synth_scratch[i];
 		}
-		for (int i = 0; i < p_frames; i++) {
+		for (int i = 0; i < frames; i++) {
 			const int64_t abs = (int64_t)p_block_start + i;
 			AudioFrame s(0, 0);
 			if (abs >= latency_samples) {
@@ -474,11 +543,11 @@ void AudioStreamPlaybackSymphonyMusic::_render_block(AudioFrame *p_buffer, int p
 			p_buffer[i].left += s.left;
 			p_buffer[i].right += s.right;
 		}
-		latency_write = (latency_write + p_frames) % cap;
+		latency_write = (latency_write + frames) % cap;
 	} else {
-		for (int i = 0; i < p_frames; i++) {
-			p_buffer[i].left += synth[i].left;
-			p_buffer[i].right += synth[i].right;
+		for (int i = 0; i < frames; i++) {
+			p_buffer[i].left += synth_scratch[i].left;
+			p_buffer[i].right += synth_scratch[i].right;
 		}
 	}
 }
@@ -540,27 +609,57 @@ int AudioStreamPlaybackSymphonyMusic::_mix_internal(AudioFrame *p_buffer, int p_
 	}
 
 	int frames_processed = 0;
-	while (frames_processed < p_frames) {
-		const int chunk = MIN(SYMPHONY_MICRO_BLOCK_SIZE, p_frames - frames_processed);
-		const uint64_t block_start = scheduler.frames_rendered;
-
-		LocalVector<SymphonyMusicEvent> pending;
-		LocalVector<uint64_t> pending_frames;
-		scheduler.advance(chunk, [&](const SymphonyMusicEvent &ev, uint64_t frame) {
-			pending.push_back(ev);
-			pending_frames.push_back(frame);
-		});
-
-		for (int e = 0; e < (int)pending.size(); e++) {
-			const int32_t offset = (int32_t)(pending_frames[e] - block_start);
-			_apply_event(pending[e], pending_frames[e], CLAMP(offset, 0, chunk - 1));
+	int guard = 0;
+	while (frames_processed < p_frames && guard < p_frames * 4 + 8) {
+		guard++;
+		const uint64_t cursor = scheduler.frames_rendered;
+		const uint64_t ev = scheduler.peek_event_frame();
+		if (ev == cursor) {
+			scheduler.take_events_at(cursor, [&](const SymphonyMusicEvent &event, uint64_t frame) {
+				_apply_event(event, frame, 0);
+			});
+			_drain_scheduler_notices();
+			continue;
 		}
-		_render_block(p_buffer + frames_processed, chunk, block_start);
-		frames_processed += chunk;
+		uint64_t span_end = cursor + (uint64_t)MIN(SYMPHONY_MICRO_BLOCK_SIZE, p_frames - frames_processed);
+		if (ev > cursor && ev < span_end) {
+			span_end = ev;
+		}
+		const int span = (int)(span_end - cursor);
+		if (span <= 0) {
+			break;
+		}
+		_render_block(p_buffer + frames_processed, span, cursor);
+		scheduler.commit_frames(span);
+		frames_processed += span;
 	}
+	_drain_scheduler_notices();
+	scheduler.publish_snapshot();
 
 	_note_rendered_frames(frames_processed);
 	return frames_processed;
+}
+
+int AudioStreamPlaybackSymphonyMusic::_test_active_voice_count() const {
+	int n = 0;
+	for (int i = 0; i < pool_count; i++) {
+		n += pools[i].active_count();
+	}
+	return n;
+}
+
+int AudioStreamPlaybackSymphonyMusic::_test_transport_segment_count() const {
+	return scheduler.transport.segment_count();
+}
+
+int AudioStreamPlaybackSymphonyMusic::_test_free_stretch_contexts() const {
+	int n = 0;
+	for (int i = 0; i < SymphonyStretchPool::MAX_CONTEXTS; i++) {
+		if (stretch_pool.contexts[i].is_free()) {
+			n++;
+		}
+	}
+	return n;
 }
 
 AudioStreamPlaybackSymphonyMusic::~AudioStreamPlaybackSymphonyMusic() {

@@ -1,14 +1,14 @@
 /**************************************************************************/
 /*  symphony_music_transport.h                                            */
 /**************************************************************************/
-/* Musical tick ↔ sample mapping for procedural music (N1).               */
+/* Musical tick ↔ sample mapping for procedural music (N1 / B1).          */
 /* 960 PPQN ticks; tempo steps and linear BPM ramps; meter at bar origin. */
+/* Fixed arrays, elapsed-segment folding, reject past-frame tempo.        */
 /**************************************************************************/
 
 #pragma once
 
 #include "core/math/math_funcs.h"
-#include "core/templates/local_vector.h"
 
 #include <cstdint>
 
@@ -41,15 +41,24 @@ public:
 		int32_t beat_unit = 4;
 		int32_t bar_index = 0;
 		float beat_in_bar = 0.0f;
+		int32_t generation = 0;
+		float sample_rate = 48000.0f;
 		uint32_t _pad = 0; // SeqLock 4-byte alignment
 	};
+	static_assert(sizeof(Snapshot) == 48, "Snapshot is 48 bytes");
 	static_assert(sizeof(Snapshot) % 4 == 0, "Snapshot must be SeqLock-compatible");
 
 private:
 	float sample_rate = 48000.0f;
-	LocalVector<TempoSegment> tempo;
-	LocalVector<MeterChange> meters;
+	TempoSegment tempo_segs[MAX_TEMPO_SEGMENTS];
+	int tempo_count = 0;
+	MeterChange meter_segs[MAX_METER_CHANGES];
+	int meter_count = 0;
 	bool paused = false;
+	uint64_t rendered_frame = 0;
+	int32_t snapshot_generation = 0;
+	int64_t anchor_tick = 0;
+	double anchor_seconds = 0.0;
 
 	static float _clamp_bpm(float p_bpm) {
 		return CLAMP(p_bpm, 1.0f, 999.0f);
@@ -71,7 +80,6 @@ private:
 		if (Math::abs(b1 - b0) < 1e-9 || span <= 0.0) {
 			return k * (u1 - u0) / MAX(b0, 1e-9);
 		}
-		// bpm(u) = b0 + (b1-b0)*u/span; ∫ du/bpm = (span/(b1-b0)) * ln(bpm)
 		const double ba = MAX(b0 + (b1 - b0) * (u0 / span), 1e-9);
 		const double bb = MAX(b0 + (b1 - b0) * (u1 / span), 1e-9);
 		return k * (span / (b1 - b0)) * Math::log(bb / ba);
@@ -79,8 +87,8 @@ private:
 
 	int _tempo_index_at_tick(int64_t p_tick) const {
 		int idx = 0;
-		for (int i = 0; i < (int)tempo.size(); i++) {
-			if (tempo[i].start_tick <= p_tick) {
+		for (int i = 0; i < tempo_count; i++) {
+			if (tempo_segs[i].start_tick <= p_tick) {
 				idx = i;
 			} else {
 				break;
@@ -91,8 +99,8 @@ private:
 
 	int _meter_index_at_tick(int64_t p_tick) const {
 		int idx = 0;
-		for (int i = 0; i < (int)meters.size(); i++) {
-			if (meters[i].start_tick <= p_tick) {
+		for (int i = 0; i < meter_count; i++) {
+			if (meter_segs[i].start_tick <= p_tick) {
 				idx = i;
 			} else {
 				break;
@@ -101,22 +109,73 @@ private:
 		return idx;
 	}
 
+	[[nodiscard]] uint64_t _seconds_to_frame(double p_seconds) const {
+		const double frames = p_seconds * (double)sample_rate;
+		if (frames <= 0.0) {
+			return 0;
+		}
+		if (frames >= (double)UINT64_MAX) {
+			return UINT64_MAX;
+		}
+		return (uint64_t)Math::floor(frames + 1e-9);
+	}
+
+	[[nodiscard]] bool _is_past_frame(int64_t p_start_tick) const {
+		if (p_start_tick <= 0 || rendered_frame == 0) {
+			return false;
+		}
+		return tick_to_frame(p_start_tick) < rendered_frame;
+	}
+
+	void _fold_elapsed() {
+		while (tempo_count > 1) {
+			TempoSegment &first = tempo_segs[0];
+			if (first.end_tick == INT64_MAX) {
+				break;
+			}
+			const double end_seconds = anchor_seconds + _segment_seconds(first, MAX(first.start_tick, anchor_tick), first.end_tick);
+			if (_seconds_to_frame(end_seconds) >= rendered_frame) {
+				break;
+			}
+			anchor_tick = first.end_tick;
+			anchor_seconds = end_seconds;
+			for (int i = 1; i < tempo_count; i++) {
+				tempo_segs[i - 1] = tempo_segs[i];
+			}
+			tempo_count--;
+		}
+		int meter_keep = 0;
+		for (int i = 0; i < meter_count; i++) {
+			if (i == meter_count - 1 || meter_segs[i + 1].start_tick > anchor_tick) {
+				if (meter_keep != i) {
+					meter_segs[meter_keep] = meter_segs[i];
+				}
+				meter_keep++;
+			}
+		}
+		meter_count = MAX(meter_keep, 1);
+	}
+
 public:
 	void reset(float p_sample_rate, float p_bpm = 120.0f, int p_beats_per_bar = 4, int p_beat_unit = 4) {
 		sample_rate = p_sample_rate > 0.0f ? p_sample_rate : 48000.0f;
-		tempo.clear();
-		meters.clear();
+		tempo_count = 0;
+		meter_count = 0;
+		rendered_frame = 0;
+		snapshot_generation = 0;
+		anchor_tick = 0;
+		anchor_seconds = 0.0;
 		TempoSegment seg;
 		seg.start_tick = 0;
 		seg.bpm_start = _clamp_bpm(p_bpm);
 		seg.bpm_end = seg.bpm_start;
 		seg.end_tick = INT64_MAX;
-		tempo.push_back(seg);
+		tempo_segs[tempo_count++] = seg;
 		MeterChange m;
 		m.start_tick = 0;
 		m.beats_per_bar = CLAMP(p_beats_per_bar, 1, 32);
 		m.beat_unit = CLAMP(p_beat_unit, 1, 16);
-		meters.push_back(m);
+		meter_segs[meter_count++] = m;
 		paused = false;
 	}
 
@@ -130,20 +189,33 @@ public:
 	void set_paused(bool p_paused) { paused = p_paused; }
 	[[nodiscard]] bool is_paused() const { return paused; }
 
+	void set_rendered_frame(uint64_t p_frame) {
+		rendered_frame = p_frame;
+		_fold_elapsed();
+	}
+
+	void set_snapshot_generation(int32_t p_generation) {
+		snapshot_generation = p_generation;
+	}
+
+	[[nodiscard]] int segment_count() const { return tempo_count; }
+	[[nodiscard]] uint64_t get_rendered_frame() const { return rendered_frame; }
+
 	// Close the open-ended segment at p_start_tick and append a step.
-	bool schedule_tempo_step(float p_bpm, int64_t p_start_tick) {
-		if (tempo.size() >= MAX_TEMPO_SEGMENTS || p_start_tick < 0) {
+	[[nodiscard]] bool schedule_tempo_step(float p_bpm, int64_t p_start_tick) {
+		if (p_start_tick < 0 || _is_past_frame(p_start_tick)) {
+			return false;
+		}
+		_fold_elapsed();
+		if (tempo_count >= MAX_TEMPO_SEGMENTS) {
 			return false;
 		}
 		const float bpm = _clamp_bpm(p_bpm);
-		if (tempo.is_empty()) {
+		if (tempo_count == 0) {
 			reset(sample_rate, bpm);
 			return true;
 		}
-		if (p_start_tick <= tempo[tempo.size() - 1].start_tick && tempo.size() > 1) {
-			return false; // must be non-decreasing
-		}
-		TempoSegment &last = tempo[tempo.size() - 1];
+		TempoSegment &last = tempo_segs[tempo_count - 1];
 		if (p_start_tick < last.start_tick) {
 			return false;
 		}
@@ -153,21 +225,25 @@ public:
 		seg.bpm_start = bpm;
 		seg.bpm_end = bpm;
 		seg.end_tick = INT64_MAX;
-		tempo.push_back(seg);
+		tempo_segs[tempo_count++] = seg;
 		return true;
 	}
 
 	// Linear BPM ramp over [p_start_tick, p_start_tick + p_ramp_ticks).
-	bool schedule_tempo_ramp(float p_bpm_end, int64_t p_start_tick, int64_t p_ramp_ticks) {
-		if (tempo.size() + 1 >= MAX_TEMPO_SEGMENTS || p_ramp_ticks <= 0 || p_start_tick < 0) {
+	[[nodiscard]] bool schedule_tempo_ramp(float p_bpm_end, int64_t p_start_tick, int64_t p_ramp_ticks) {
+		if (p_ramp_ticks <= 0 || p_start_tick < 0 || _is_past_frame(p_start_tick)) {
+			return false;
+		}
+		_fold_elapsed();
+		if (tempo_count + 1 >= MAX_TEMPO_SEGMENTS) {
 			return false;
 		}
 		const float bpm_end = _clamp_bpm(p_bpm_end);
-		if (tempo.is_empty()) {
+		if (tempo_count == 0) {
 			reset(sample_rate, bpm_end);
 		}
 		const float bpm_start = bpm_at_tick(p_start_tick);
-		TempoSegment &last = tempo[tempo.size() - 1];
+		TempoSegment &last = tempo_segs[tempo_count - 1];
 		if (p_start_tick < last.start_tick) {
 			return false;
 		}
@@ -177,36 +253,40 @@ public:
 		ramp.bpm_start = bpm_start;
 		ramp.bpm_end = bpm_end;
 		ramp.end_tick = p_start_tick + p_ramp_ticks;
-		tempo.push_back(ramp);
+		tempo_segs[tempo_count++] = ramp;
 		TempoSegment after;
 		after.start_tick = ramp.end_tick;
 		after.bpm_start = bpm_end;
 		after.bpm_end = bpm_end;
 		after.end_tick = INT64_MAX;
-		tempo.push_back(after);
+		tempo_segs[tempo_count++] = after;
 		return true;
 	}
 
-	bool schedule_meter(int p_beats_per_bar, int p_beat_unit, int64_t p_start_tick) {
-		if (meters.size() >= MAX_METER_CHANGES || p_start_tick < 0) {
+	[[nodiscard]] bool schedule_meter(int p_beats_per_bar, int p_beat_unit, int64_t p_start_tick) {
+		if (p_start_tick < 0 || _is_past_frame(p_start_tick)) {
 			return false;
 		}
-		if (!meters.is_empty() && p_start_tick < meters[meters.size() - 1].start_tick) {
+		_fold_elapsed();
+		if (meter_count >= MAX_METER_CHANGES) {
+			return false;
+		}
+		if (meter_count > 0 && p_start_tick < meter_segs[meter_count - 1].start_tick) {
 			return false;
 		}
 		MeterChange m;
 		m.start_tick = p_start_tick;
 		m.beats_per_bar = CLAMP(p_beats_per_bar, 1, 32);
 		m.beat_unit = CLAMP(p_beat_unit, 1, 16);
-		meters.push_back(m);
+		meter_segs[meter_count++] = m;
 		return true;
 	}
 
 	[[nodiscard]] float bpm_at_tick(int64_t p_tick) const {
-		if (tempo.is_empty()) {
+		if (tempo_count == 0) {
 			return 120.0f;
 		}
-		const TempoSegment &seg = tempo[_tempo_index_at_tick(p_tick)];
+		const TempoSegment &seg = tempo_segs[_tempo_index_at_tick(MAX(p_tick, anchor_tick))];
 		if (Math::abs(seg.bpm_end - seg.bpm_start) < 1e-9f || seg.end_tick <= seg.start_tick) {
 			return seg.bpm_start;
 		}
@@ -217,32 +297,26 @@ public:
 
 	// Absolute sample index for a tick (from tick 0 / frame 0).
 	[[nodiscard]] uint64_t tick_to_frame(int64_t p_tick) const {
-		if (p_tick <= 0) {
-			return 0;
+		if (p_tick <= anchor_tick) {
+			return _seconds_to_frame(anchor_seconds);
 		}
-		double seconds = 0.0;
-		int64_t cursor = 0;
-		for (int i = 0; i < (int)tempo.size() && cursor < p_tick; i++) {
-			seconds += _segment_seconds(tempo[i], cursor, p_tick);
-			cursor = MIN(p_tick, tempo[i].end_tick);
+		double seconds = anchor_seconds;
+		int64_t cursor = anchor_tick;
+		for (int i = 0; i < tempo_count && cursor < p_tick; i++) {
+			seconds += _segment_seconds(tempo_segs[i], cursor, p_tick);
+			cursor = MIN(p_tick, tempo_segs[i].end_tick);
 		}
-		const double frames = seconds * (double)sample_rate;
-		if (frames <= 0.0) {
-			return 0;
-		}
-		if (frames >= (double)UINT64_MAX) {
-			return UINT64_MAX;
-		}
-		return (uint64_t)Math::floor(frames + 1e-9);
+		return _seconds_to_frame(seconds);
 	}
 
-	// Inverse: largest tick whose frame ≤ p_frame (binary search).
+	// Inverse: largest tick whose frame ≤ p_frame (binary search from the anchor).
 	[[nodiscard]] int64_t frame_to_tick(uint64_t p_frame) const {
-		if (p_frame == 0) {
-			return 0;
+		const uint64_t anchor_frame = _seconds_to_frame(anchor_seconds);
+		if (p_frame <= anchor_frame) {
+			return anchor_tick;
 		}
-		int64_t lo = 0;
-		int64_t hi = MAX((int64_t)1, (int64_t)((double)p_frame * (double)PPQN * 999.0 / (60.0 * (double)sample_rate)) + PPQN * 16);
+		int64_t lo = anchor_tick;
+		int64_t hi = MAX(lo + 1, (int64_t)((double)p_frame * (double)PPQN * 999.0 / (60.0 * (double)sample_rate)) + PPQN * 16);
 		while (tick_to_frame(hi) < p_frame && hi < INT64_MAX / 2) {
 			hi *= 2;
 		}
@@ -262,21 +336,20 @@ public:
 		s.frame = p_frame;
 		s.tick = frame_to_tick(p_frame);
 		s.bpm = bpm_at_tick(s.tick);
-		const MeterChange &m = meters.is_empty() ? MeterChange{} : meters[_meter_index_at_tick(s.tick)];
+		const MeterChange &m = meter_count == 0 ? MeterChange{} : meter_segs[_meter_index_at_tick(s.tick)];
 		s.beats_per_bar = m.beats_per_bar;
 		s.beat_unit = m.beat_unit;
-		// Beat length in ticks: PPQN * (4/beat_unit) for the beat unit.
 		const int64_t ticks_per_beat = (PPQN * 4) / MAX(1, m.beat_unit);
 		const int64_t ticks_per_bar = ticks_per_beat * MAX(1, m.beats_per_bar);
 		const int64_t rel = MAX((int64_t)0, s.tick - m.start_tick);
 		s.bar_index = (int32_t)(rel / MAX((int64_t)1, ticks_per_bar));
 		const int64_t in_bar = rel % MAX((int64_t)1, ticks_per_bar);
 		s.beat_in_bar = (float)in_bar / (float)MAX((int64_t)1, ticks_per_beat);
+		s.generation = snapshot_generation;
+		s.sample_rate = sample_rate;
 		return s;
 	}
 
-	// Next event-boundary frame after p_from_frame among candidate ticks (sorted).
-	// Returns UINT64_MAX if none in range.
 	[[nodiscard]] uint64_t next_boundary_frame(uint64_t p_from_frame, const int64_t *p_ticks, int p_count) const {
 		uint64_t best = UINT64_MAX;
 		for (int i = 0; i < p_count; i++) {

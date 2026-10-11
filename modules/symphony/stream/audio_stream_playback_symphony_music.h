@@ -33,12 +33,22 @@ public:
 			NoteDropped = 1,
 			ClipDropped = 2,
 			TempoApplied = 3,
+			PhraseLate = 4,
+			NoteForcedOff = 5,
 		};
 		Kind kind = Kind::PhraseActivated;
 		int32_t generation = 0;
 		int32_t track_id = 0;
 		int32_t note_id = 0;
 		float payload = 0.0f;
+	};
+
+	struct GainRamp {
+		bool armed = false;
+		float from = 1.0f;
+		float to = 1.0f;
+		uint64_t start_frame = 0;
+		uint64_t end_frame = 0;
 	};
 
 private:
@@ -50,6 +60,9 @@ private:
 	int32_t track_to_pool[256]; // track_id → pool index; -1 = missing
 	float track_gains[AudioStreamSymphonyMusic::MAX_TRACKS];
 	float track_release_frames[AudioStreamSymphonyMusic::MAX_TRACKS];
+	GainRamp gain_ramps[AudioStreamSymphonyMusic::MAX_TRACKS];
+	AudioFrame synth_scratch[64];
+	AudioFrame track_scratch[64];
 
 	SymphonyStretchPool stretch_pool;
 	struct PreparedClip {
@@ -80,6 +93,9 @@ private:
 	void _clear_runtime();
 	void _apply_event(const SymphonyMusicEvent &p_ev, uint64_t p_frame, int32_t p_offset);
 	void _render_block(AudioFrame *p_buffer, int p_frames, uint64_t p_block_start);
+	void _arm_gain(int p_pool, float p_target, uint64_t p_start_frame, uint64_t p_end_frame);
+	[[nodiscard]] float _gain_at(int p_pool, uint64_t p_frame) const;
+	void _drain_scheduler_notices();
 	static bool _parse_phrase(const Dictionary &p_phrase, SymphonyMusicPhrase &r_out, String &r_error);
 
 protected:
@@ -88,6 +104,7 @@ protected:
 	virtual float get_stream_sampling_rate() override;
 
 public:
+	AudioStreamPlaybackSymphonyMusic();
 	virtual void start(double p_from_pos = 0.0) override;
 	virtual void stop() override;
 	virtual void seek(double p_time) override;
@@ -99,6 +116,10 @@ public:
 	Error schedule_track_gain(int32_t p_track_id, float p_gain, int64_t p_start_tick, int32_t p_fade_ticks = 0);
 	Dictionary get_transport_snapshot() const;
 	Array drain_status();
+
+	int _test_active_voice_count() const;
+	int _test_transport_segment_count() const;
+	int _test_free_stretch_contexts() const;
 
 	~AudioStreamPlaybackSymphonyMusic() override;
 };

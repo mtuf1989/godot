@@ -162,7 +162,11 @@ TEST_CASE("[Symphony][V1] replace_future keeps active release; no stale note-off
 	next["events"] = next_ev;
 	REQUIRE(pb->submit_phrase(next) == OK);
 
-	REQUIRE(pb->mix_graph_rate(buf.ptrw(), 1024) == 1024);
+	int rendered = 1024;
+	while (rendered < 52000) {
+		REQUIRE(pb->mix_graph_rate(buf.ptrw(), 1024) == 1024);
+		rendered += 1024;
+	}
 	float peak_after = 0.0f;
 	for (int i = 0; i < 1024; i++) {
 		peak_after = MAX(peak_after, Math::abs(buf[i].left));

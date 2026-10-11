@@ -87,17 +87,21 @@ struct SymphonyNoteVoice {
 	bool releasing = false;
 	bool protected_track = false;
 	int32_t note_id = -1;
+	int32_t generation = 0;
 	int32_t midi = 0;
 	float velocity = 0.0f;
 	uint64_t voice_seed = 0;
+	uint64_t start_frame = 0;
 	uint64_t release_deadline_frame = UINT64_MAX;
 
 	void reset_idle() {
 		active = false;
 		releasing = false;
 		note_id = -1;
+		generation = 0;
 		midi = 0;
 		velocity = 0.0f;
+		start_frame = 0;
 		release_deadline_frame = UINT64_MAX;
 	}
 };
@@ -107,25 +111,45 @@ class SymphonyNotePool {
 public:
 	static constexpr int32_t MAX_VOICES = 32;
 
-	Vector<SymphonyNoteVoice> voices;
+	struct ForcedOff {
+		int32_t generation = 0;
+		int32_t note_id = 0;
+	};
+
+	SymphonyNoteVoice voices[MAX_VOICES];
+	int32_t voice_count = 0;
 	GraphDescription instrument;
 	float mix_rate = 48000.0f;
 	int32_t track_id = 0;
 	bool protected_track = false;
 	int32_t max_voices = 8;
 	int32_t dropped_optional = 0;
+	float max_hold_seconds = 60.0f;
 	String last_error;
+	AudioFrame render_tmp[64];
+	ForcedOff forced_offs[MAX_VOICES];
+	int32_t forced_count = 0;
 
 	~SymphonyNotePool() { clear(); }
 
 	void clear() {
-		for (int i = 0; i < voices.size(); i++) {
+		for (int i = 0; i < voice_count; i++) {
 			if (voices[i].graph) {
 				memdelete(voices[i].graph);
-				voices.write[i].graph = nullptr;
+				voices[i].graph = nullptr;
 			}
 		}
-		voices.clear();
+		voice_count = 0;
+		forced_count = 0;
+	}
+
+	int drain_forced(ForcedOff *p_out, int p_max) {
+		const int n = MIN(forced_count, p_max);
+		for (int i = 0; i < n; i++) {
+			p_out[i] = forced_offs[i];
+		}
+		forced_count = 0;
+		return n;
 	}
 
 	bool prepare(const GraphDescription &p_instrument, float p_mix_rate, int32_t p_voice_count, uint64_t p_pool_seed) {
@@ -153,7 +177,7 @@ public:
 		max_voices = CLAMP(p_voice_count, 1, MAX_VOICES);
 		instrument = desc;
 
-		voices.resize(max_voices);
+		voice_count = max_voices;
 		for (int v = 0; v < max_voices; v++) {
 			const uint64_t seed = splitmix64(p_pool_seed + (uint64_t)v * 0x9E3779B97F4A7C15ull);
 			GraphCompiler::CompileResult cr = GraphCompiler::compile(desc, mix_rate, String(), seed);
@@ -162,7 +186,7 @@ public:
 				clear();
 				return false;
 			}
-			SymphonyNoteVoice &slot = voices.write[v];
+			SymphonyNoteVoice &slot = voices[v];
 			slot.graph = cr.graph;
 			slot.voice_seed = seed;
 			slot.protected_track = protected_track;
@@ -187,26 +211,31 @@ public:
 	}
 
 	// Admit NoteOn. Returns voice index or -1 if dropped.
-	int32_t note_on(int32_t p_note_id, int32_t p_midi, float p_velocity, uint64_t p_frame, int32_t p_offset) {
+	int32_t note_on(int32_t p_note_id, int32_t p_midi, float p_velocity, uint64_t p_frame, int32_t p_offset, int32_t p_generation = 0) {
 		int32_t free_idx = -1;
-		for (int i = 0; i < voices.size(); i++) {
+		for (int i = 0; i < voice_count; i++) {
 			if (!voices[i].active) {
 				free_idx = i;
 				break;
 			}
 		}
 		if (free_idx < 0) {
-			// Steal: prefer non-protected releasing, then non-protected active; never steal protected if we are protected.
+			// Steal the oldest releasing voice, then the oldest active voice. Never steal a protected voice.
 			int32_t victim = -1;
-			for (int i = 0; i < voices.size(); i++) {
+			uint64_t oldest = UINT64_MAX;
+			bool found_releasing = false;
+			for (int i = 0; i < voice_count; i++) {
 				if (voices[i].protected_track) {
 					continue;
 				}
 				if (voices[i].releasing) {
-					victim = i;
-					break;
-				}
-				if (victim < 0) {
+					if (!found_releasing || voices[i].start_frame < oldest) {
+						oldest = voices[i].start_frame;
+						victim = i;
+						found_releasing = true;
+					}
+				} else if (!found_releasing && voices[i].start_frame < oldest) {
+					oldest = voices[i].start_frame;
 					victim = i;
 				}
 			}
@@ -219,8 +248,8 @@ public:
 			free_idx = victim;
 		}
 
-		SymphonyNoteVoice &slot = voices.write[free_idx];
-		const uint64_t seed = splitmix64(slot.voice_seed ^ ((uint64_t)p_note_id << 32) ^ (uint64_t)(uint32_t)p_midi);
+		SymphonyNoteVoice &slot = voices[free_idx];
+		const uint64_t seed = splitmix64(slot.voice_seed ^ ((uint64_t)p_note_id << 32) ^ (uint64_t)(uint32_t)p_midi ^ (uint64_t)(uint32_t)p_generation);
 		for (int32_t oi = 0; oi < slot.graph->operator_count; oi++) {
 			slot.graph->operators[oi]->reset_for_note(seed);
 		}
@@ -228,19 +257,20 @@ public:
 		slot.active = true;
 		slot.releasing = false;
 		slot.note_id = p_note_id;
+		slot.generation = p_generation;
 		slot.midi = p_midi;
 		slot.velocity = CLAMP(p_velocity, 0.0f, 1.0f);
+		slot.start_frame = p_frame;
 		slot.release_deadline_frame = UINT64_MAX;
 		slot.note_input->note_on(symphony_midi_to_hz(p_midi), slot.velocity, p_offset);
-		(void)p_frame;
 		return free_idx;
 	}
 
-	bool note_off(int32_t p_note_id, uint64_t p_frame, int32_t p_offset, uint64_t p_release_frames = 48000) {
+	bool note_off(int32_t p_note_id, uint64_t p_frame, int32_t p_offset, uint64_t p_release_frames = 48000, int32_t p_generation = 0) {
 		bool any = false;
-		for (int i = 0; i < voices.size(); i++) {
-			SymphonyNoteVoice &slot = voices.write[i];
-			if (!slot.active || slot.note_id != p_note_id || slot.releasing) {
+		for (int i = 0; i < voice_count; i++) {
+			SymphonyNoteVoice &slot = voices[i];
+			if (!slot.active || slot.note_id != p_note_id || slot.generation != p_generation || slot.releasing) {
 				continue;
 			}
 			slot.note_input->note_off(p_offset);
@@ -252,31 +282,41 @@ public:
 	}
 
 	// Mix active voices into p_out for p_frames; reclaim silent/expired releases.
+	// No heap traffic: scratch is the member render_tmp[64].
 	void render(AudioFrame *p_out, int p_frames, uint64_t p_block_start_frame) {
 		for (int i = 0; i < p_frames; i++) {
 			p_out[i] = AudioFrame(0.0f, 0.0f);
 		}
-		Vector<AudioFrame> tmp;
-		tmp.resize(p_frames);
-		for (int v = 0; v < voices.size(); v++) {
-			SymphonyNoteVoice &slot = voices.write[v];
+		const uint64_t block_end = p_block_start_frame + (uint64_t)MAX(p_frames, 0);
+		const uint64_t hold_frames = (uint64_t)MAX(0.0f, max_hold_seconds * mix_rate);
+		for (int v = 0; v < voice_count; v++) {
+			SymphonyNoteVoice &slot = voices[v];
 			if (!slot.active) {
 				continue;
 			}
-			for (int i = 0; i < p_frames; i++) {
-				tmp.write[i] = AudioFrame(0.0f, 0.0f);
-			}
-			for (int off = 0; off < p_frames; off += SYMPHONY_MICRO_BLOCK_SIZE) {
-				const int block = MIN(SYMPHONY_MICRO_BLOCK_SIZE, p_frames - off);
-				slot.graph_output->set_output(tmp.ptrw(), off);
-				slot.graph->execute(block);
-			}
 			float peak = 0.0f;
-			for (int i = 0; i < p_frames; i++) {
-				p_out[i] += tmp[i];
-				peak = MAX(peak, MAX(Math::abs(tmp[i].left), Math::abs(tmp[i].right)));
+			for (int off = 0; off < p_frames; off += 64) {
+				const int block = MIN(64, p_frames - off);
+				for (int i = 0; i < block; i++) {
+					render_tmp[i] = AudioFrame(0.0f, 0.0f);
+				}
+				slot.graph_output->set_output(render_tmp, 0);
+				slot.graph->execute(block);
+				for (int i = 0; i < block; i++) {
+					p_out[off + i] += render_tmp[i];
+					peak = MAX(peak, MAX(Math::abs(render_tmp[i].left), Math::abs(render_tmp[i].right)));
+				}
 			}
-			const uint64_t block_end = p_block_start_frame + (uint64_t)p_frames;
+			if (!slot.releasing && hold_frames > 0 && block_end > slot.start_frame + hold_frames) {
+				slot.note_input->note_off(0);
+				slot.releasing = true;
+				slot.release_deadline_frame = block_end + (uint64_t)MAX(1.0f, 0.05f * mix_rate);
+				if (forced_count < MAX_VOICES) {
+					forced_offs[forced_count].generation = slot.generation;
+					forced_offs[forced_count].note_id = slot.note_id;
+					forced_count++;
+				}
+			}
 			if (slot.releasing) {
 				bool silent = peak < 1e-5f;
 				for (int32_t oi = 0; oi < slot.graph->operator_count && silent; oi++) {
@@ -293,7 +333,7 @@ public:
 
 	int32_t active_count() const {
 		int32_t n = 0;
-		for (int i = 0; i < voices.size(); i++) {
+		for (int i = 0; i < voice_count; i++) {
 			if (voices[i].active) {
 				n++;
 			}

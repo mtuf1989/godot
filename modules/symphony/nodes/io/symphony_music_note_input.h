@@ -29,11 +29,24 @@ private:
 	float pitch_ratio = 1.0f;
 	float gate = 0.0f;
 
-	bool pending_on = false;
-	bool pending_off = false;
-	float pending_on_value = 1.0f;
-	int32_t pending_on_offset = 0;
-	int32_t pending_off_offset = 0;
+	struct PendingEvent {
+		int32_t offset = 0;
+		bool is_on = false;
+		float value = 1.0f;
+	};
+	static constexpr int MAX_PENDING = 4;
+	PendingEvent pending[MAX_PENDING];
+	int32_t pending_count = 0;
+
+	void _queue(int32_t p_offset, bool p_on, float p_value) {
+		if (pending_count >= MAX_PENDING) {
+			pending_count = MAX_PENDING - 1;
+		}
+		PendingEvent &ev = pending[pending_count++];
+		ev.offset = p_offset;
+		ev.is_on = p_on;
+		ev.value = p_value;
+	}
 
 public:
 	SymphonyMusicNoteInput(float p_root_hz) {
@@ -66,24 +79,34 @@ public:
 		if (gate_out) {
 			gate_out[0] = gate;
 		}
-		if (pending_on) {
-			if (note_on_out) {
-				note_on_out->push(CLAMP(pending_on_offset, 0, MAX(p_num_frames - 1, 0)), pending_on_value);
+		for (int32_t i = 1; i < pending_count; i++) {
+			PendingEvent key = pending[i];
+			int32_t j = i - 1;
+			while (j >= 0 && pending[j].offset > key.offset) {
+				pending[j + 1] = pending[j];
+				j--;
 			}
-			if (adsr_trigger_out) {
-				adsr_trigger_out->push(CLAMP(pending_on_offset, 0, MAX(p_num_frames - 1, 0)), pending_on_value);
-			}
-			pending_on = false;
+			pending[j + 1] = key;
 		}
-		if (pending_off) {
-			if (note_off_out) {
-				note_off_out->push(CLAMP(pending_off_offset, 0, MAX(p_num_frames - 1, 0)), 1.0f);
+		for (int32_t i = 0; i < pending_count; i++) {
+			const int32_t off = CLAMP(pending[i].offset, 0, MAX(p_num_frames - 1, 0));
+			if (pending[i].is_on) {
+				if (note_on_out) {
+					note_on_out->push(off, pending[i].value);
+				}
+				if (adsr_trigger_out) {
+					adsr_trigger_out->push(off, pending[i].value);
+				}
+			} else {
+				if (note_off_out) {
+					note_off_out->push(off, 1.0f);
+				}
+				if (adsr_trigger_out) {
+					adsr_trigger_out->push(off, 0.0f);
+				}
 			}
-			if (adsr_trigger_out) {
-				adsr_trigger_out->push(CLAMP(pending_off_offset, 0, MAX(p_num_frames - 1, 0)), 0.0f);
-			}
-			pending_off = false;
 		}
+		pending_count = 0;
 	}
 
 	// Audio-thread: apply a NoteOn at a sample offset within the current micro-block.
@@ -92,17 +115,13 @@ public:
 		velocity = CLAMP(p_velocity, 0.0f, 1.0f);
 		pitch_ratio = CLAMP(frequency / root_hz, 0.125f, 8.0f);
 		gate = 1.0f;
-		pending_on = true;
-		pending_on_value = velocity > 0.0f ? velocity : 1.0f;
-		pending_on_offset = p_offset;
-		pending_off = false;
+		_queue(p_offset, true, velocity > 0.0f ? velocity : 1.0f);
 	}
 
 	// Audio-thread: apply a NoteOff at a sample offset within the current micro-block.
 	void note_off(int32_t p_offset = 0) {
 		gate = 0.0f;
-		pending_off = true;
-		pending_off_offset = p_offset;
+		_queue(p_offset, false, 1.0f);
 	}
 
 	float get_frequency() const { return frequency; }
@@ -134,8 +153,7 @@ public:
 		velocity = state[1];
 		pitch_ratio = state[2];
 		gate = state[3];
-		pending_on = false;
-		pending_off = false;
+		pending_count = 0;
 	}
 
 	static void register_operator() {

@@ -220,8 +220,8 @@ TEST_CASE("[Symphony][N2] Protected capacity keeps bass when lead is full") {
 	SymphonyNotePool bass;
 	bass.protected_track = true;
 	REQUIRE(bass.prepare(_make_instrument(), 48000.0f, 1, 2));
-	for (int i = 0; i < bass.voices.size(); i++) {
-		bass.voices.write[i].protected_track = true;
+	for (int i = 0; i < bass.voice_count; i++) {
+		bass.voices[i].protected_track = true;
 	}
 	CHECK(bass.note_on(10, 36, 1.0f, 0, 0) >= 0);
 	// No free unprotected victim — drop.
