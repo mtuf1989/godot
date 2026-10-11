@@ -343,7 +343,6 @@ Error AudioStreamPlaybackSymphonyMusic::submit_phrase(const Dictionary &p_phrase
 		return ERR_BUSY;
 	}
 	phrase_slots[slot].state.store((uint8_t)PhraseSlotState::Queued, std::memory_order_release);
-	_push_status_main(StatusEntry::Kind::PhraseActivated, phrase.generation, 0, 0, (float)phrase.event_count);
 	return OK;
 }
 
@@ -429,9 +428,12 @@ void AudioStreamPlaybackSymphonyMusic::_drain_scheduler_notices() {
 	SymphonyMusicScheduler::Notice notices[SymphonyMusicScheduler::NOTICE_CAP];
 	const int n = scheduler.drain_notices(notices, SymphonyMusicScheduler::NOTICE_CAP);
 	for (int i = 0; i < n; i++) {
-		const StatusEntry::Kind kind = notices[i].kind == SymphonyMusicScheduler::NoticeKind::PhraseLate
-				? StatusEntry::Kind::PhraseLate
-				: StatusEntry::Kind::NoteForcedOff;
+		StatusEntry::Kind kind = StatusEntry::Kind::NoteForcedOff;
+		if (notices[i].kind == SymphonyMusicScheduler::NoticeKind::PhraseLate) {
+			kind = StatusEntry::Kind::PhraseLate;
+		} else if (notices[i].kind == SymphonyMusicScheduler::NoticeKind::PhraseActivated) {
+			kind = StatusEntry::Kind::PhraseActivated;
+		}
 		_push_status_audio(kind, notices[i].generation, notices[i].track_id, notices[i].note_id, notices[i].payload);
 	}
 	SymphonyNotePool::ForcedOff forced[SymphonyNotePool::MAX_VOICES];

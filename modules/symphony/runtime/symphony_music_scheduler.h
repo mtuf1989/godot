@@ -83,6 +83,7 @@ public:
 	enum class NoticeKind : uint8_t {
 		PhraseLate = 0,
 		NoteForcedOff = 1,
+		PhraseActivated = 2,
 	};
 
 	struct Notice {
@@ -144,6 +145,7 @@ public:
 			has_current = true;
 			event_cursor = 0;
 			active_generation = current.generation;
+			_push_notice(NoticeKind::PhraseActivated, active_generation, 0, 0, 0.0f);
 			_skip_elapsed_on_activate();
 			return true;
 		}
@@ -339,6 +341,7 @@ private:
 		event_cursor = 0;
 		next.clear();
 		has_next = false;
+		_push_notice(NoticeKind::PhraseActivated, active_generation, 0, 0, 0.0f);
 		if (late) {
 			int skipped = 0;
 			while (event_cursor < current.event_count) {
