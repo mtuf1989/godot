@@ -137,7 +137,8 @@ bool AudioStreamPlaybackSymphonyMusic::_prepare_pools() {
 	{
 		signalsmith::stretch::SignalsmithStretch<float> probe;
 		probe.presetDefault(2, rate > 0.0f ? rate : symphony_offline_rate(), true);
-		latency_samples = probe.inputLatency() + probe.outputLatency();
+		// Test-driven: outputLatency aligns a click clip with a click note within 48 samples.
+		latency_samples = probe.outputLatency();
 		latency_delay.resize(MAX(latency_samples, 0) + 64 * 2);
 		for (int i = 0; i < latency_delay.size(); i++) {
 			latency_delay.write[i] = AudioFrame(0, 0);
@@ -273,7 +274,7 @@ Error AudioStreamPlaybackSymphonyMusic::submit_phrase(const Dictionary &p_phrase
 		if (d.has("clip_key") && music_stream.is_valid()) {
 			clip_index = music_stream->find_clip_index(d.get("clip_key", StringName()));
 		}
-		if (clip_index < 0 || music_stream.is_null() || clip_index >= music_stream->clip_count || !music_stream->clips[clip_index].registered) {
+		if (clip_index < 0 || music_stream.is_null() || clip_index >= music_stream->clip_count || !music_stream->clips[clip_index].registered || !music_stream->clips[clip_index].usable) {
 			_push_status_main(StatusEntry::Kind::ClipDropped, phrase.generation, phrase.events[i].track_id, phrase.events[i].note_id, 0.0f);
 			continue;
 		}
@@ -483,6 +484,9 @@ Array AudioStreamPlaybackSymphonyMusic::drain_status() {
 				break;
 			case StatusEntry::Kind::StatusDropped:
 				d["kind"] = "status_dropped";
+				break;
+			case StatusEntry::Kind::ClipReturned:
+				d["kind"] = "clip_returned";
 				break;
 		}
 		d["generation"] = e.generation;
@@ -698,6 +702,7 @@ int AudioStreamPlaybackSymphonyMusic::_mix_internal(AudioFrame *p_buffer, int p_
 		_audio_restart();
 	}
 	_drain_commands();
+	_return_stale_clips();
 
 	if (!prepared) {
 		for (int i = 0; i < p_frames; i++) {
@@ -802,6 +807,14 @@ void AudioStreamPlaybackSymphonyMusic::_drain_commands() {
 			}
 			case MusicCmdKind::ReplaceFuture:
 				scheduler.replace_future(cmd.tick, cmd.generation);
+				for (int i = 0; i < prepared_clip_count;) {
+					PreparedClip &pc = prepared_clips[i];
+					if (!pc.claimed && pc.generation <= cmd.generation && pc.tick >= cmd.tick) {
+						_return_clip_slot(i);
+						continue;
+					}
+					i++;
+				}
 				break;
 			case MusicCmdKind::TempoStep:
 				(void)scheduler.transport.schedule_tempo_step(cmd.value, cmd.tick);
@@ -883,6 +896,41 @@ void AudioStreamPlaybackSymphonyMusic::_audio_restart() {
 	latency_write = 0;
 	latency_active = false;
 	frames_rendered.store(0, std::memory_order_release);
+}
+
+void AudioStreamPlaybackSymphonyMusic::_return_clip_slot(int p_index) {
+	if (p_index < 0 || p_index >= prepared_clip_count) {
+		return;
+	}
+	PreparedClip &pc = prepared_clips[p_index];
+	if (pc.ctx) {
+		if (pc.ctx->get_ownership() == SymphonyStretchOwnership::Prepared) {
+			pc.ctx->set_ownership(SymphonyStretchOwnership::Returning);
+		} else {
+			pc.ctx->request_return();
+		}
+		_push_status_audio(StatusEntry::Kind::ClipReturned, pc.generation, 0, pc.note_id, 0.0f);
+	}
+	prepared_clips[p_index] = prepared_clips[prepared_clip_count - 1];
+	prepared_clips[prepared_clip_count - 1] = PreparedClip{};
+	prepared_clip_count--;
+}
+
+void AudioStreamPlaybackSymphonyMusic::_return_stale_clips() {
+	const uint64_t now = scheduler.frames_rendered;
+	for (int i = 0; i < prepared_clip_count;) {
+		PreparedClip &pc = prepared_clips[i];
+		if (pc.claimed || !pc.ctx) {
+			i++;
+			continue;
+		}
+		const uint64_t target = scheduler.transport.tick_to_frame(pc.tick);
+		if (target + 64 < now) {
+			_return_clip_slot(i);
+			continue;
+		}
+		i++;
+	}
 }
 
 AudioStreamPlaybackSymphonyMusic::~AudioStreamPlaybackSymphonyMusic() {

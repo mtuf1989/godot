@@ -36,6 +36,7 @@ public:
 			PhraseLate = 4,
 			NoteForcedOff = 5,
 			StatusDropped = 6,
+			ClipReturned = 7,
 		};
 		Kind kind = Kind::PhraseActivated;
 		int32_t generation = 0;
@@ -149,6 +150,8 @@ private:
 	[[nodiscard]] bool _try_push_cmd(const MusicCmd &p_cmd);
 	void _drain_commands();
 	void _audio_restart();
+	void _return_stale_clips();
+	void _return_clip_slot(int p_index);
 	static bool _parse_phrase(const Dictionary &p_phrase, SymphonyMusicPhrase &r_out, String &r_error);
 
 protected:
@@ -173,6 +176,7 @@ public:
 	int _test_active_voice_count() const;
 	int _test_transport_segment_count() const;
 	int _test_free_stretch_contexts() const;
+	int _test_latency_samples() const { return latency_samples; }
 
 	~AudioStreamPlaybackSymphonyMusic() override;
 };

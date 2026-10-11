@@ -42,6 +42,8 @@ public:
 	// Copy p_interleaved (frames*2 floats) into the cache under p_key.
 	const float *acquire(const StringName &p_key, const float *p_interleaved, int32_t p_frames, float p_sample_rate);
 	void release(const StringName &p_key);
+	static uint64_t hash_pcm(const float *p_interleaved, int32_t p_frames);
+	static StringName make_cache_key(const StringName &p_user_key, float p_rate, int32_t p_frames, uint64_t p_hash);
 	[[nodiscard]] int32_t get_frames(const StringName &p_key) const;
 	[[nodiscard]] float get_sample_rate(const StringName &p_key) const;
 	[[nodiscard]] int32_t get_entry_count() const;

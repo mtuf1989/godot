@@ -7,6 +7,7 @@
 #pragma once
 
 #include "scene/resources/audio/audio_stream.h"
+#include "scene/resources/audio/audio_stream_wav.h"
 #include "../core/symphony_graph_description.h"
 #include "../runtime/symphony_music_stretch.h"
 #include "audio_stream_symphony.h"
@@ -37,8 +38,11 @@ public:
 
 	struct ClipConfig {
 		StringName key;
+		StringName cache_key;
 		SymphonyMusicClipDesc desc; // pcm filled after register into stereo cache
+		float music_rate = 0.0f;
 		bool registered = false;
+		bool usable = true;
 	};
 
 private:
@@ -65,10 +69,13 @@ public:
 	void set_track_gain(int32_t p_track_id, float p_gain);
 	[[nodiscard]] int32_t get_track_count() const { return track_count; }
 
-	// Register interleaved stereo float PCM into the music stereo cache.
+	// Register interleaved stereo float PCM into the music stereo cache (resampled to music rate).
 	Error register_clip_pcm(const StringName &p_key, const PackedFloat32Array &p_interleaved_stereo, float p_sample_rate, float p_source_bpm = 120.0f, int32_t p_body_start = 0, int32_t p_body_end = 0);
+	Error register_clip_wav(const StringName &p_key, const Ref<AudioStreamWAV> &p_wav, float p_source_bpm = 120.0f, float p_body_start_s = 0.0f, float p_body_end_s = 0.0f);
 	[[nodiscard]] int32_t find_clip_index(const StringName &p_key) const;
 	[[nodiscard]] int32_t get_clip_count() const { return clip_count; }
+	[[nodiscard]] int32_t get_clip_frames(const StringName &p_key) const;
+	[[nodiscard]] float get_clip_sample_rate(const StringName &p_key) const;
 
 	virtual Ref<AudioStreamPlayback> instantiate_playback() override;
 	virtual double get_length() const override;

@@ -53,6 +53,8 @@ public:
 	float tempo_ratio = 1.0f;
 	float transpose_st = 0.0f;
 	double source_pos = 0.0; // fractional source frame
+	double src_acc = 0.0; // fractional source frames accumulated at tempo_ratio speed
+	int scratch_cap = 0;
 	bool finished = false;
 	int32_t common_latency = 0; // inputLatency + outputLatency at configure time
 
@@ -92,7 +94,9 @@ public:
 
 		common_latency = stretch.inputLatency() + stretch.outputLatency();
 		const int pre = stretch.inputLatency();
-		_ensure_scratch(MAX(pre, 64));
+		scratch_cap = MAX(pre, (int)Math::ceil(64.0 * (double)clip.tempo_ratio_max) + 2 + pre);
+		_ensure_scratch(scratch_cap);
+		src_acc = 0.0;
 
 		// Seek: provide first inputLatency samples starting at body_start (with lead).
 		const int32_t start = MAX(0, clip.body_start - clip.lead_samples);
@@ -123,6 +127,7 @@ public:
 		clip = {};
 		finished = false;
 		source_pos = 0.0;
+		src_acc = 0.0;
 	}
 
 	// Audio thread: render p_frames of stretched audio into p_out (additive).
@@ -130,11 +135,15 @@ public:
 		if (get_ownership() != SymphonyStretchOwnership::Active || finished || !clip.pcm || p_frames <= 0) {
 			return;
 		}
-		_ensure_scratch(p_frames);
-
-		// Source samples needed for average tempo_ratio.
-		const int in_n = MAX(1, (int)Math::floor((double)p_frames / (double)tempo_ratio + 1e-9));
-		_ensure_scratch(MAX(in_n, p_frames));
+		// tempo_ratio is playback speed (target BPM / source BPM), matching seek(playbackRate).
+		src_acc += (double)p_frames * (double)tempo_ratio;
+		int in_n = (int)Math::floor(src_acc);
+		src_acc -= (double)in_n;
+		if (in_n < 0) {
+			in_n = 0;
+		}
+		DEV_ASSERT(in_n <= scratch_cap && p_frames <= scratch_cap);
+		in_n = MIN(in_n, scratch_cap);
 		_fill_input_from_source((int32_t)source_pos, in_n);
 		source_pos += (double)in_n;
 
@@ -225,36 +234,59 @@ public:
 	}
 };
 
-// Decode PCM16 WAV-like buffers into interleaved stereo float at p_target_rate
-// using linear resampling. Mono sources are duplicated to stereo.
-inline bool symphony_music_resample_to_stereo_float(
-		const int16_t *p_pcm16, int32_t p_frames, bool p_stereo, float p_src_rate,
+// Resample PCM into interleaved stereo float at p_target_rate with Catmull-Rom.
+// Mono sources are duplicated to stereo.
+[[nodiscard]] inline float symphony_music_hermite4(float p_ym1, float p_y0, float p_y1, float p_y2, float p_t) {
+	const float t = p_t;
+	const float t2 = t * t;
+	const float t3 = t2 * t;
+	return 0.5f * ((2.0f * p_y0) + (-p_ym1 + p_y1) * t + (2.0f * p_ym1 - 5.0f * p_y0 + 4.0f * p_y1 - p_y2) * t2 + (-p_ym1 + 3.0f * p_y0 - 3.0f * p_y1 + p_y2) * t3);
+}
+
+inline bool symphony_music_resample_stereo_float(
+		const float *p_src, int32_t p_src_frames, bool p_stereo, float p_src_rate,
 		float p_dst_rate, Vector<float> &r_interleaved) {
-	if (!p_pcm16 || p_frames <= 0 || !(p_src_rate > 0.0f) || !(p_dst_rate > 0.0f)) {
+	if (!p_src || p_src_frames <= 0 || !(p_src_rate > 0.0f) || !(p_dst_rate > 0.0f)) {
 		return false;
 	}
 	const double ratio = (double)p_src_rate / (double)p_dst_rate;
-	const int32_t out_frames = MAX(1, (int32_t)Math::floor((double)p_frames / ratio));
+	const int32_t out_frames = MAX(1, (int32_t)Math::floor((double)p_src_frames / ratio));
 	r_interleaved.resize(out_frames * 2);
-	const int ch = p_stereo ? 2 : 1;
+	auto sample = [&](int32_t idx, int ch) -> float {
+		idx = CLAMP(idx, 0, p_src_frames - 1);
+		if (p_stereo) {
+			return p_src[idx * 2 + ch];
+		}
+		return p_src[idx];
+	};
 	for (int32_t i = 0; i < out_frames; i++) {
 		const double src_pos = (double)i * ratio;
 		const int32_t i0 = (int32_t)src_pos;
-		const int32_t i1 = MIN(i0 + 1, p_frames - 1);
 		const float frac = (float)(src_pos - (double)i0);
-		float l0, r0, l1, r1;
-		if (p_stereo) {
-			l0 = (float)p_pcm16[i0 * 2] / 32768.0f;
-			r0 = (float)p_pcm16[i0 * 2 + 1] / 32768.0f;
-			l1 = (float)p_pcm16[i1 * 2] / 32768.0f;
-			r1 = (float)p_pcm16[i1 * 2 + 1] / 32768.0f;
-		} else {
-			l0 = r0 = (float)p_pcm16[i0] / 32768.0f;
-			l1 = r1 = (float)p_pcm16[i1] / 32768.0f;
+		for (int ch = 0; ch < 2; ch++) {
+			const int src_ch = p_stereo ? ch : 0;
+			r_interleaved.write[i * 2 + ch] = symphony_music_hermite4(
+					sample(i0 - 1, src_ch), sample(i0, src_ch), sample(i0 + 1, src_ch), sample(i0 + 2, src_ch), frac);
 		}
-		(void)ch;
-		r_interleaved.write[i * 2] = l0 + (l1 - l0) * frac;
-		r_interleaved.write[i * 2 + 1] = r0 + (r1 - r0) * frac;
 	}
 	return true;
+}
+
+inline bool symphony_music_resample_to_stereo_float(
+		const int16_t *p_pcm16, int32_t p_frames, bool p_stereo, float p_src_rate,
+		float p_dst_rate, Vector<float> &r_interleaved) {
+	if (!p_pcm16 || p_frames <= 0) {
+		return false;
+	}
+	Vector<float> src;
+	src.resize(p_frames * (p_stereo ? 2 : 1));
+	for (int32_t i = 0; i < p_frames; i++) {
+		if (p_stereo) {
+			src.write[i * 2] = (float)p_pcm16[i * 2] / 32768.0f;
+			src.write[i * 2 + 1] = (float)p_pcm16[i * 2 + 1] / 32768.0f;
+		} else {
+			src.write[i] = (float)p_pcm16[i] / 32768.0f;
+		}
+	}
+	return symphony_music_resample_stereo_float(src.ptr(), p_frames, p_stereo, p_src_rate, p_dst_rate, r_interleaved);
 }

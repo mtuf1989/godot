@@ -6,6 +6,7 @@
 #include "audio_stream_playback_symphony_music.h"
 #include "../core/symphony_rate_policy.h"
 #include "../core/symphony_seed.h"
+#include "../nodes/generators/symphony_wave_player.h"
 #include "../runtime/symphony_music_stereo_pcm.h"
 #include "../runtime/symphony_note_pool.h"
 #include "../runtime/sound_event.h"
@@ -24,6 +25,7 @@ void AudioStreamSymphonyMusic::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_track_gain", "track_id", "gain"), &AudioStreamSymphonyMusic::set_track_gain);
 	ClassDB::bind_method(D_METHOD("get_track_count"), &AudioStreamSymphonyMusic::get_track_count);
 	ClassDB::bind_method(D_METHOD("register_clip_pcm", "key", "interleaved_stereo", "sample_rate", "source_bpm", "body_start", "body_end"), &AudioStreamSymphonyMusic::register_clip_pcm, DEFVAL(120.0f), DEFVAL(0), DEFVAL(0));
+	ClassDB::bind_method(D_METHOD("register_clip_wav", "key", "wav", "source_bpm", "body_start_s", "body_end_s"), &AudioStreamSymphonyMusic::register_clip_wav, DEFVAL(120.0f), DEFVAL(0.0f), DEFVAL(0.0f));
 	ClassDB::bind_method(D_METHOD("find_clip_index", "key"), &AudioStreamSymphonyMusic::find_clip_index);
 	ClassDB::bind_method(D_METHOD("get_clip_count"), &AudioStreamSymphonyMusic::get_clip_count);
 
@@ -89,31 +91,86 @@ Error AudioStreamSymphonyMusic::register_clip_pcm(const StringName &p_key, const
 	SymphonyMusicStereoCache *cache = SymphonyMusicStereoCache::get_singleton();
 	ERR_FAIL_COND_V(!cache, ERR_UNAVAILABLE);
 
-	const int32_t frames = p_interleaved_stereo.size() / 2;
-	const float rate = symphony_select_music_rate(p_sample_rate);
-	const float *pcm = cache->acquire(p_key, p_interleaved_stereo.ptr(), frames, rate);
-	ERR_FAIL_COND_V(!pcm, ERR_OUT_OF_MEMORY);
+	float device = mix_rate;
+	if (AudioServer::get_singleton()) {
+		device = AudioServer::get_singleton()->get_mix_rate();
+	}
+	const float music_rate = symphony_select_music_rate(device);
+	const int32_t src_frames = p_interleaved_stereo.size() / 2;
+	Vector<float> resampled;
+	if (!symphony_music_resample_stereo_float(p_interleaved_stereo.ptr(), src_frames, true, p_sample_rate, music_rate, resampled)) {
+		return ERR_INVALID_PARAMETER;
+	}
+	const int32_t frames = resampled.size() / 2;
+	const double scale = (double)music_rate / MAX((double)p_sample_rate, 1.0);
+	const int32_t body_start = CLAMP((int32_t)Math::floor((double)MAX(p_body_start, 0) * scale), 0, frames);
+	const int32_t body_end = (p_body_end <= 0) ? frames : CLAMP((int32_t)Math::floor((double)p_body_end * scale), body_start, frames);
 
 	int slot = find_clip_index(p_key);
 	if (slot < 0) {
 		ERR_FAIL_COND_V(clip_count >= MAX_CLIPS, ERR_OUT_OF_MEMORY);
+	}
+
+	const uint64_t hash = SymphonyMusicStereoCache::hash_pcm(resampled.ptr(), frames);
+	const StringName cache_key = SymphonyMusicStereoCache::make_cache_key(p_key, music_rate, frames, hash);
+	const float *pcm = cache->acquire(cache_key, resampled.ptr(), frames, music_rate);
+	ERR_FAIL_COND_V(!pcm, ERR_OUT_OF_MEMORY);
+
+	if (slot < 0) {
 		slot = clip_count++;
-	} else if (clips[slot].registered) {
-		cache->release(clips[slot].key);
+	} else if (clips[slot].registered && clips[slot].cache_key != StringName() && clips[slot].cache_key != cache_key) {
+		cache->release(clips[slot].cache_key);
+	} else if (clips[slot].registered && clips[slot].cache_key == cache_key) {
+		cache->release(cache_key); // extra acquire of the same entry
 	}
 
 	ClipConfig &c = clips[slot];
 	c.key = p_key;
+	c.cache_key = cache_key;
 	c.desc = {};
-	c.desc.pcm_key = p_key;
+	c.desc.pcm_key = cache_key;
 	c.desc.pcm = pcm;
-	c.desc.frames = frames;
-	c.desc.sample_rate = rate;
+	c.desc.frames = cache->get_frames(cache_key);
+	c.desc.sample_rate = music_rate;
 	c.desc.source_bpm = CLAMP(p_source_bpm, 1.0f, 999.0f);
-	c.desc.body_start = CLAMP(p_body_start, 0, frames);
-	c.desc.body_end = (p_body_end <= 0) ? frames : CLAMP(p_body_end, c.desc.body_start, frames);
+	c.desc.body_start = body_start;
+	c.desc.body_end = body_end;
+	c.music_rate = music_rate;
 	c.registered = true;
+	c.usable = true;
 	return OK;
+}
+
+Error AudioStreamSymphonyMusic::register_clip_wav(const StringName &p_key, const Ref<AudioStreamWAV> &p_wav, float p_source_bpm, float p_body_start_s, float p_body_end_s) {
+	ERR_FAIL_COND_V(p_key == StringName(), ERR_INVALID_PARAMETER);
+	ERR_FAIL_COND_V(p_wav.is_null(), ERR_INVALID_PARAMETER);
+	Vector<uint8_t> pcm16;
+	bool stereo = false;
+	int32_t length_samples = 0;
+	ERR_FAIL_COND_V(!SymphonyWavePlayer::decode_to_pcm16(p_wav, pcm16, stereo, length_samples), ERR_INVALID_DATA);
+	ERR_FAIL_COND_V(length_samples <= 0, ERR_INVALID_DATA);
+	const int channels = stereo ? 2 : 1;
+	PackedFloat32Array interleaved;
+	interleaved.resize(length_samples * 2);
+	const int16_t *src = reinterpret_cast<const int16_t *>(pcm16.ptr());
+	for (int32_t i = 0; i < length_samples; i++) {
+		if (stereo) {
+			interleaved.write[i * 2] = (float)src[i * 2] / 32768.0f;
+			interleaved.write[i * 2 + 1] = (float)src[i * 2 + 1] / 32768.0f;
+		} else {
+			const float s = (float)src[i] / 32768.0f;
+			interleaved.write[i * 2] = s;
+			interleaved.write[i * 2 + 1] = s;
+		}
+	}
+	(void)channels;
+	const float src_rate = (float)p_wav->get_mix_rate();
+	const int32_t body_start = (int32_t)Math::floor((double)MAX(p_body_start_s, 0.0f) * (double)src_rate);
+	int32_t body_end = 0;
+	if (p_body_end_s > 0.0f) {
+		body_end = (int32_t)Math::floor((double)p_body_end_s * (double)src_rate);
+	}
+	return register_clip_pcm(p_key, interleaved, src_rate, p_source_bpm, body_start, body_end);
 }
 
 int32_t AudioStreamSymphonyMusic::find_clip_index(const StringName &p_key) const {
@@ -123,6 +180,18 @@ int32_t AudioStreamSymphonyMusic::find_clip_index(const StringName &p_key) const
 		}
 	}
 	return -1;
+}
+
+int32_t AudioStreamSymphonyMusic::get_clip_frames(const StringName &p_key) const {
+	const int32_t idx = find_clip_index(p_key);
+	ERR_FAIL_COND_V(idx < 0, 0);
+	return clips[idx].desc.frames;
+}
+
+float AudioStreamSymphonyMusic::get_clip_sample_rate(const StringName &p_key) const {
+	const int32_t idx = find_clip_index(p_key);
+	ERR_FAIL_COND_V(idx < 0, 0.0f);
+	return clips[idx].desc.sample_rate;
 }
 
 Ref<AudioStreamPlayback> AudioStreamSymphonyMusic::instantiate_playback() {
@@ -135,6 +204,21 @@ Ref<AudioStreamPlayback> AudioStreamSymphonyMusic::instantiate_playback() {
 		device = AudioServer::get_singleton()->get_mix_rate();
 	}
 	const float music_rate = symphony_select_music_rate(device);
+	bool warned_rate = false;
+	for (int i = 0; i < clip_count; i++) {
+		if (!clips[i].registered) {
+			continue;
+		}
+		if (Math::abs(clips[i].music_rate - music_rate) > 0.5f) {
+			clips[i].usable = false;
+			if (!warned_rate) {
+				WARN_PRINT("AudioStreamSymphonyMusic: clip music_rate differs from playback rate; reload clips after a device rate change.");
+				warned_rate = true;
+			}
+		} else {
+			clips[i].usable = true;
+		}
+	}
 	playback->_bind_music_stream(Ref<AudioStreamSymphonyMusic>(this), symphony_draw_voice_seed(), music_rate);
 
 	if (Thread::is_main_thread()) {
@@ -158,7 +242,7 @@ AudioStreamSymphonyMusic::~AudioStreamSymphonyMusic() {
 	}
 	for (int i = 0; i < clip_count; i++) {
 		if (clips[i].registered) {
-			cache->release(clips[i].key);
+			cache->release(clips[i].cache_key != StringName() ? clips[i].cache_key : clips[i].key);
 			clips[i].registered = false;
 		}
 	}

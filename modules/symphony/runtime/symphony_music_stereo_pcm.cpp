@@ -4,6 +4,7 @@
 
 #include "symphony_music_stereo_pcm.h"
 
+#include "core/math/math_funcs.h"
 #include "core/os/memory.h"
 #include "core/string/print_string.h"
 
@@ -104,6 +105,25 @@ float SymphonyMusicStereoCache::get_sample_rate(const StringName &p_key) const {
 int32_t SymphonyMusicStereoCache::get_entry_count() const {
 	MutexLock lock(mutex);
 	return cache.size();
+}
+
+uint64_t SymphonyMusicStereoCache::hash_pcm(const float *p_interleaved, int32_t p_frames) {
+	uint64_t h = 14695981039346656037ull;
+	if (!p_interleaved || p_frames <= 0) {
+		return h;
+	}
+	const int n = p_frames * 2;
+	for (int i = 0; i < n; i++) {
+		uint32_t bits = 0;
+		memcpy(&bits, p_interleaved + i, sizeof(float));
+		h ^= (uint64_t)bits;
+		h *= 1099511628211ull;
+	}
+	return h;
+}
+
+StringName SymphonyMusicStereoCache::make_cache_key(const StringName &p_user_key, float p_rate, int32_t p_frames, uint64_t p_hash) {
+	return StringName(vformat("%s|%d|%d|%08x%08x", String(p_user_key), (int)Math::round(p_rate), p_frames, (uint32_t)(p_hash >> 32), (uint32_t)p_hash));
 }
 
 size_t SymphonyMusicStereoCache::get_total_bytes() const {
