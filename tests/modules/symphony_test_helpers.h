@@ -13,7 +13,10 @@
 #include "modules/symphony/core/symphony_prepared_graph_package.h"
 #include "modules/symphony/nodes/io/symphony_graph_output.h"
 #include "scene/resources/audio/audio_stream.h"
+#include "modules/symphony/stream/audio_stream_playback_symphony_music.h"
 #include "tests/test_macros.h"
+
+#include "core/os/memory.h"
 
 #include <cmath>
 #include <cstddef>
@@ -209,4 +212,71 @@ inline float alias_ratio_db(const Vector<float> &p_buf, float p_sr, float p_f0, 
 	return db_ratio((float)Math::sqrt(MAX(off_grid, 1e-30)), (float)Math::sqrt(MAX(on_grid, 1e-30)));
 }
 
+inline GraphDescription make_click_instrument(float p_root_hz = 440.0f) {
+	GraphDescription desc;
+	desc.smooth_parameters = false;
+	desc.anti_alias_staircase = false;
+	NodeDesc note;
+	note.id = 1;
+	note.type_name = "MusicNoteInput";
+	note.params.insert("root_hz", p_root_hz);
+	desc.nodes.push_back(note);
+	NodeDesc constant;
+	constant.id = 2;
+	constant.type_name = "Constant";
+	constant.params.insert("value", 1.0f);
+	desc.nodes.push_back(constant);
+	NodeDesc gain;
+	gain.id = 3;
+	gain.type_name = "Gain";
+	gain.params.insert("gain", 0.0f);
+	desc.nodes.push_back(gain);
+	NodeDesc out;
+	out.id = 4;
+	out.type_name = "GraphOutput";
+	desc.nodes.push_back(out);
+	auto conn = [&](int32_t from, int32_t from_pin, int32_t to, int32_t to_pin) {
+		ConnectionDesc c;
+		c.from_node = from;
+		c.from_pin = from_pin;
+		c.to_node = to;
+		c.to_pin = to_pin;
+		desc.connections.push_back(c);
+	};
+	conn(2, 0, 3, 0);
+	conn(1, 5, 3, 1); // gate → gain
+	conn(3, 0, 4, 0);
+	return desc;
+}
+
+inline int first_onset_frame(const Vector<AudioFrame> &p_buf, float p_threshold, int p_from) {
+	for (int i = MAX(p_from, 0); i < p_buf.size(); i++) {
+		if (Math::abs(p_buf[i].left) >= p_threshold || Math::abs(p_buf[i].right) >= p_threshold) {
+			return i;
+		}
+	}
+	return -1;
+}
+
+inline Vector<AudioFrame> render_music(AudioStreamPlaybackSymphonyMusic *p_pb, int p_frames, int p_chunk) {
+	Vector<AudioFrame> out;
+	out.resize(MAX(p_frames, 0));
+	int done = 0;
+	while (done < p_frames) {
+		const int n = MIN(MAX(p_chunk, 1), p_frames - done);
+		p_pb->mix_graph_rate(out.ptrw() + done, n);
+		done += n;
+	}
+	return out;
+}
+
 } // namespace SymphonyTestHelpers
+
+// expr must not itself be a declaration. Counts Memory::alloc_static / realloc_static on this thread.
+#define SYMPHONY_CHECK_NO_ALLOC(expr)                                                                             \
+	do {                                                                                                          \
+		const uint64_t _sym_alloc_before = Memory::get_thread_alloc_count();                                     \
+		expr;                                                                                                     \
+		const uint64_t _sym_alloc_after = Memory::get_thread_alloc_count();                                      \
+		CHECK_MESSAGE(_sym_alloc_after == _sym_alloc_before, "expression allocated on this thread");              \
+	} while (false)

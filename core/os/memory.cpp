@@ -42,6 +42,7 @@
 #ifdef DEBUG_ENABLED
 static SafeNumeric<uint64_t> _current_mem_usage;
 static SafeNumeric<uint64_t> _max_mem_usage;
+static thread_local uint64_t _thread_alloc_count = 0;
 #endif
 
 void *operator new(size_t p_size, DefaultAllocator p_allocator) {
@@ -102,6 +103,9 @@ void *Memory::alloc_static(size_t p_bytes, bool p_pad_align) {
 	}
 
 	ERR_FAIL_NULL_V(mem, nullptr);
+#ifdef DEBUG_ENABLED
+	_thread_alloc_count++;
+#endif
 	GodotProfileAlloc(mem, p_bytes + (prepad ? DATA_OFFSET : 0));
 
 	if (prepad) {
@@ -156,6 +160,9 @@ void *Memory::realloc_static(void *p_memory, size_t p_bytes, bool p_pad_align) {
 		} else {
 			*s = p_bytes;
 
+#ifdef DEBUG_ENABLED
+			_thread_alloc_count++;
+#endif
 			GodotProfileFree(mem);
 			mem = (uint8_t *)realloc(mem, p_bytes + DATA_OFFSET);
 			ERR_FAIL_NULL_V(mem, nullptr);
@@ -168,6 +175,9 @@ void *Memory::realloc_static(void *p_memory, size_t p_bytes, bool p_pad_align) {
 			return mem + DATA_OFFSET;
 		}
 	} else {
+#ifdef DEBUG_ENABLED
+		_thread_alloc_count++;
+#endif
 		GodotProfileFree(mem);
 		mem = (uint8_t *)realloc(mem, p_bytes);
 
@@ -220,6 +230,14 @@ uint64_t Memory::get_mem_usage() {
 uint64_t Memory::get_mem_max_usage() {
 #ifdef DEBUG_ENABLED
 	return _max_mem_usage.get();
+#else
+	return 0;
+#endif
+}
+
+uint64_t Memory::get_thread_alloc_count() {
+#ifdef DEBUG_ENABLED
+	return _thread_alloc_count;
 #else
 	return 0;
 #endif

@@ -96,6 +96,9 @@ void free_aligned_static(void *p_memory);
 uint64_t get_mem_available();
 uint64_t get_mem_usage();
 uint64_t get_mem_max_usage();
+// Debug builds: allocations performed on the calling thread (alloc_static / realloc_static).
+// Release builds return 0. Used by Symphony's audio-thread allocation checks.
+uint64_t get_thread_alloc_count();
 }; //namespace Memory
 
 class DefaultAllocator {
