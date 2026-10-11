@@ -186,6 +186,12 @@ public:
 		return sizeof(int32_t) + sizeof(float) + sizeof(float) * (size_t)p_max_modes * 2;
 	}
 
+	static size_t export_state_bytes_for(const HashMap<StringName, Variant> &p_params) {
+		int32_t mm = p_params.has("max_modes") ? (int32_t)(float)p_params["max_modes"] : 20;
+		mm = CLAMP(mm, 1, MAX_MODES_LIMIT);
+		return export_bytes_for_max_modes(mm);
+	}
+
 	static void register_operator() {
 		OperatorDescriptor desc;
 		desc.type_name = "ModalBank";
@@ -200,6 +206,7 @@ public:
 		desc.state_align = alignof(SymphonyModalBank);
 		// 9 arrays of max_modes floats: state×2, coeff×3, gain, base_freq/t60/gain.
 		desc.extra_arena_bytes = sizeof(float) * 64 * 9 + 64;
+		desc.export_state_bytes_fn = &SymphonyModalBank::export_state_bytes_for;
 		desc.export_state_bytes = export_bytes_for_max_modes(MAX_MODES_LIMIT);
 		desc.resettable = true;
 		desc.create_fn = &SymphonyModalBank::create;

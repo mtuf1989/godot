@@ -8,9 +8,9 @@
 |---|---|
 | **As of** | 2026-10-11 |
 | **Branch** | `master` |
-| **Done** | **B0**, **B1**, **B2**, **B3** recorded clips |
-| **Next** | **B4** engine memory safety |
-| **C++ tests** | 336/336 `*Symphony*` green on `bin/godot.macos.editor.arm64` |
+| **Done** | **B0**, **B1**, **B2**, **B3**, **B4** engine memory safety |
+| **Next** | **B5** engine races and correctness |
+| **C++ tests** | 342/342 `*Symphony*` green on `bin/godot.macos.editor.arm64` |
 
 ### Commits
 
@@ -19,7 +19,8 @@
 | B0 | `0015d849eb` | Alloc counter, helpers, mixer scaffold |
 | B1 | `8f09e10cc4` | Boundary carry, generation-scoped notes, span renderer |
 | B2 | `5437887899` | SPSC command/status rings, phrase slots, atomic stretch, restart flag |
-| B3 | *(this commit)* | Tempo-as-speed, Catmull-Rom resample, `register_clip_wav`, unclaimed clip return |
+| B3 | `02bf112335` | Tempo-as-speed, Catmull-Rom resample, `register_clip_wav`, unclaimed clip return |
+| B4 | *(this commit)* | Layout keys, SpectralGate exclusion, PhaseVocoder arena fn, note-only pristine |
 
 ## Finding to phase map
 

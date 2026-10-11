@@ -2,6 +2,7 @@
 
 #include "symphony_pin_types.h"
 #include "symphony_seed.h"
+#include "core/error/error_macros.h"
 #include "core/string/ustring.h"
 #include <cstdint>
 #include <cstring>
@@ -28,6 +29,7 @@ public:
 	// P10: pristine export_state snapshot (arena) for note-voice reset.
 	const uint8_t *pristine_state = nullptr;
 	uint32_t pristine_size = 0;
+	bool expects_pristine = false;
 	int32_t graph_node_id = -1;
 	uint32_t seed_authored = 0;
 	bool seed_deterministic = false;
@@ -49,12 +51,14 @@ public:
 	// Returns the number of bytes written to p_buffer. If p_buffer is nullptr, returns required size.
 	virtual size_t export_state(uint8_t *p_buffer, size_t p_max_size) const { return 0; }
 	virtual void import_state(const uint8_t *p_buffer, size_t p_size) {}
+	virtual uint32_t get_state_layout_key() const { return 0; }
 
 	// P10 note-voice reset: restore pristine state, clear delay/capture rings, reseed RNG.
 	virtual void clear_large_buffers() {}
 	virtual void reseed(uint32_t p_seed) { (void)p_seed; }
 
 	void reset_for_note(uint64_t p_voice_seed) {
+		DEV_ASSERT(!expects_pristine || (pristine_state != nullptr && pristine_size > 0));
 		if (pristine_state != nullptr && pristine_size > 0) {
 			import_state(pristine_state, pristine_size);
 		}

@@ -30,8 +30,9 @@ struct FingerprintLess {
 	}
 };
 
-uint32_t _structural_hash(uint32_t p_type_hash, size_t p_state_bytes) {
-	return hash_murmur3_one_32((uint32_t)p_state_bytes, p_type_hash);
+uint32_t _structural_hash(uint32_t p_type_hash, size_t p_state_bytes, uint32_t p_layout_key) {
+	uint32_t h = hash_murmur3_one_32((uint32_t)p_state_bytes, p_type_hash);
+	return hash_murmur3_one_32(p_layout_key, h);
 }
 
 } // namespace
@@ -89,7 +90,7 @@ PreparedGraphPackage *PreparedGraphPackage::create_from_graph(CompiledGraph *p_g
 			fp.node_id = p_graph->node_ids[i];
 			fp.type_hash = p_graph->operator_types[i].hash();
 			const size_t state_bytes = op->export_state(nullptr, 0);
-			fp.structural_hash = _structural_hash(fp.type_hash, state_bytes);
+			fp.structural_hash = _structural_hash(fp.type_hash, state_bytes, op->get_state_layout_key());
 			fp.exec_index = i;
 			pkg->fingerprints.push_back(fp);
 			if (state_bytes > pkg->migrate_scratch_bytes) {

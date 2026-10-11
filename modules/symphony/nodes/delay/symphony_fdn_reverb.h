@@ -205,6 +205,29 @@ public:
 		memcpy(core.write_pos, p_buffer + offset, sizeof(int) * SymphonyFDNCore::MAX_LINES);
 		offset += sizeof(int) * SymphonyFDNCore::MAX_LINES;
 		memcpy(&pre_delay_write_pos, p_buffer + offset, sizeof(int));
+		const int delay_cap = MAX(1, core.max_delay);
+		for (int i = 0; i < SymphonyFDNCore::MAX_LINES; i++) {
+			core.write_pos[i] %= delay_cap;
+			if (core.write_pos[i] < 0) {
+				core.write_pos[i] += delay_cap;
+			}
+		}
+		if (max_pre_delay_samples > 0) {
+			pre_delay_write_pos %= max_pre_delay_samples;
+			if (pre_delay_write_pos < 0) {
+				pre_delay_write_pos += max_pre_delay_samples;
+			}
+		} else {
+			pre_delay_write_pos = 0;
+		}
+	}
+
+	virtual uint32_t get_state_layout_key() const override {
+		uint32_t h = 2166136261u;
+		h = (h ^ (uint32_t)min_lines) * 16777619u;
+		h = (h ^ (uint32_t)max_delay_samples) * 16777619u;
+		h = (h ^ (uint32_t)max_pre_delay_samples) * 16777619u;
+		return h;
 	}
 
 	static void register_operator() {

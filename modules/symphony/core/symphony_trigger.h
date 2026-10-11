@@ -2,6 +2,8 @@
 
 #include "symphony_pin_types.h"
 
+#include "core/error/error_macros.h"
+
 #include <atomic>
 #include <cstdint>
 
@@ -24,7 +26,18 @@ struct TriggerBuffer {
 		if (count >= SYMPHONY_MAX_TRIGGERS_PER_BLOCK) {
 			return false;
 		}
-		events[count].sample_offset = p_sample_offset;
+		int32_t offset = p_sample_offset;
+		if (offset < 0 || offset >= SYMPHONY_MAX_TRIGGERS_PER_BLOCK) {
+#ifdef DEV_ENABLED
+			WARN_PRINT("TriggerBuffer::push clamped sample offset into [0, micro-block).");
+#endif
+			if (offset < 0) {
+				offset = 0;
+			} else {
+				offset = SYMPHONY_MAX_TRIGGERS_PER_BLOCK - 1;
+			}
+		}
+		events[count].sample_offset = offset;
 		events[count].value = p_value;
 		count++;
 		return true;

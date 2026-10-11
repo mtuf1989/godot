@@ -37,6 +37,11 @@ public:
 		bool success() const { return graph != nullptr; }
 	};
 
+	struct CompileOptions {
+		bool capture_pristine = false; // Note voices only; SFX/LOD skip pristine blobs.
+		CompileOptions() {}
+	};
+
 	// Compile a graph description into an executable CompiledGraph.
 	// p_mix_rate: the audio sample rate (needed by operators for rate-dependent calculations).
 	// p_resource_path: included in structured diagnostics. Empty for anonymous graphs.
@@ -45,7 +50,7 @@ public:
 	// p_recycled_raw / p_recycled_capacity: optional P9 freelist arena. On success the
 	// compiler adopts it when capacity >= planned size (caller must not free). On failure
 	// or undersize the pointer is left unchanged for the caller to keep/recycle.
-	static CompileResult compile(const GraphDescription &p_desc, float p_mix_rate, const String &p_resource_path = String(), uint64_t p_voice_seed = 0, uint8_t **p_recycled_raw = nullptr, size_t *p_recycled_capacity = nullptr);
+	static CompileResult compile(const GraphDescription &p_desc, float p_mix_rate, const String &p_resource_path = String(), uint64_t p_voice_seed = 0, uint8_t **p_recycled_raw = nullptr, size_t *p_recycled_capacity = nullptr, const CompileOptions &p_options = CompileOptions());
 
 	// Anti-alias staircase LPF cutoff used between consecutive nonlinear operators.
 	static inline float staircase_lpf_cutoff(float p_mix_rate) {

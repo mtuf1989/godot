@@ -50,6 +50,7 @@ using OperatorCreateFunc = SymphonyOperator *(*)(ArenaAllocator &p_arena, const 
 // determine how many extra arena bytes this specific instance needs.
 // Returns the byte count (excluding state_size which is added separately).
 using ExtraArenaBytesFunc = size_t (*)(const HashMap<StringName, Variant> &p_params, float p_mix_rate);
+using ExportStateBytesFunc = size_t (*)(const HashMap<StringName, Variant> &p_params);
 
 // Silence propagation behavior (improve_plan §7).
 enum class SilenceBehavior : uint8_t {
@@ -78,6 +79,7 @@ struct OperatorDescriptor {
 	bool resettable = false;
 	// Upper bound on export_state() size (for arena pristine-blob planning). 0 = none.
 	size_t export_state_bytes = 0;
+	ExportStateBytesFunc export_state_bytes_fn = nullptr;
 
 	// Relative CPU cost units (plan §2). Ordinary ops use cost_per_sample * frames.
 	// Optional extra_cost_fn adds parameter-dependent per-block cost (FFT/granular).

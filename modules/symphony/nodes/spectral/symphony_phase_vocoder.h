@@ -287,16 +287,22 @@ public:
 		desc.params.push_back({ "pitch_shift", 0.0f, -12.0f, 12.0f, 0.01f });
 		desc.state_size = sizeof(SymphonyPhaseVocoder);
 		desc.state_align = alignof(SymphonyPhaseVocoder);
-		// At max fft_size=8192: allocates 7 buffers of N floats (input_ring×2, output_ring×2,
-		// window_lut, fft_workspace, analysis_frame, fft_buffer, ifft_buffer)
-		// + 5 buffers of (N/2+1) floats (prev_phase, synth_phase, magnitude_buf, shifted_mag, shifted_phase).
-		// Total: 7*8192 + 5*4097 = 77829 floats + cola_gain N. Plus alignment overhead.
-		desc.extra_arena_bytes = sizeof(float) * (77829 + 8192) + 512;
+		desc.extra_arena_bytes = 0;
+		desc.extra_arena_bytes_fn = &SymphonyPhaseVocoder::extra_arena_bytes_for;
 		// Base wiring cost; FFT work comes from extra_cost_fn (N·log2(N)·hops).
 		desc.cost_per_sample = 4.0f;
 		desc.extra_cost_fn = &SymphonyPhaseVocoder::extra_cost;
 		desc.create_fn = &SymphonyPhaseVocoder::create;
 		OperatorRegistry::get_singleton()->register_operator(desc);
+	}
+
+	[[nodiscard]] static size_t extra_arena_bytes_for(const HashMap<StringName, Variant> &p_params, float p_mix_rate) {
+		(void)p_mix_rate;
+		int32_t n = p_params.has("fft_size") ? (int32_t)(float)p_params["fft_size"] : 2048;
+		n = CLAMP(n, 256, 8192);
+		n = 1 << (int32_t)Math::floor(Math::log((float)n) / Math::log(2.0f));
+		const int32_t bins = n / 2 + 1;
+		return sizeof(float) * (size_t)(10 * n + 5 * bins) + 13 * 32;
 	}
 
 	[[nodiscard]] static float extra_cost(const HashMap<StringName, Variant> &p_params, float p_mix_rate) {

@@ -180,7 +180,9 @@ public:
 		voice_count = max_voices;
 		for (int v = 0; v < max_voices; v++) {
 			const uint64_t seed = splitmix64(p_pool_seed + (uint64_t)v * 0x9E3779B97F4A7C15ull);
-			GraphCompiler::CompileResult cr = GraphCompiler::compile(desc, mix_rate, String(), seed);
+			GraphCompiler::CompileOptions opts;
+			opts.capture_pristine = true;
+			GraphCompiler::CompileResult cr = GraphCompiler::compile(desc, mix_rate, String(), seed, nullptr, nullptr, opts);
 			if (!cr.success()) {
 				last_error = cr.errors.size() ? String(cr.errors[0]) : String("compile failed");
 				clear();

@@ -270,6 +270,16 @@ public:
 		shared_ready.store(true, std::memory_order_release);
 	}
 
+	static size_t export_state_bytes_for(const HashMap<StringName, Variant> &p_params) {
+		size_t n = 12; // prev_x, prev_F, table_size
+		if (p_params.has("table_data")) {
+			int32_t tbl_size = p_params.has("table_size") ? (int)(float)p_params["table_size"] : PRESET_TABLE_SIZE;
+			tbl_size = CLAMP(tbl_size, 64, 2048);
+			n += sizeof(float) * (size_t)tbl_size;
+		}
+		return n;
+	}
+
 	static size_t extra_arena_bytes_for(const HashMap<StringName, Variant> &p_params, float p_mix_rate) {
 		(void)p_mix_rate;
 		if (p_params.has("table_data")) {
@@ -302,6 +312,7 @@ public:
 		desc.state_align = alignof(SymphonyWaveshaper);
 		desc.extra_arena_bytes = 0;
 		desc.extra_arena_bytes_fn = &SymphonyWaveshaper::extra_arena_bytes_for;
+		desc.export_state_bytes_fn = &SymphonyWaveshaper::export_state_bytes_for;
 		desc.create_fn = &SymphonyWaveshaper::create;
 		OperatorRegistry::get_singleton()->register_operator(desc);
 	}

@@ -203,13 +203,15 @@ TEST_CASE("[Symphony][Reset] reset_for_note matches fresh construct for resettab
 		}
 
 		GraphDescription gdesc = _minimal_graph_for(types[i], *desc);
-		GraphCompiler::CompileResult fresh = GraphCompiler::compile(gdesc, 48000.0f, String(), seed_s);
+		GraphCompiler::CompileOptions note_opts;
+		note_opts.capture_pristine = true;
+		GraphCompiler::CompileResult fresh = GraphCompiler::compile(gdesc, 48000.0f, String(), seed_s, nullptr, nullptr, note_opts);
 		if (!fresh.success()) {
 			FAIL(vformat("resettable '%s' failed to compile: %s", String(types[i]),
 					fresh.errors.size() ? String(fresh.errors[0]) : String("?")));
 			continue;
 		}
-		GraphCompiler::CompileResult reused = GraphCompiler::compile(gdesc, 48000.0f, String(), seed_s);
+		GraphCompiler::CompileResult reused = GraphCompiler::compile(gdesc, 48000.0f, String(), seed_s, nullptr, nullptr, note_opts);
 		REQUIRE(reused.success());
 
 		(void)_render_compiled(reused.graph, frames);

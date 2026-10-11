@@ -34,6 +34,13 @@
 	return p_desc->extra_arena_bytes;
 }
 
+[[nodiscard]] static size_t operator_pristine_bytes(const OperatorDescriptor *p_desc, const HashMap<StringName, Variant> &p_params) {
+	if (p_desc->export_state_bytes_fn) {
+		return p_desc->export_state_bytes_fn(p_params);
+	}
+	return p_desc->export_state_bytes;
+}
+
 [[nodiscard]] static float operator_cost_units(const OperatorDescriptor *p_desc, const HashMap<StringName, Variant> &p_params, float p_mix_rate) {
 	float cost = p_desc->cost_per_sample * (float)SYMPHONY_MICRO_BLOCK_SIZE;
 	if (p_desc->extra_cost_fn) {
@@ -155,7 +162,7 @@ static bool _validate_graph_structure(const GraphDescription &p_desc, float p_mi
 	return r_result.errors.is_empty();
 }
 
-GraphCompiler::CompileResult GraphCompiler::compile(const GraphDescription &p_desc, float p_mix_rate, const String &p_resource_path, uint64_t p_voice_seed, uint8_t **p_recycled_raw, size_t *p_recycled_capacity) {
+GraphCompiler::CompileResult GraphCompiler::compile(const GraphDescription &p_desc, float p_mix_rate, const String &p_resource_path, uint64_t p_voice_seed, uint8_t **p_recycled_raw, size_t *p_recycled_capacity, const CompileOptions &p_options) {
 	symphony_rt_note(SymphonyRTViolation::Compile, "GraphCompiler::compile");
 	CompileResult result;
 	const OperatorRegistry *registry = OperatorRegistry::get_singleton();
@@ -616,15 +623,8 @@ GraphCompiler::CompileResult GraphCompiler::compile(const GraphDescription &p_de
 			}
 		}
 		// P10: pristine export_state blob for note-voice reset (after create extras).
-		if (desc->resettable) {
-			size_t pristine = desc->export_state_bytes;
-			if (desc->type_name == StringName("ModalBank")) {
-				int32_t mm = desc_ref.nodes[node_idx].params.has("max_modes")
-						? (int32_t)(float)desc_ref.nodes[node_idx].params["max_modes"]
-						: 20;
-				mm = CLAMP(mm, 1, 64);
-				pristine = sizeof(int32_t) + sizeof(float) + sizeof(float) * (size_t)mm * 2;
-			}
+		if (p_options.capture_pristine && desc->resettable) {
+			const size_t pristine = operator_pristine_bytes(desc, desc_ref.nodes[node_idx].params);
 			if (pristine > 0) {
 				if (!SymphonyCheckedMath::bump(planned_offset, pristine, 8)) {
 					return plan_fail(vformat("Arena size overflow while planning pristine state for '%s'.", String(desc->type_name)));
@@ -823,11 +823,13 @@ GraphCompiler::CompileResult GraphCompiler::compile(const GraphDescription &p_de
 		op->seed_deterministic = symphony_deterministic_seed(nd.params);
 
 		// P10: snapshot pristine state for resettable note voices.
-		if (desc->resettable) {
+		if (p_options.capture_pristine && desc->resettable) {
+			op->expects_pristine = true;
 			const size_t state_bytes = op->export_state(nullptr, 0);
 			if (state_bytes > 0) {
-				if (desc->export_state_bytes > 0 && state_bytes > desc->export_state_bytes) {
-					result.errors.push_back(vformat("Operator '%s' export_state (%d) exceeds planned pristine bytes (%d).", String(desc->type_name), (int)state_bytes, (int)desc->export_state_bytes));
+				const size_t planned_pristine = operator_pristine_bytes(desc, nd.params);
+				if (planned_pristine > 0 && state_bytes > planned_pristine) {
+					result.errors.push_back(vformat("Operator '%s' export_state (%d) exceeds planned pristine bytes (%d).", String(desc->type_name), (int)state_bytes, (int)planned_pristine));
 					memdelete(compiled);
 					return result;
 				}

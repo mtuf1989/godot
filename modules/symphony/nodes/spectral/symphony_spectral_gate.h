@@ -207,58 +207,14 @@ public:
 	}
 
 	virtual size_t export_state(uint8_t *p_buffer, size_t p_max_size) const override {
-		struct StateHeader {
-			int32_t input_write_pos;
-			int32_t output_read_pos;
-			int32_t output_write_pos;
-			int32_t hop_counter;
-			int32_t primed;
-			uint64_t input_samples_fed;
-		};
-
-		size_t needed = sizeof(StateHeader);
-		if (!p_buffer) {
-			return needed;
-		}
-		if (p_max_size < needed) {
-			return 0;
-		}
-
-		StateHeader hdr;
-		hdr.input_write_pos = input_write_pos;
-		hdr.output_read_pos = output_read_pos;
-		hdr.output_write_pos = output_write_pos;
-		hdr.hop_counter = hop_counter;
-		hdr.primed = primed ? 1 : 0;
-		hdr.input_samples_fed = input_samples_fed;
-
-		memcpy(p_buffer, &hdr, sizeof(StateHeader));
-		return sizeof(StateHeader);
+		(void)p_buffer;
+		(void)p_max_size;
+		return 0;
 	}
 
 	virtual void import_state(const uint8_t *p_buffer, size_t p_size) override {
-		struct StateHeader {
-			int32_t input_write_pos;
-			int32_t output_read_pos;
-			int32_t output_write_pos;
-			int32_t hop_counter;
-			int32_t primed;
-			uint64_t input_samples_fed;
-		};
-
-		if (p_size < sizeof(StateHeader)) {
-			return;
-		}
-
-		StateHeader hdr;
-		memcpy(&hdr, p_buffer, sizeof(StateHeader));
-
-		input_write_pos = hdr.input_write_pos;
-		output_read_pos = hdr.output_read_pos;
-		output_write_pos = hdr.output_write_pos;
-		hop_counter = hdr.hop_counter;
-		primed = (hdr.primed != 0);
-		input_samples_fed = hdr.input_samples_fed;
+		(void)p_buffer;
+		(void)p_size;
 	}
 
 	static void register_operator() {

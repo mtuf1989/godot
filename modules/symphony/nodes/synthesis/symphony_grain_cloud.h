@@ -447,6 +447,24 @@ public:
 		memcpy(&rng_state, p_buffer + offset, sizeof(uint32_t));
 		offset += sizeof(uint32_t);
 		memcpy(grains, p_buffer + offset, sizeof(Grain) * MAX_GRAINS);
+		if (capture_size > 0) {
+			capture_write %= capture_size;
+			if (capture_write < 0) {
+				capture_write += capture_size;
+			}
+			for (int32_t g = 0; g < MAX_GRAINS; g++) {
+				grains[g].start_sample %= capture_size;
+				if (grains[g].start_sample < 0) {
+					grains[g].start_sample += capture_size;
+				}
+			}
+		} else {
+			capture_write = 0;
+		}
+	}
+
+	virtual uint32_t get_state_layout_key() const override {
+		return (uint32_t)capture_size;
 	}
 
 	static void register_operator() {
