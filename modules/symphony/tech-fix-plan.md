@@ -11,8 +11,8 @@
 | **Done** | **P0–P9**, **P10**, music **N1–N3**, **G1–G2**, **MusicStream**, **V1** automated qualification; **S0 / N0** closed. |
 | **Next** | See [`bugfix-plan.md`](bugfix-plan.md) (B0–B8). Then designer listening / stretch fixtures / RTSan CI (Linux) / 30‑min profile. |
 | **Stage** | S5 Qualification ✅ (automated + P8b/P9 + denser lifetime + profile harness); listening / RTSan deferred |
-| **C++ tests** | 319/319 `*Symphony*` green on `bin/godot.macos.editor.arm64` |
-| **TSan** | `.san` after P1b: **1** warning (same as P0 `DynamicRangeHigh`); new Symphony-frame races = 0 |
+| **C++ tests** | 353/353 `*Symphony*` green on `bin/godot.macos.editor.arm64` (see [`bugfix-plan.md`](bugfix-plan.md)) |
+| **TSan** | B8 rebuilt `.san`: 353/353; 3 warnings (1 = P0 `DynamicRangeHigh`; 2 unresolved mixer-thread frames) |
 
 ### Commits
 

@@ -8,9 +8,9 @@
 |---|---|
 | **As of** | 2026-10-11 |
 | **Branch** | `master` |
-| **Done** | **B0**–**B6**, **B7** native `render_offline` |
-| **Next** | **B7** composer and `render_offline_wav` (game-template) |
-| **C++ tests** | 353/353 `*Symphony*` green on `bin/godot.macos.editor.arm64` |
+| **Done** | **B0**–**B8** |
+| **Next** | Designer listening / stretch fixtures / RTSan CI / 30‑min profile |
+| **C++ tests** | 353/353 `*Symphony*` green on `bin/godot.macos.editor.arm64`; TSan `.san` 353/353 (3 warnings, see `MIGRATION.md`) |
 
 ### Commits
 
@@ -24,7 +24,9 @@
 | B5 | `a94c26faf9` | Oscillator/SVFilter reset, reverb last_params, spatial slot table, RTPC atomics, trigger_at pending, cache dirty, retirement recycle, BeatClock update_transport |
 | B6 native | `afff33687d` | `PhraseActivated` from scheduler activation, not `submit_phrase` |
 | B6 game-template | `ff0fe288` | Activation-driven submit, status fallback, MusicSystem completion signals |
-| B7 native | *(this commit)* | `AudioStreamPlaybackSymphonyMusic.render_offline` at 48 kHz, no voice-manager register |
+| B7 native | `f55c38462d` | `AudioStreamPlaybackSymphonyMusic.render_offline` at 48 kHz, no voice-manager register |
+| B7 game-template | `f6404b87` | Per-bar chords, tonic/`root_pc`, overlap polyphony, `render_offline_wav` |
+| B8 | *(this commit)* | QUALIFICATION gates cite tests; user_guide / MIGRATION / skill docs; TSan 353/353 |
 
 ## Finding to phase map
 

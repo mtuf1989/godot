@@ -588,7 +588,7 @@ Note that `LFO` and `Oscillator` number their waveforms differently.
 | **GraphInputAudio** | — → `output` (audio) | `parameter_name`, `sort_order`, `display_name`. Audio entry point of a graph used as a `SubGraph`; silent when standalone |
 | **GraphOutput** | `input` (audio), `finish` (trigger) → — | `pin_type`, `sort_order`, `display_name` |
 | **TriggerInput** | — → `output` (trigger) | `trigger_name`, `auto_trigger_on_play` (default 1) |
-| **MusicNoteInput** | — → `frequency`, `velocity`, `pitch_ratio`, `note_on`, `note_off`, `gate`, `adsr_trigger` | `root_hz` (authored fundamental; `pitch_ratio = frequency / root_hz`) |
+| **MusicNoteInput** | — → `frequency`, `velocity`, `pitch_ratio`, `note_on`, `note_off`, `gate`, `adsr_trigger` | `root_hz` (authored fundamental; `pitch_ratio = frequency / root_hz`). FLOAT `gate`/`frequency` are sample-accurate: the music span renderer applies events at offset 0 inside the micro-block. Multiple pending events per block stay ordered; `note_on` does not clear an earlier pending `note_off`. |
 | **SubGraph** | dynamic → dynamic | `resource_path` (inner graph `.tres`) |
 
 ### Writing operators (P9 state-in-locals)
@@ -599,9 +599,10 @@ Bare feedback edges and `FeedbackPath` loops are exactly one micro-block of dela
 
 ### Procedural music stream (`AudioStreamSymphonyMusic`)
 
-Native music playback for hybrid scores. Configure tracks with instrument graphs (`set_track_instrument` from an `AudioStreamSymphony` that contains one `MusicNoteInput`), optionally `register_clip_pcm` for recorded phrases, then play via `AudioStreamPlayer`. The playback exposes:
+Native music playback for hybrid scores. Configure tracks with instrument graphs (`set_track_instrument` from an `AudioStreamSymphony` that contains one `MusicNoteInput`), register recorded phrases with `register_clip_wav` (or `register_clip_pcm`), then play via `AudioStreamPlayer`. The playback exposes:
 
 ```gdscript
+stream.register_clip_wav(&"verse_a", wav, 120.0, 0.0, 0.0)  # key, AudioStreamWAV, source_bpm, body_start_s, body_end_s
 playback.submit_phrase({
     "start_tick": 0, "generation": 1,
     "events": [
@@ -610,9 +611,15 @@ playback.submit_phrase({
     ],
 })
 playback.schedule_tempo(140.0, 960)  # tick, optional ramp_ticks
+playback.schedule_track_gain(0, 0.5, 1920, 480)  # track, gain, start_tick, fade_ticks — ramps on the audio thread
 var snap: Dictionary = playback.get_transport_snapshot()  # tick, frame, bpm, bar…
-var status: Array = playback.drain_status()
+var status: Array = playback.drain_status()  # phrase_activated is audio-true (scheduler), not submit-time
+var pcm: PackedVector2Array = playback.render_offline(48000)  # main thread only; refuses a player-attached playback
 ```
+
+`tempo_ratio` on clip events is **playback speed** (target BPM / source BPM), matching Signalsmith `seek(playbackRate)`. Values above 1 play the clip faster. PCM is Catmull-Rom resampled to the music rate at registration. A device rate change requires reload.
+
+`schedule_track_gain(track, gain, start_tick, fade_ticks)` honours `start_tick` and `fade_ticks` via an audio-side per-track ramp.
 
 Ticks use 960 PPQN. Playback registers as a **VITAL** voice (never budget-stolen). Game-template `MusicSystem` PROCEDURAL mode wraps this stream.
 
@@ -831,8 +838,9 @@ MusicSystem.bar_hit.connect(_on_bar)
 func _on_music_state_changed(from: StringName, to: StringName) -> void:
     print("Music: %s → %s" % [from, to])
 
-func _on_beat(beat_index: int) -> void:
-    # Sync visual effects to the beat
+func _on_beat(beat_index: int, target_time: float) -> void:
+    # target_time is the heard time; with BeatClock.fire_ahead_s > 0 the
+    # signal fires early so you can schedule audio with trigger_at.
     flash_indicator()
 ```
 
@@ -2102,6 +2110,14 @@ func _on_music_slider_changed(value: float):
 ---
 
 ## Changelog
+
+### B0–B8 — Post P0–P10 / N0–V1 bug fixes (2026-10-11)
+
+- **Music mix:** generation-scoped note ids, mid-block phrase boundaries, carry-over note-offs, span renderer (sample-accurate MusicNoteInput), allocation-free mix (`SYMPHONY_CHECK_NO_ALLOC` in `test_symphony_music_boundary.cpp`).
+- **Thread hand-off:** SPSC command/status rings, 4 phrase slots, audio-owned prepared clips, atomic stretch ownership, restart via flag. `phrase_activated` is emitted when the scheduler activates a phrase, not at `submit_phrase`.
+- **Clips:** `tempo_ratio` is playback speed; Catmull-Rom resample at `register_clip_pcm` / `register_clip_wav`; unclaimed contexts return after cancel.
+- **Engine:** FDN/GrainCloud layout keys; SpectralGate excluded from migration; Oscillator exports `triangle_primed`; reverb `last_params`; spatial atomic slot table; RTPC atomics; compile-cache dirty + SubGraph versions; BeatClock `update_transport` + `fire_ahead_s`.
+- **Game Audio Layer:** submit-on-activation, `drain_status` fallback, `transition_completed`/`state_changed` in PROCEDURAL mode, `stop()` clears `player.stream`. Composer uses per-bar chords, tonic/`root_pc`, overlap polyphony. `render_offline` / `render_offline_wav` write 48 kHz PCM.
 
 ### MusicStream / G2 / V1 / P8b / P9 — Procedural music + voice policy (2026-10-10)
 

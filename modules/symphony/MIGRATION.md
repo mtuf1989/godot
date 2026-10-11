@@ -5,9 +5,9 @@ Update this file with each commit that changes a public API.
 
 ## Status
 
-- **Milestone:** M3 C++ complete. Tech-debt plan **P0–P9** + **P10** + music **N1–N3** / **G1–G2** / **MusicStream** / **V1** landed; **S0 / music N0 closed**. Remaining: listening / 30‑min profiling / RTSan CI follow-up.
+- **Milestone:** M3 C++ complete. Tech-debt plan **P0–P10** + music **N0–V1** + bug-fix **B0–B8** landed; **S0 / music N0 closed**. Remaining: listening / 30‑min profiling / RTSan CI follow-up.
 - **Branch:** `master`
-- **Tests:** 305 Symphony cases (2026-10-09, +P9 state-in-locals / FeedbackPath / compile cache). Editor TSan (`.san`) after P1b: 218/218 green at re-baseline time (T3 landed immediately after; same race profile) with **1** data-race warning — same count as the P0 baseline (`DynamicRangeHigh` global; frames unresolved; not a Symphony frame). **New Symphony-frame races vs P0 = 0.**
+- **Tests:** 353 Symphony cases (2026-10-11, B0–B8). GDScript `test/addons/symphony_audio`: 69/69. Editor TSan after P1b: 218/218 with **1** warning (`DynamicRangeHigh`). B8 rebuilt `.san` (2026-10-11): **353/353** passed; **3** TSan warnings — 1 is the P0 `DynamicRangeHigh` global; 2 are mixer-thread heap races with unresolved frames (stripped `.san`, same “frames unresolved” class as P0). No named Symphony-frame races in the symbolized `DynamicRangeHigh` report.
 - **Music N1:** `symphony_music_transport.h` / `symphony_music_scheduler.h`; BeatClock incremental accumulator + `fire_ahead_s`; `trigger_at` + Interactive clip position. `beat_hit`/`bar_hit` now pass `(index, target_time)`.
 - **P2 audible:** WavePlayer decodes all `AudioStreamWAV` formats to PCM16 at create; spatial wrapper accepts any pathed WAV. game-template 3D pool: `attenuation_filter_db=0`, `max_db=24`.
 - **P3 DSP:** Saturator HIIR 2× half-band + u-domain ADAA; Waveshaper shared preset tables + 3-way ADAA + continuous foldback; FM Carson clamp (no output LPF); staircase LPF `min(18000, 0.4·sr)`; FormantOsc harmonic blend; DC blocker `R=exp(−2π·15/sr)`; Biquad 5 ms cutoff/Q smoothing.
@@ -247,6 +247,19 @@ TSAN_OPTIONS="halt_on_error=0 print_stacktrace=1" bin/godot.macos.editor.arm64.s
 ```
 
 Result: 218/218 Symphony cases passed; `ThreadSanitizer: reported 1 warnings` — same single race on the global `DynamicRangeHigh` (unresolved frames). New Symphony-frame races vs P0 baseline: **0**. S0 gate met.
+
+### B0–B8 API notes (2026-10-11)
+
+- **`tempo_ratio`** on clip events is playback speed (target BPM / source BPM), not duration stretch. Values `> 1` play faster.
+- **`register_clip_wav(key, wav, source_bpm, body_start_s, body_end_s)`** is the GDScript entry for recorded phrases. It decodes any WAV format and Catmull-Rom resamples to the music rate. A device rate change requires reload.
+- **`phrase_activated`** in `drain_status()` is produced when the scheduler activates a phrase on the audio thread, not when main calls `submit_phrase`.
+- **`schedule_track_gain(track, gain, start_tick, fade_ticks)`** ramps on the audio thread from `start_tick`.
+- **`AudioStreamPlaybackSymphonyMusic.render_offline(frames) -> PackedVector2Array`**: main thread only; refuses playbacks registered with the voice manager; 48 kHz through `_mix_internal`.
+- **`BeatClock.update_transport(beat_position, bpm, beats_per_bar)`** is the PROCEDURAL-mode observer. Do not call `set_bpm` immediately on a tempo request; the transport snapshot is the source of truth.
+- **`MusicSystem.beat_hit` / `bar_hit`** forward `(index, target_time: float)`.
+- **`ProceduralMusicController.set_state` returns `bool`**. MusicSystem emits `transition_started` only for valid sections; `transition_completed` / `state_changed` fire when the new section's phrase activates.
+- SpectralGate is excluded from graph-state migration (`export_state` returns 0), same as PhaseVocoder.
+- Oscillator state layout is 12 bytes (adds `triangle_primed`). Pristine blobs are compiled for note-pool voices only.
 
 ## Follow-up: RTSan CI (P9 Later)
 

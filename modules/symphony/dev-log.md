@@ -1,5 +1,19 @@
 # Dev Log — Symphony Audio System
 
+## B0–B8 bug-fix (2026-10-11)
+
+Post P0–P10 / N0–V1 review. Plan: `bugfix-plan.md`. Suite: **353/353** `*Symphony*`. GDScript `test/addons/symphony_audio`: **69/69**.
+
+- **B0** `0015d849eb`: DEV-only `Memory::get_thread_alloc_count()`, `SYMPHONY_CHECK_NO_ALLOC`, music test helpers.
+- **B1** `8f09e10cc4`: generation-scoped notes, boundary carry-over, span renderer, allocation-free mix, timed gains, oldest-voice steal.
+- **B2** `5437887899`: SPSC command/status rings, phrase slots, atomic stretch, restart flag.
+- **B3** `02bf112335` + game-template `b6eb9008`: tempo-as-speed, Catmull-Rom resample, `register_clip_wav`.
+- **B4** `63933d6ed2`: layout keys, SpectralGate exclusion, PhaseVocoder arena fn, note-only pristine.
+- **B5** `a94c26faf9`: Oscillator/SVFilter reset, reverb last_params, spatial slot table, RTPC atomics, compile-cache dirty, BeatClock `update_transport`.
+- **B6** native `afff33687d` + game-template `ff0fe288`: `phrase_activated` from scheduler; controller submit-on-activation, status fallback, MusicSystem completion signals, `stop()` clears stream.
+- **B7** native `f55c38462d` + game-template `f6404b87`: per-bar chords, tonic/`root_pc`, overlap polyphony, `render_offline` / `render_offline_wav`.
+- **B8:** QUALIFICATION gates cite tests; user_guide / MIGRATION / skill docs; TSan music+lifetime on `.san`.
+
 ## Lifetime denser + profile harness (2026-10-09)
 
 Optional P1 lifetime cases T2/T4/T6–T9/T11/T13–T16 in `test_symphony_lifetime.cpp`. Callback profile harness `test_symphony_profile.cpp` (3 s smoke at 44.1/48 kHz; full 30 min via `SYMPHONY_PROFILE_SECONDS=1800`). Suite: 319/319. RTSan CI still deferred (no Linux).
