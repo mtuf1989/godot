@@ -445,6 +445,10 @@ void AudioDriverWorklet::unlock() {
 	mutex.unlock();
 }
 
+int AudioDriverWorklet::get_output_underrun_count() const {
+	return godot_audio_worklet_state_get(const_cast<int32_t *>(state), STATE_UNDERRUNS);
+}
+
 void AudioDriverWorklet::finish_driver() {
 	if (thread.is_started()) {
 		quit = true; // Ask thread to quit.
@@ -477,6 +481,10 @@ void AudioDriverWorklet::_process_callback(int p_pos, int p_samples) {
 void AudioDriverWorklet::_capture_callback(int p_pos, int p_samples) {
 	AudioDriverWorklet *driver = AudioDriverWorklet::get_singleton();
 	driver->_audio_driver_capture(p_pos, p_samples);
+}
+
+int AudioDriverWorklet::get_output_underrun_count() const {
+	return godot_audio_worklet_get_underruns();
 }
 
 #endif // THREADS_ENABLED

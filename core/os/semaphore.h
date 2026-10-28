@@ -139,8 +139,10 @@ class Semaphore {
 public:
 	void post(uint32_t p_count = 1) const {}
 	void wait() const {}
+	// No permit exists. Returning true made `while (try_wait())` drain loops
+	// spin forever (GLog.start_session on single-thread web).
 	bool try_wait() const {
-		return true;
+		return false;
 	}
 };
 

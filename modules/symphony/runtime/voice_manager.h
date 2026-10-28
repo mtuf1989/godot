@@ -113,6 +113,9 @@ public:
 
 private:
 	static SymphonyVoicePool *singleton;
+	// Instance replaced in the constructor. Destruction restores it so a
+	// temporary pool does not clear the engine singleton.
+	SymphonyVoicePool *replaced_singleton = nullptr;
 
 	VoiceSlot *slots = nullptr;
 	int pool_size = 48;

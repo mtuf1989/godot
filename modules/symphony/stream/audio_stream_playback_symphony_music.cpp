@@ -3,6 +3,7 @@
 /**************************************************************************/
 
 #include "audio_stream_playback_symphony_music.h"
+#include "../core/symphony_qualification_meter.h"
 #include "../core/symphony_rate_policy.h"
 #include "../core/symphony_voice_manager.h"
 #include "../runtime/sound_event.h"
@@ -801,6 +802,7 @@ int AudioStreamPlaybackSymphonyMusic::_mix_internal(AudioFrame *p_buffer, int p_
 		}
 		_note_rendered_frames(p_frames);
 		scheduler.frames_rendered += (uint64_t)p_frames;
+		_publish_resume_levels();
 		return p_frames;
 	}
 
@@ -833,7 +835,29 @@ int AudioStreamPlaybackSymphonyMusic::_mix_internal(AudioFrame *p_buffer, int p_
 	scheduler.publish_snapshot();
 
 	_note_rendered_frames(frames_processed);
+	_publish_resume_levels();
 	return frames_processed;
+}
+
+void AudioStreamPlaybackSymphonyMusic::_publish_resume_levels() {
+	uint32_t pending = scheduler.has_next ? 1u : 0u;
+	uint32_t occupied = 0;
+	for (int i = 0; i < PHRASE_SLOTS; i++) {
+		const uint8_t state = phrase_slots[i].state.load(std::memory_order_acquire);
+		if (state == (uint8_t)PhraseSlotState::Queued || state == (uint8_t)PhraseSlotState::Filled) {
+			pending++;
+		}
+		if (state != (uint8_t)PhraseSlotState::Free) {
+			occupied++;
+		}
+	}
+	const int queued_commands = cmd_ring.size();
+	const uint32_t queue = occupied + (uint32_t)MAX(queued_commands, 0);
+	uint32_t notes = 0;
+	for (int i = 0; i < pool_count; i++) {
+		notes += (uint32_t)MAX(pools[i].active_count(), 0);
+	}
+	symphony_meter_publish_resume(pending, queue, notes);
 }
 
 int AudioStreamPlaybackSymphonyMusic::_test_active_voice_count() const {

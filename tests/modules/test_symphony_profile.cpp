@@ -15,7 +15,9 @@
 TEST_FORCE_LINK(test_symphony_profile)
 
 #include "modules/symphony/core/symphony_graph_description.h"
+#include "modules/symphony/core/symphony_qualification_meter.h"
 #include "modules/symphony/core/symphony_voice_manager.h"
+#include "servers/audio/audio_driver.h"
 #include "modules/symphony/effects/audio_effect_symphony_reverb.h"
 #include "modules/symphony/stream/audio_stream_playback_symphony.h"
 #include "modules/symphony/stream/audio_stream_playback_symphony_music.h"
@@ -521,6 +523,33 @@ TEST_CASE("[Symphony][Profile][30min] desktop spectral release soak") {
 		return;
 	}
 	_run_workload(_desktop(true), 48000.0f, 128, seconds, gate);
+}
+
+TEST_CASE("[Symphony][Profile] qualification histogram reports bucket width") {
+	CHECK(symphony_meter_bucket(0) == 0);
+	CHECK(symphony_meter_bucket(1) == 1);
+	CHECK(symphony_meter_bucket(43) == 6);
+	uint32_t counts[SYMPHONY_METER_BUCKETS] = {};
+	counts[6] = 100;
+	uint64_t lo = 0;
+	uint64_t hi = 0;
+	CHECK(symphony_meter_percentile(counts, SYMPHONY_METER_BUCKETS, 100, 0.99, lo, hi));
+	CHECK(lo == 32);
+	CHECK(hi == 64);
+
+	SymphonyVoiceManager *vm = SymphonyVoiceManager::get_singleton();
+	REQUIRE(vm != nullptr);
+	vm->set_qualification_generation_map_size(-1);
+	Dictionary hidden = vm->get_qualification_report();
+	CHECK(String(hidden["generation_map_size"]) == "unavailable");
+	CHECK(String(hidden["driver_underruns"]) == "unavailable");
+	if (AudioDriver::get_singleton() == nullptr || AudioDriver::get_singleton()->get_output_underrun_count() < 0) {
+		CHECK(String(hidden["worklet_underruns"]) == "unavailable");
+	}
+	vm->set_qualification_generation_map_size(3);
+	Dictionary shown = vm->get_qualification_report();
+	CHECK((int64_t)shown["generation_map_size"] == 3);
+	vm->set_qualification_generation_map_size(-1);
 }
 
 } // namespace TestSymphonyProfile

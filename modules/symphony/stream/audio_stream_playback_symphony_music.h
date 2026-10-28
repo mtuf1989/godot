@@ -156,6 +156,7 @@ private:
 	void _arm_gain(int p_pool, float p_target, uint64_t p_start_frame, uint64_t p_end_frame);
 	[[nodiscard]] float _gain_at(int p_pool, uint64_t p_frame) const;
 	void _drain_scheduler_notices();
+	void _publish_resume_levels();
 	void _reclaim_phrase_slots();
 	int _acquire_phrase_slot();
 	[[nodiscard]] bool _try_push_cmd(const MusicCmd &p_cmd);

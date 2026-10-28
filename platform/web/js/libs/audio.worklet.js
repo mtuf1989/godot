@@ -104,6 +104,8 @@ class GodotProcessor extends AudioWorkletProcessor {
 		this.output_buffer = new Float32Array();
 		this.input = null;
 		this.input_buffer = new Float32Array();
+		this.shared_state = null;
+		this.local_underruns = 0;
 		this.port.onmessage = (event) => {
 			const cmd = event.data['cmd'];
 			const data = event.data['data'];
@@ -129,6 +131,7 @@ class GodotProcessor extends AudioWorkletProcessor {
 			const avail_out = state.subarray(idx, ++idx);
 			this.input = new RingBuffer(p_data[1], avail_in, true);
 			this.output = new RingBuffer(p_data[2], avail_out, true);
+			this.shared_state = state;
 		} else if (p_cmd === 'stop') {
 			this.running = false;
 			this.output = null;
@@ -181,14 +184,29 @@ class GodotProcessor extends AudioWorkletProcessor {
 				this.output.read(this.output_buffer);
 				GodotProcessor.write_output(output, this.output_buffer);
 				if (!this.threads) {
-					this.port.postMessage({ 'cmd': 'read', 'data': chunk });
+					this.port.postMessage({
+						'cmd': 'read',
+						'data': chunk,
+						'underruns': this.local_underruns | 0,
+					});
 				}
 			} else {
-				// this.port.postMessage('Output buffer has not enough frames! Skipping output frame.'); // Uncomment this line to debug output buffer.
+				this._count_output_underrun();
 			}
 		}
 		this.process_notify();
 		return true;
+	}
+
+	_count_output_underrun() {
+		if (this.threads && this.shared_state) {
+			Atomics.add(this.shared_state, 4, 1);
+			return;
+		}
+		this.local_underruns = (this.local_underruns | 0) + 1;
+		if (this.local_underruns === 1 || (this.local_underruns & 31) === 0) {
+			this.port.postMessage({ 'cmd': 'underrun', 'data': this.local_underruns });
+		}
 	}
 
 	static write_output(dest, source) {

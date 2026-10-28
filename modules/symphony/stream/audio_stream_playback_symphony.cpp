@@ -5,6 +5,7 @@
 #include "../core/symphony_denormal_guard.h"
 #include "../core/symphony_fast_math.h"
 #include "../core/symphony_platform_time.h"
+#include "../core/symphony_qualification_meter.h"
 #include "../core/symphony_realtime_scope.h"
 #include "core/object/class_db.h"
 #include "core/os/thread.h"
@@ -649,6 +650,7 @@ int AudioStreamPlaybackSymphony::mix(AudioFrame *p_buffer, float p_rate_scale, i
 		mixed = _mix_internal(p_buffer, p_frames);
 	}
 	const uint64_t mix_us = symphony_time_usec() - t_start;
+	symphony_meter_add_mix_us(mix_us);
 
 	if (out_rate <= 0.0f) {
 		out_rate = 44100.0f;
@@ -664,6 +666,12 @@ int AudioStreamPlaybackSymphony::mix(AudioFrame *p_buffer, float p_rate_scale, i
 		rms_candidate = 0.0f;
 	}
 	stat_rms.store(rms_candidate, std::memory_order_relaxed);
+	if (rms_candidate > 0.0f) {
+		const float milli = rms_candidate * 1000000.0f;
+		if (milli > 0.0f && milli < 4000000000.0f) {
+			symphony_meter_note_signal_milli((uint32_t)milli);
+		}
+	}
 	_update_cost_stats(mix_us, p_frames, out_rate);
 
 	SymphonyVoiceManager *mgr = SymphonyVoiceManager::get_singleton();

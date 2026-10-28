@@ -117,6 +117,11 @@ public:
 	[[nodiscard]] uint32_t get_rt_violation_count() const;
 	// Aggregated read-only diagnostics for editor / GDScript (memory + transitions + triggers).
 	[[nodiscard]] Dictionary get_debug_metrics() const;
+	// Qualification report. Missing platform counters are the string "unavailable".
+	[[nodiscard]] Dictionary get_qualification_report() const;
+	void set_qualification_prepare_us(int p_us);
+	void set_qualification_generation_map_size(int p_size);
+	void set_qualification_workload(const String &p_name, int p_sfx, int p_spatial, int p_notes, int p_stretches, int p_reverbs, int p_phase_vocoders, int p_spectral_gates);
 
 	void note_crossfade_transition();
 	void note_fallback_transition();

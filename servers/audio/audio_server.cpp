@@ -1355,7 +1355,14 @@ void AudioServer::init() {
 	GLOBAL_DEF_RST(PropertyInfo(Variant::INT, "audio/video/video_delay_compensation_ms", PROPERTY_HINT_RANGE, "-1000,1000,1,suffix:ms"), 0);
 }
 
+static AudioServer::UpdateTimingObserver update_timing_observer = nullptr;
+
+void AudioServer::set_update_timing_observer(UpdateTimingObserver p_observer) {
+	update_timing_observer = p_observer;
+}
+
 void AudioServer::update() {
+	const uint64_t update_started_us = OS::get_singleton() ? OS::get_singleton()->get_ticks_usec() : 0;
 #ifdef DEBUG_ENABLED
 	if (EngineDebugger::is_profiling(SNAME("servers"))) {
 		// Driver time includes server time + effects times
@@ -1442,6 +1449,9 @@ void AudioServer::update() {
 	}
 
 	_cleanup_lists();
+	if (update_timing_observer && OS::get_singleton()) {
+		update_timing_observer(OS::get_singleton()->get_ticks_usec() - update_started_us);
+	}
 }
 
 void AudioServer::_cleanup_lists() {

@@ -11,7 +11,9 @@
 #include "core/object/object.h"
 #include "core/os/thread.h"
 #include "symphony_platform_time.h"
+#include "symphony_qualification_meter.h"
 #include "core/variant/dictionary.h"
+#include "servers/audio/audio_driver.h"
 #include "servers/audio/audio_server.h"
 
 #include <cfloat>
@@ -19,6 +21,10 @@
 #include <cstdint>
 
 SymphonyVoiceManager *SymphonyVoiceManager::singleton = nullptr;
+
+static void _qualification_begin_callback();
+static void _qualification_end_callback(int p_frames, int p_rate, uint64_t p_usec, uint32_t p_output_peak);
+static void _qualification_main_update(uint64_t p_usec);
 
 void SymphonyVoiceManager::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_active_voice_count"), &SymphonyVoiceManager::get_active_voice_count);
@@ -45,6 +51,10 @@ void SymphonyVoiceManager::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_retirement_peak_pending_count"), &SymphonyVoiceManager::get_retirement_peak_pending_count);
 	ClassDB::bind_method(D_METHOD("get_rt_violation_count"), &SymphonyVoiceManager::get_rt_violation_count);
 	ClassDB::bind_method(D_METHOD("get_debug_metrics"), &SymphonyVoiceManager::get_debug_metrics);
+	ClassDB::bind_method(D_METHOD("get_qualification_report"), &SymphonyVoiceManager::get_qualification_report);
+	ClassDB::bind_method(D_METHOD("set_qualification_prepare_us", "usec"), &SymphonyVoiceManager::set_qualification_prepare_us);
+	ClassDB::bind_method(D_METHOD("set_qualification_generation_map_size", "size"), &SymphonyVoiceManager::set_qualification_generation_map_size);
+	ClassDB::bind_method(D_METHOD("set_qualification_workload", "name", "sfx", "spatial", "notes", "stretches", "reverbs", "phase_vocoders", "spectral_gates"), &SymphonyVoiceManager::set_qualification_workload);
 
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "max_voices"), "set_max_voices", "get_max_voices");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "warning_threshold"), "set_warning_threshold", "get_warning_threshold");
@@ -63,6 +73,8 @@ SymphonyVoiceManager::SymphonyVoiceManager() {
 		configured_mib = (int64_t)ProjectSettings::get_singleton()->get_setting("audio/symphony/memory_budget_mib");
 	}
 	(void)set_memory_budget_mib(configured_mib);
+	AudioDriver::set_process_timing_observers(_qualification_begin_callback, _qualification_end_callback);
+	AudioServer::set_update_timing_observer(_qualification_main_update);
 	if (AudioServer::get_singleton()) {
 		AudioServer::get_singleton()->add_update_callback(_update_callback, this);
 		update_callback_registered = true;
@@ -305,6 +317,50 @@ Dictionary SymphonyVoiceManager::get_debug_metrics() const {
 		d["packages_retired"] = (int)snap.retired_packages;
 	}
 	return d;
+}
+
+static void _qualification_begin_callback() {
+	symphony_meter_begin_callback();
+}
+
+static void _qualification_end_callback(int p_frames, int p_rate, uint64_t p_usec, uint32_t p_output_peak) {
+	symphony_meter_end_callback(p_frames, p_rate, p_usec, p_output_peak);
+}
+
+static void _qualification_main_update(uint64_t p_usec) {
+	symphony_meter_note_main_update(p_usec);
+}
+
+Dictionary SymphonyVoiceManager::get_qualification_report() const {
+	const int worklet_underruns = AudioDriver::get_singleton() ? AudioDriver::get_singleton()->get_output_underrun_count() : -1;
+	Dictionary report = symphony_meter_make_report(worklet_underruns);
+	if (SymphonyMemoryBudget *budget = SymphonyMemoryBudget::get_singleton()) {
+		const SymphonyMemoryBudget::Snapshot snap = budget->get_snapshot();
+		report["memory_used_bytes"] = (int64_t)(snap.reserved_bytes + snap.shared_pcm_bytes + snap.working_bytes);
+		report["memory_peak_bytes"] = (int64_t)snap.peak_used_bytes;
+		report["rejected_admissions"] = (int64_t)snap.rejected_admissions;
+	} else {
+		report["memory_used_bytes"] = String("unavailable");
+		report["memory_peak_bytes"] = String("unavailable");
+		report["rejected_admissions"] = String("unavailable");
+	}
+	return report;
+}
+
+void SymphonyVoiceManager::set_qualification_prepare_us(int p_us) {
+	if (p_us < 0) {
+		return;
+	}
+	symphony_meter_set_prepare_us((uint32_t)p_us);
+}
+
+void SymphonyVoiceManager::set_qualification_generation_map_size(int p_size) {
+	symphony_meter_set_generation_map_size(p_size);
+}
+
+void SymphonyVoiceManager::set_qualification_workload(const String &p_name, int p_sfx, int p_spatial, int p_notes, int p_stretches, int p_reverbs, int p_phase_vocoders, int p_spectral_gates) {
+	const CharString utf8 = p_name.utf8();
+	symphony_meter_set_workload(utf8.get_data(), (uint32_t)MAX(p_sfx, 0), (uint32_t)MAX(p_spatial, 0), (uint32_t)MAX(p_notes, 0), (uint32_t)MAX(p_stretches, 0), (uint32_t)MAX(p_reverbs, 0), (uint32_t)MAX(p_phase_vocoders, 0), (uint32_t)MAX(p_spectral_gates, 0));
 }
 
 Error SymphonyVoiceManager::set_memory_budget_mib(int64_t p_mib) {

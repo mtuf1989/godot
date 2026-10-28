@@ -2,6 +2,7 @@
 #define SYMPHONY_PUBLISHED_U64_H
 
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 
 // Single-writer 64-bit value published with 32-bit atomics.
@@ -12,17 +13,35 @@
 //
 // Only the writer may call publish() or fetch_add(). Readers call load().
 // A second writer racing publish() is a data race.
+//
+// Alignment is the natural alignment of the members. Godot memnew aligns to
+// max_align_t, so alignas(64) on an embedded atomic makes the owner undefined.
+// Sixty-four bytes of padding before and after the publication record keeps
+// that record off the cache line of neighboring fields at any base address.
 
 class SymphonyPublishedU64 {
 	static_assert(std::atomic<uint32_t>::is_always_lock_free, "Symphony publication requires lock-free 32-bit atomics");
 
-	alignas(64) std::atomic<uint32_t> seq_{ 0 };
+	static constexpr size_t kCachePad = 64;
+
+	char pad_before_[kCachePad] = {};
+	std::atomic<uint32_t> seq_{ 0 };
 	std::atomic<uint32_t> lo_{ 0 };
 	std::atomic<uint32_t> hi_{ 0 };
 	uint64_t shadow_ = 0;
+	char pad_after_[kCachePad] = {};
 
 public:
 	void publish(uint64_t p_value) {
+		static_assert(alignof(SymphonyPublishedU64) == alignof(uint64_t));
+		static_assert(alignof(SymphonyPublishedU64) <= alignof(std::max_align_t));
+		static_assert(sizeof(pad_before_) == kCachePad);
+		static_assert(sizeof(pad_after_) == kCachePad);
+		static_assert(offsetof(SymphonyPublishedU64, seq_) >= sizeof(pad_before_));
+		static_assert(offsetof(SymphonyPublishedU64, lo_) == offsetof(SymphonyPublishedU64, seq_) + sizeof(std::atomic<uint32_t>));
+		static_assert(offsetof(SymphonyPublishedU64, hi_) == offsetof(SymphonyPublishedU64, lo_) + sizeof(std::atomic<uint32_t>));
+		static_assert(sizeof(SymphonyPublishedU64) >= offsetof(SymphonyPublishedU64, shadow_) + sizeof(uint64_t) + sizeof(pad_after_));
+
 		shadow_ = p_value;
 		const uint32_t seq = seq_.load(std::memory_order_relaxed);
 		seq_.store(seq + 1, std::memory_order_relaxed);

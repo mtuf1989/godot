@@ -1952,6 +1952,7 @@ const GodotAudioWorklet = {
 		promise: null,
 		worklet: null,
 		ring_buffer: null,
+		underruns: 0,
 
 		create: function (channels) {
 			const path = GodotConfig.locate_file('godot.audio.worklet.js');
@@ -2059,10 +2060,15 @@ const GodotAudioWorklet = {
 					}
 					if (event.data['cmd'] === 'read') {
 						const read = event.data['data'];
+						if (typeof event.data['underruns'] === 'number') {
+							GodotAudioWorklet.underruns = event.data['underruns'] | 0;
+						}
 						GodotAudioWorklet.ring_buffer.consumed(
 							read,
 							GodotAudioWorklet.worklet.port
 						);
+					} else if (event.data['cmd'] === 'underrun') {
+						GodotAudioWorklet.underruns = event.data['data'] | 0;
 					} else if (event.data['cmd'] === 'input') {
 						const buf = event.data['data'];
 						if (buf.length > p_in_size) {
@@ -2128,7 +2134,7 @@ const GodotAudioWorklet = {
 	) {
 		const out_buffer = GodotRuntime.heapSub(HEAPF32, p_out_buf, p_out_size);
 		const in_buffer = GodotRuntime.heapSub(HEAPF32, p_in_buf, p_in_size);
-		const state = GodotRuntime.heapSub(HEAP32, p_state, 4);
+		const state = GodotRuntime.heapSub(HEAP32, p_state, 5);
 		GodotAudioWorklet.start(in_buffer, out_buffer, state);
 	},
 
@@ -2173,6 +2179,11 @@ const GodotAudioWorklet = {
 	godot_audio_worklet_state_get__sig: 'iii',
 	godot_audio_worklet_state_get: function (p_state, p_idx) {
 		return Atomics.load(HEAP32, (p_state >> 2) + p_idx);
+	},
+
+	godot_audio_worklet_get_underruns__sig: 'i',
+	godot_audio_worklet_get_underruns: function () {
+		return GodotAudioWorklet.underruns | 0;
 	},
 };
 

@@ -37,8 +37,16 @@
 #include "servers/audio/audio_server.h"
 
 AudioDriver *AudioDriver::singleton = nullptr;
+void (*AudioDriver::process_timing_begin)() = nullptr;
+void (*AudioDriver::process_timing_end)(int, int, uint64_t, uint32_t) = nullptr;
+
 AudioDriver *AudioDriver::get_singleton() {
 	return singleton;
+}
+
+void AudioDriver::set_process_timing_observers(ProcessTimingBegin p_begin, ProcessTimingEnd p_end) {
+	process_timing_begin = p_begin;
+	process_timing_end = p_end;
 }
 
 void AudioDriver::set_singleton() {
@@ -55,13 +63,41 @@ void AudioDriver::stop_counting_ticks() {
 }
 #endif // DEBUG_ENABLED
 
+static uint32_t _driver_output_peak(const AudioDriver *p_driver, const int32_t *p_buffer, int p_frames) {
+	if (p_driver == nullptr || p_buffer == nullptr || p_frames <= 0) {
+		return 0;
+	}
+	int channels = p_driver->get_total_channels_by_speaker_mode(p_driver->get_speaker_mode());
+	if (channels < 1) {
+		channels = 1;
+	}
+	const int sample_count = p_frames * channels;
+	const int indexes[3] = { 0, sample_count / 2, sample_count - 1 };
+	uint32_t peak = 0;
+	for (int i = 0; i < 3; i++) {
+		const int32_t sample = p_buffer[indexes[i]];
+		const uint32_t magnitude = (uint32_t)(sample < 0 ? -(int64_t)sample : (int64_t)sample);
+		if (magnitude > peak) {
+			peak = magnitude;
+		}
+	}
+	return peak;
+}
+
 void AudioDriver::audio_server_process(int p_frames, int32_t *p_buffer, bool p_update_mix_time) {
+	const uint64_t started_us = OS::get_singleton() ? OS::get_singleton()->get_ticks_usec() : 0;
+	if (process_timing_begin) {
+		process_timing_begin();
+	}
 	if (p_update_mix_time) {
 		update_mix_time(p_frames);
 	}
 
 	if (AudioServer::get_singleton()) {
 		AudioServer::get_singleton()->_driver_process(p_frames, p_buffer);
+	}
+	if (process_timing_end && OS::get_singleton()) {
+		process_timing_end(p_frames, get_mix_rate(), OS::get_singleton()->get_ticks_usec() - started_us, _driver_output_peak(this, p_buffer, p_frames));
 	}
 }
 

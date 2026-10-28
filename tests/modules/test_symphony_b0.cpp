@@ -76,14 +76,26 @@ TEST_CASE("[Symphony][B0] Mixer-thread scaffold runs against a music playback") 
 			},
 			&state);
 
+	int64_t frame_first = -1;
+	int64_t frame_last = -1;
 	for (int i = 0; i < 20; i++) {
 		pb->drain_status();
-		CHECK(pb->_test_transport_segment_count() >= 1);
+		// tempo_count is audio-owned. Read the published snapshot while the mixer runs.
+		const Dictionary snap = pb->get_transport_snapshot();
+		const int64_t frame = (int64_t)snap["frame"];
+		CHECK((int64_t)snap["tick"] >= 0);
+		CHECK((int)snap["generation"] >= 0);
+		if (frame_first < 0) {
+			frame_first = frame;
+		}
+		frame_last = frame;
 		CHECK(pb->_test_free_stretch_contexts() == SymphonyStretchPool::MAX_CONTEXTS);
 		OS::get_singleton()->delay_usec(1000);
 	}
+	CHECK(frame_last > frame_first);
 	state.stop.store(true, std::memory_order_release);
 	mixer.wait_to_finish();
+	CHECK(pb->_test_transport_segment_count() >= 1);
 	pb->stop();
 }
 

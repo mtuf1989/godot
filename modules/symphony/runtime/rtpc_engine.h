@@ -7,6 +7,7 @@
 #include "core/string/string_name.h"
 #include "scene/resources/curve.h"
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 
 // Real-Time Parameter Control Engine.
@@ -23,24 +24,45 @@ public:
 	static constexpr int MAX_LOCAL_PARAMS_PER_VOICE = 8;
 	static constexpr int MAX_ANALYSIS_OUTPUTS = 64;
 	static constexpr float DEFAULT_SMOOTH_TIME_MS = 5.0f;
+	// Godot memnew aligns to max_align_t. Pad contended atomics by 64 bytes
+	// instead of alignas(64), so this engine is a valid memnew object and
+	// neighboring parameters cannot share a cache line at any base address.
 	static constexpr size_t CACHE_LINE_SIZE = 64;
 
-	struct alignas(CACHE_LINE_SIZE) RTPCParameter {
+	struct RTPCParameter {
 		std::atomic<float> current_value{ 0.0f };
 		float block_alpha_attack = 1.0f; // Audio-owned; recomputed when alphas_dirty
 		float block_alpha_release = 1.0f;
 		std::atomic<float> attack_ms{ DEFAULT_SMOOTH_TIME_MS }; // toward higher targets
 		std::atomic<float> release_ms{ DEFAULT_SMOOTH_TIME_MS }; // toward lower targets
 		bool active = false;
-		char _pad[CACHE_LINE_SIZE - sizeof(std::atomic<float>) * 3 - sizeof(float) * 2 - sizeof(bool)];
+		char pad_before_target_[CACHE_LINE_SIZE] = {};
 		std::atomic<float> target_value{ 0.0f };
+		char pad_after_target_[CACHE_LINE_SIZE] = {};
 		StringName name;
+
+		static constexpr bool layout_ok() {
+			static_assert(alignof(RTPCParameter) <= alignof(std::max_align_t));
+			static_assert(sizeof(pad_before_target_) == CACHE_LINE_SIZE);
+			static_assert(sizeof(pad_after_target_) == CACHE_LINE_SIZE);
+			static_assert(offsetof(RTPCParameter, target_value) >= offsetof(RTPCParameter, release_ms) + sizeof(std::atomic<float>) + CACHE_LINE_SIZE);
+			static_assert(sizeof(RTPCParameter) >= offsetof(RTPCParameter, target_value) + sizeof(std::atomic<float>) + CACHE_LINE_SIZE);
+			return true;
+		}
 	};
 
-	struct alignas(CACHE_LINE_SIZE) AnalysisOutput {
+	struct AnalysisOutput {
 		std::atomic<float> value{ 0.0f };
+		char pad_value_[CACHE_LINE_SIZE] = {};
 		StringName name;
 		bool active = false;
+
+		static constexpr bool layout_ok() {
+			static_assert(alignof(AnalysisOutput) <= alignof(std::max_align_t));
+			static_assert(sizeof(pad_value_) == CACHE_LINE_SIZE);
+			static_assert(sizeof(AnalysisOutput) >= sizeof(std::atomic<float>) + CACHE_LINE_SIZE);
+			return true;
+		}
 	};
 
 private:
@@ -139,3 +161,7 @@ public:
 	RTPCEngine();
 	~RTPCEngine();
 };
+
+static_assert(RTPCEngine::RTPCParameter::layout_ok());
+static_assert(RTPCEngine::AnalysisOutput::layout_ok());
+static_assert(alignof(RTPCEngine) <= alignof(std::max_align_t));

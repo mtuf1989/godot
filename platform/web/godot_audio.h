@@ -68,12 +68,13 @@ extern void godot_audio_sample_bus_set_solo(int p_bus, bool p_enable);
 extern void godot_audio_sample_bus_set_mute(int p_bus, bool p_enable);
 
 // Worklet
-typedef int32_t GodotAudioState[4];
+typedef int32_t GodotAudioState[5];
 extern int godot_audio_worklet_create(int p_channels);
 extern void godot_audio_worklet_start(float *p_in_buf, int p_in_size, float *p_out_buf, int p_out_size, GodotAudioState p_state);
 extern void godot_audio_worklet_start_no_threads(float *p_out_buf, int p_out_size, void (*p_out_cb)(int p_pos, int p_frames), float *p_in_buf, int p_in_size, void (*p_in_cb)(int p_pos, int p_frames));
 extern int godot_audio_worklet_state_add(GodotAudioState p_state, int p_idx, int p_value);
 extern int godot_audio_worklet_state_get(GodotAudioState p_state, int p_idx);
+extern int godot_audio_worklet_get_underruns();
 extern int godot_audio_worklet_state_wait(int32_t *p_state, int p_idx, int32_t p_expected, int p_timeout);
 
 // Script

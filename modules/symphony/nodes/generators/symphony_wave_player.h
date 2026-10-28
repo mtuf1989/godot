@@ -246,7 +246,8 @@ public:
 			int16_t *dst = reinterpret_cast<int16_t *>(r_pcm16.ptrw());
 			const int n = r_length_samples * channels;
 			for (int i = 0; i < n; i++) {
-				dst[i] = (int16_t)src[i] << 8;
+				// Signed 8-bit to 16-bit. A left shift of a negative value is undefined.
+				dst[i] = (int16_t)((int32_t)src[i] * 256);
 			}
 			return true;
 		}

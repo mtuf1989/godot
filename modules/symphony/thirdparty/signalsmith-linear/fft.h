@@ -957,6 +957,16 @@ struct RealFFT {
 	}
 	
 	void resize(size_t size) {
+		// Default construction uses size 0. Dividing by that size is undefined,
+		// and an empty FFT has no twiddles until a real size is configured.
+		if (size == 0) {
+			complexFft.resize(0);
+			tmpFreq.clear();
+			tmpTime.clear();
+			twiddles.clear();
+			halfBinTwists.clear();
+			return;
+		}
 		size_t hSize = size/2;
 		complexFft.resize(hSize);
 		tmpFreq.resize(hSize);

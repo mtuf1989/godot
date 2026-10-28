@@ -42,6 +42,8 @@ class AudioSamplePlayback;
 
 class AudioDriver {
 	static AudioDriver *singleton;
+	static void (*process_timing_begin)();
+	static void (*process_timing_end)(int p_frames, int p_rate, uint64_t p_usec, uint32_t p_output_peak);
 	uint64_t _last_mix_time = 0;
 	uint64_t _last_mix_frames = 0;
 
@@ -148,6 +150,13 @@ public:
 	virtual void set_sample_bus_volume_db(int p_bus, float p_volume_db) {}
 	virtual void set_sample_bus_solo(int p_bus, bool p_enable) {}
 	virtual void set_sample_bus_mute(int p_bus, bool p_enable) {}
+
+	// -1 when this driver has no underrun counter. Zero is a real reading.
+	virtual int get_output_underrun_count() const { return -1; }
+
+	using ProcessTimingBegin = void (*)();
+	using ProcessTimingEnd = void (*)(int p_frames, int p_rate, uint64_t p_usec, uint32_t p_output_peak);
+	static void set_process_timing_observers(ProcessTimingBegin p_begin, ProcessTimingEnd p_end);
 
 	AudioDriver() {}
 	virtual ~AudioDriver() {}

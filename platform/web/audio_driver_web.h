@@ -118,6 +118,7 @@ private:
 		STATE_PROCESS,
 		STATE_SAMPLES_IN,
 		STATE_SAMPLES_OUT,
+		STATE_UNDERRUNS,
 		STATE_MAX,
 	};
 	Mutex mutex;
@@ -139,6 +140,7 @@ public:
 
 	virtual void lock() override;
 	virtual void unlock() override;
+	virtual int get_output_underrun_count() const override;
 };
 
 #else
@@ -161,6 +163,7 @@ public:
 
 	virtual void lock() override {}
 	virtual void unlock() override {}
+	virtual int get_output_underrun_count() const override;
 
 	static AudioDriverWorklet *get_singleton() { return singleton; }
 

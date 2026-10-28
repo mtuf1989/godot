@@ -2,6 +2,7 @@
 #define SYMPHONY_SEQLOCK_H
 
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <type_traits>
@@ -20,9 +21,16 @@ class SymphonySeqLock {
 	static_assert(sizeof(T) % 4 == 0, "SeqLock payload must be a multiple of 4 bytes; pad the struct");
 
 	static constexpr size_t kWordCount = sizeof(T) / 4;
+	// Godot memnew aligns to max_align_t. Pad instead of alignas(64) so a
+	// seqlock embedded in a memnew owner stays defined. Sixty-four bytes
+	// between seq_ and words_ keeps them on distinct cache lines at any base.
+	static constexpr size_t kCachePad = 64;
 
-	alignas(64) std::atomic<uint32_t> seq_{ 0 };
-	alignas(64) std::atomic<uint32_t> words_[kWordCount];
+	char pad_before_[kCachePad] = {};
+	std::atomic<uint32_t> seq_{ 0 };
+	char pad_between_[kCachePad] = {};
+	std::atomic<uint32_t> words_[kWordCount];
+	char pad_after_[kCachePad] = {};
 
 	void store_words(const T &p_value) {
 		uint32_t tmp[kWordCount];
@@ -43,6 +51,15 @@ class SymphonySeqLock {
 public:
 	// Writer — wait-free. Single writer only.
 	void store(const T &p_value) {
+		static_assert(alignof(SymphonySeqLock) == alignof(std::atomic<uint32_t>));
+		static_assert(alignof(SymphonySeqLock) <= alignof(std::max_align_t));
+		static_assert(sizeof(pad_before_) == kCachePad);
+		static_assert(sizeof(pad_between_) == kCachePad);
+		static_assert(sizeof(pad_after_) == kCachePad);
+		static_assert(offsetof(SymphonySeqLock, seq_) >= sizeof(pad_before_));
+		static_assert(offsetof(SymphonySeqLock, words_) >= offsetof(SymphonySeqLock, seq_) + sizeof(std::atomic<uint32_t>) + sizeof(pad_between_));
+		static_assert(sizeof(SymphonySeqLock) >= offsetof(SymphonySeqLock, words_) + sizeof(words_) + sizeof(pad_after_));
+
 		const uint32_t s = seq_.load(std::memory_order_relaxed);
 		seq_.store(s + 1, std::memory_order_relaxed); // odd → writing
 		std::atomic_thread_fence(std::memory_order_release);

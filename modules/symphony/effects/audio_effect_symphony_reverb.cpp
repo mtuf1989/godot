@@ -4,6 +4,9 @@
 
 #include "audio_effect_symphony_reverb.h"
 
+#include "../core/symphony_platform_time.h"
+#include "../core/symphony_qualification_meter.h"
+
 #include "core/math/math_funcs.h"
 #include "core/object/class_db.h"
 #include "servers/audio/audio_server.h"
@@ -64,6 +67,7 @@ void AudioEffectSymphonyReverbInstance::_ensure_design(float rt60, float hf, flo
 }
 
 void AudioEffectSymphonyReverbInstance::process(const AudioFrame *p_src_frames, AudioFrame *p_dst_frames, int p_frame_count) {
+	const uint64_t mix_started_us = symphony_time_usec();
 	AudioEffectSymphonyReverb::Params p = last_params;
 	if (base.is_valid()) {
 		AudioEffectSymphonyReverb::Params loaded;
@@ -136,6 +140,7 @@ void AudioEffectSymphonyReverbInstance::process(const AudioFrame *p_src_frames, 
 		}
 		offset += n;
 	}
+	symphony_meter_add_mix_us(symphony_time_usec() - mix_started_us);
 }
 
 AudioEffectSymphonyReverbInstance::~AudioEffectSymphonyReverbInstance() {

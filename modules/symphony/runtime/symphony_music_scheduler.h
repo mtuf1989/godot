@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include "../core/symphony_qualification_meter.h"
 #include "../core/symphony_seqlock.h"
 #include "symphony_music_transport.h"
 
@@ -308,8 +309,10 @@ private:
 			if (ef >= frames_rendered) {
 				break;
 			}
-			if (current.events[event_cursor].kind == SymphonyMusicEventKind::NoteOn) {
+			const SymphonyMusicEventKind kind = current.events[event_cursor].kind;
+			if (kind == SymphonyMusicEventKind::NoteOn || kind == SymphonyMusicEventKind::ClipOn) {
 				skipped++;
+				symphony_meter_note_expired(1);
 			}
 			event_cursor++;
 		}
@@ -379,8 +382,10 @@ private:
 				if (ef >= p_frame) {
 					break;
 				}
-				if (current.events[event_cursor].kind == SymphonyMusicEventKind::NoteOn) {
+				const SymphonyMusicEventKind kind = current.events[event_cursor].kind;
+				if (kind == SymphonyMusicEventKind::NoteOn || kind == SymphonyMusicEventKind::ClipOn) {
 					skipped++;
+					symphony_meter_note_expired(1);
 				}
 				event_cursor++;
 			}

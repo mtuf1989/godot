@@ -13,6 +13,7 @@
 SymphonyVoicePool *SymphonyVoicePool::singleton = nullptr;
 
 SymphonyVoicePool::SymphonyVoicePool() {
+	replaced_singleton = singleton;
 	singleton = this;
 	pool_size = GLOBAL_DEF("audio/symphony/voice_pool_size", 48);
 	ProjectSettings::get_singleton()->set_custom_property_info(PropertyInfo(
@@ -32,7 +33,9 @@ SymphonyVoicePool::~SymphonyVoicePool() {
 		memdelete_arr(slot_attenuation_curves);
 		slot_attenuation_curves = nullptr;
 	}
-	singleton = nullptr;
+	if (singleton == this) {
+		singleton = replaced_singleton;
+	}
 }
 
 void SymphonyVoicePool::_bind_methods() {

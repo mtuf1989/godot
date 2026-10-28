@@ -312,6 +312,8 @@ public:
 	virtual void init();
 	virtual void finish();
 	virtual void update();
+	using UpdateTimingObserver = void (*)(uint64_t p_usec);
+	static void set_update_timing_observer(UpdateTimingObserver p_observer);
 	virtual void load_default_bus_layout();
 
 	/* MISC config */
