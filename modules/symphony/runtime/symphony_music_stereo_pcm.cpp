@@ -69,6 +69,16 @@ const float *SymphonyMusicStereoCache::acquire(const StringName &p_key, const fl
 	return buf;
 }
 
+bool SymphonyMusicStereoCache::retain(const StringName &p_key) {
+	symphony_rt_note(SymphonyRTViolation::Mutex, "SymphonyMusicStereoCache::retain");
+	MutexLock lock(mutex);
+	if (!cache.has(p_key)) {
+		return false;
+	}
+	cache[p_key].ref_count++;
+	return true;
+}
+
 void SymphonyMusicStereoCache::release(const StringName &p_key) {
 	symphony_rt_note(SymphonyRTViolation::Mutex, "SymphonyMusicStereoCache::release");
 	MutexLock lock(mutex);

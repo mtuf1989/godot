@@ -81,6 +81,10 @@ public:
 		int64_t tick = 0;
 		float value = 0.0f;
 		SymphonyStretchContext *ctx = nullptr;
+		int32_t pool_slot = -1;
+		uint32_t context_generation = 0;
+		uint32_t playback_epoch = 0;
+		int32_t clip_event_id = -1;
 	};
 
 	struct PhraseSlot {
@@ -92,14 +96,19 @@ public:
 		int64_t tick = 0;
 		int32_t note_id = 0;
 		int32_t generation = 0;
+		int32_t track_id = 0;
+		int32_t clip_event_id = -1;
+		int32_t pool_slot = -1;
+		uint32_t context_generation = 0;
+		uint32_t playback_epoch = 0;
 		SymphonyStretchContext *ctx = nullptr;
-		bool claimed = false;
 	};
 
 private:
 	static constexpr int PHRASE_SLOTS = 4;
 	static constexpr int CMD_CAP = 64;
 	static constexpr int MAX_PREPARED_CLIPS = 8;
+	static constexpr int OFFLINE_CHUNK_FRAMES = 4096;
 
 	Ref<AudioStreamSymphonyMusic> music_stream;
 
@@ -133,7 +142,9 @@ private:
 	std::atomic<bool> restart_pending{ false };
 
 	bool prepared = false;
+	bool offline_mode = false;
 	uint64_t pool_seed = 0;
+	std::atomic<uint32_t> playback_epoch{ 1 };
 
 	void _push_status_main(StatusEntry::Kind p_kind, int32_t p_gen, int32_t p_track, int32_t p_note, float p_payload = 0.0f);
 	void _push_status_audio(StatusEntry::Kind p_kind, int32_t p_gen, int32_t p_track, int32_t p_note, float p_payload = 0.0f);
@@ -152,6 +163,8 @@ private:
 	void _audio_restart();
 	void _return_stale_clips();
 	void _return_clip_slot(int p_index);
+	SymphonyStretchContext *_take_active_clip(int p_index);
+	void _retire_context(SymphonyStretchContext *p_ctx, int p_pool_slot, uint32_t p_generation);
 	static bool _parse_phrase(const Dictionary &p_phrase, SymphonyMusicPhrase &r_out, String &r_error);
 
 protected:

@@ -32,7 +32,10 @@ public:
 		size_t global_limit_bytes = DEFAULT_GLOBAL_BYTES;
 		size_t reserved_bytes = 0;
 		size_t peak_reserved_bytes = 0;
+		size_t peak_used_bytes = 0;
 		size_t shared_pcm_bytes = 0;
+		size_t working_bytes = 0;
+		uint64_t rejected_admissions = 0;
 		uint32_t active_packages = 0;
 		uint32_t pending_packages = 0;
 		uint32_t outgoing_packages = 0;
@@ -61,9 +64,17 @@ public:
 	bool try_reserve_shared(size_t p_bytes, String *r_error = nullptr);
 	void release_shared(size_t p_bytes);
 
+	// Stretch/FFT scratch and other reusable working storage. Charged once,
+	// kept when a context is recycled, released only when the storage is freed.
+	bool try_reserve_working(size_t p_bytes, String *r_error = nullptr);
+	void release_working(size_t p_bytes);
+
+	[[nodiscard]] size_t get_committed_bytes() const { return reserved_bytes + shared_pcm_bytes + working_bytes; }
+	[[nodiscard]] uint64_t get_rejected_admissions() const { return rejected_admissions; }
+
 	void set_shared_pcm_bytes(size_t p_bytes);
 	size_t get_shared_pcm_bytes() const { return shared_pcm_bytes; }
-	size_t get_global_used_bytes() const { return reserved_bytes + shared_pcm_bytes; }
+	size_t get_global_used_bytes() const { return get_committed_bytes(); }
 
 	void set_package_counts(uint32_t p_active, uint32_t p_pending, uint32_t p_outgoing, uint32_t p_retired);
 	void adjust_active_packages(int32_t p_delta);
@@ -78,7 +89,13 @@ private:
 	size_t global_limit_bytes = DEFAULT_GLOBAL_BYTES;
 	size_t reserved_bytes = 0;
 	size_t peak_reserved_bytes = 0;
+	size_t peak_used_bytes = 0;
 	size_t shared_pcm_bytes = 0;
+	size_t working_bytes = 0;
+	uint64_t rejected_admissions = 0;
+
+	void _note_used();
+	void _reject();
 	std::atomic<uint32_t> active_packages{ 0 };
 	std::atomic<uint32_t> pending_packages{ 0 };
 	std::atomic<uint32_t> outgoing_packages{ 0 };

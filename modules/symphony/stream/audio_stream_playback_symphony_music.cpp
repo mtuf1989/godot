@@ -219,6 +219,7 @@ bool AudioStreamPlaybackSymphonyMusic::_parse_phrase(const Dictionary &p_phrase,
 			}
 		} else if (kind == "clip_on" || kind == "clip") {
 			ev.kind = SymphonyMusicEventKind::ClipOn;
+			ev.clip_event_id = i;
 			ev.payload = (float)d.get("clip_index", d.get("payload", -1.0));
 			ev.midi = (int32_t)d.get("transpose", d.get("midi", 0));
 			ev.velocity = (float)d.get("tempo_ratio", d.get("velocity", 1.0));
@@ -245,11 +246,20 @@ Error AudioStreamPlaybackSymphonyMusic::submit_phrase(const Dictionary &p_phrase
 		ERR_PRINT(vformat("AudioStreamPlaybackSymphonyMusic::submit_phrase: %s", err));
 		return ERR_INVALID_PARAMETER;
 	}
+	phrase.playback_epoch = playback_epoch.load(std::memory_order_acquire);
+	for (int i = 0; i < phrase.event_count; i++) {
+		phrase.events[i].generation = phrase.generation;
+		phrase.events[i].playback_epoch = phrase.playback_epoch;
+	}
 
 	const Array events = p_phrase.get("events", Array());
 	SymphonyStretchContext *clip_ctxs[MAX_PREPARED_CLIPS];
 	int64_t clip_ticks[MAX_PREPARED_CLIPS];
 	int32_t clip_notes[MAX_PREPARED_CLIPS];
+	int32_t clip_tracks[MAX_PREPARED_CLIPS];
+	int32_t clip_event_ids[MAX_PREPARED_CLIPS];
+	int32_t clip_pool_slots[MAX_PREPARED_CLIPS];
+	uint32_t clip_generations[MAX_PREPARED_CLIPS];
 	int clip_n = 0;
 	int clip_event_i = 0;
 	for (int i = 0; i < phrase.event_count; i++) {
@@ -281,10 +291,19 @@ Error AudioStreamPlaybackSymphonyMusic::submit_phrase(const Dictionary &p_phrase
 			continue;
 		}
 		phrase.events[i].payload = (float)clip_index;
-		const AudioStreamSymphonyMusic::ClipConfig &cc = music_stream->clips[clip_index];
+		const float playback_rate = mix_rate_cached.load(std::memory_order_relaxed);
+		if (music_stream->ensure_live_view(clip_index, playback_rate > 0.0f ? playback_rate : symphony_offline_rate()) != OK) {
+			_push_status_main(StatusEntry::Kind::ClipDropped, phrase.generation, phrase.events[i].track_id, phrase.events[i].note_id, 0.0f);
+			continue;
+		}
+		SymphonyMusicClipDesc desc;
+		if (!music_stream->copy_clip_for_rate(clip_index, playback_rate > 0.0f ? playback_rate : symphony_offline_rate(), desc)) {
+			_push_status_main(StatusEntry::Kind::ClipDropped, phrase.generation, phrase.events[i].track_id, phrase.events[i].note_id, 0.0f);
+			continue;
+		}
 		const float tempo_ratio = phrase.events[i].velocity > 0.0f ? phrase.events[i].velocity : 1.0f;
 		const float transpose = (float)phrase.events[i].midi;
-		SymphonyStretchContext *ctx = stretch_pool.acquire_prepared(cc.desc, tempo_ratio, transpose);
+		SymphonyStretchContext *ctx = stretch_pool.acquire_prepared(desc, tempo_ratio, transpose);
 		if (!ctx) {
 			_push_status_main(StatusEntry::Kind::ClipDropped, phrase.generation, phrase.events[i].track_id, phrase.events[i].note_id, 0.0f);
 			continue;
@@ -297,8 +316,13 @@ Error AudioStreamPlaybackSymphonyMusic::submit_phrase(const Dictionary &p_phrase
 		clip_ctxs[clip_n] = ctx;
 		clip_ticks[clip_n] = phrase.events[i].tick;
 		clip_notes[clip_n] = phrase.events[i].note_id;
+		clip_tracks[clip_n] = phrase.events[i].track_id;
+		clip_event_ids[clip_n] = phrase.events[i].clip_event_id;
+		clip_pool_slots[clip_n] = ctx->pool_slot;
+		clip_generations[clip_n] = ctx->reuse_generation.load(std::memory_order_acquire);
 		clip_n++;
 	}
+	phrase.sort_stable();
 
 	const int needed = 1 + clip_n;
 	if (cmd_ring.remaining() < needed) {
@@ -316,7 +340,9 @@ Error AudioStreamPlaybackSymphonyMusic::submit_phrase(const Dictionary &p_phrase
 		return ERR_BUSY;
 	}
 	phrase_slots[slot].phrase = phrase;
-	phrase_slots[slot].state.store((uint8_t)PhraseSlotState::Filled, std::memory_order_release);
+	// Queued is published before any command. The producer does not touch the
+	// phrase again after the submit command is visible.
+	phrase_slots[slot].state.store((uint8_t)PhraseSlotState::Queued, std::memory_order_release);
 
 	for (int i = 0; i < clip_n; i++) {
 		MusicCmd clip_cmd;
@@ -324,7 +350,12 @@ Error AudioStreamPlaybackSymphonyMusic::submit_phrase(const Dictionary &p_phrase
 		clip_cmd.ctx = clip_ctxs[i];
 		clip_cmd.tick = clip_ticks[i];
 		clip_cmd.note_id = clip_notes[i];
+		clip_cmd.track_id = clip_tracks[i];
 		clip_cmd.generation = phrase.generation;
+		clip_cmd.pool_slot = clip_pool_slots[i];
+		clip_cmd.context_generation = clip_generations[i];
+		clip_cmd.playback_epoch = phrase.playback_epoch;
+		clip_cmd.clip_event_id = clip_event_ids[i];
 		if (!_try_push_cmd(clip_cmd)) {
 			for (int j = i; j < clip_n; j++) {
 				clip_ctxs[j]->reclaim();
@@ -344,7 +375,6 @@ Error AudioStreamPlaybackSymphonyMusic::submit_phrase(const Dictionary &p_phrase
 		phrase_slots[slot].state.store((uint8_t)PhraseSlotState::Free, std::memory_order_release);
 		return ERR_BUSY;
 	}
-	phrase_slots[slot].state.store((uint8_t)PhraseSlotState::Queued, std::memory_order_release);
 	return OK;
 }
 
@@ -525,13 +555,10 @@ PackedVector2Array AudioStreamPlaybackSymphonyMusic::render_offline(int p_frames
 	ERR_FAIL_COND_V_MSG(registered_with_manager, out, "AudioStreamPlaybackSymphonyMusic::render_offline refuses playbacks attached to a player.");
 	ERR_FAIL_COND_V(p_frames <= 0, out);
 
-	const float rate = symphony_offline_rate();
-	mix_rate_cached.store(rate, std::memory_order_relaxed);
-	output_rate_cached.store(rate, std::memory_order_relaxed);
+	ERR_FAIL_COND_V_MSG(!offline_mode, out, "AudioStreamPlaybackSymphonyMusic::render_offline refuses live-mode playbacks. Use instantiate_offline_playback().");
+	ERR_FAIL_COND_V_MSG(p_frames > OFFLINE_CHUNK_FRAMES, out, "AudioStreamPlaybackSymphonyMusic::render_offline accepts at most 4096 frames per call.");
 	if (!prepared) {
-		if (!_prepare_pools()) {
-			return out;
-		}
+		return out;
 	}
 	set_voice_tier((int)SoundEvent::TIER_VITAL);
 	set_voice_importance(SoundEvent::TIER_BAND_VITAL);
@@ -611,16 +638,32 @@ void AudioStreamPlaybackSymphonyMusic::_apply_event(const SymphonyMusicEvent &p_
 			break;
 		}
 		case SymphonyMusicEventKind::ClipOn: {
-			SymphonyStretchContext *ctx = nullptr;
+			int found = -1;
 			for (int i = 0; i < prepared_clip_count; i++) {
-				PreparedClip &pc = prepared_clips[i];
-				if (!pc.claimed && pc.note_id == p_ev.note_id && pc.tick == p_ev.tick && pc.ctx) {
-					ctx = pc.ctx;
-					pc.claimed = true;
-					break;
+				const PreparedClip &pc = prepared_clips[i];
+				if (!pc.ctx) {
+					continue;
 				}
+				if (pc.tick != p_ev.tick || pc.clip_event_id != p_ev.clip_event_id || pc.generation != p_ev.generation || pc.track_id != p_ev.track_id || pc.playback_epoch != p_ev.playback_epoch) {
+					continue;
+				}
+				if (pc.pool_slot != pc.ctx->pool_slot || pc.context_generation != pc.ctx->reuse_generation.load(std::memory_order_acquire)) {
+					continue;
+				}
+				found = i;
+				break;
 			}
-			if (!ctx || !ctx->activate()) {
+			if (found < 0) {
+				_push_status_audio(StatusEntry::Kind::ClipDropped, scheduler.active_generation, p_ev.track_id, p_ev.note_id, 0.0f);
+				return;
+			}
+			PreparedClip taken = prepared_clips[found];
+			prepared_clips[found] = prepared_clips[prepared_clip_count - 1];
+			prepared_clips[prepared_clip_count - 1] = PreparedClip{};
+			prepared_clip_count--;
+			SymphonyStretchContext *ctx = taken.ctx;
+			if (taken.playback_epoch != playback_epoch.load(std::memory_order_acquire) || !ctx->activate()) {
+				ctx->request_return();
 				_push_status_audio(StatusEntry::Kind::ClipDropped, scheduler.active_generation, p_ev.track_id, p_ev.note_id, 0.0f);
 				return;
 			}
@@ -642,15 +685,16 @@ void AudioStreamPlaybackSymphonyMusic::_render_block(AudioFrame *p_buffer, int p
 
 	for (int c = 0; c < active_clip_count;) {
 		SymphonyStretchContext *ctx = active_clips[c];
-		if (!ctx || ctx->get_ownership() != SymphonyStretchOwnership::Active || ctx->finished) {
-			active_clips[c] = active_clips[active_clip_count - 1];
-			active_clips[--active_clip_count] = nullptr;
+		if (!ctx || ctx->get_ownership() != SymphonyStretchOwnership::Active) {
+			_take_active_clip(c);
 			continue;
 		}
-		ctx->process_add(p_buffer, p_frames);
-		if (ctx->finished) {
-			active_clips[c] = active_clips[active_clip_count - 1];
-			active_clips[--active_clip_count] = nullptr;
+		const bool ended = ctx->process_add(p_buffer, p_frames);
+		if (ended) {
+			SymphonyStretchContext *done = _take_active_clip(c);
+			if (done) {
+				done->request_return();
+			}
 			continue;
 		}
 		c++;
@@ -704,6 +748,7 @@ void AudioStreamPlaybackSymphonyMusic::start(double p_from_pos) {
 	if (p_from_pos != 0.0) {
 		_report_unsupported_seek();
 	}
+	playback_epoch.fetch_add(1, std::memory_order_acq_rel);
 	const bool on_main = Thread::is_main_thread();
 	if (on_main) {
 		float rate = mix_rate_cached.load(std::memory_order_relaxed);
@@ -838,16 +883,25 @@ bool AudioStreamPlaybackSymphonyMusic::_try_push_cmd(const MusicCmd &p_cmd) {
 }
 
 void AudioStreamPlaybackSymphonyMusic::_drain_commands() {
+	int budget = cmd_ring.size();
+	if (budget > CMD_CAP) {
+		budget = CMD_CAP;
+	}
+	const uint32_t epoch = playback_epoch.load(std::memory_order_acquire);
 	MusicCmd cmd;
-	while (cmd_ring.try_pop(cmd)) {
+	while (budget-- > 0 && cmd_ring.try_pop(cmd)) {
 		switch (cmd.kind) {
 			case MusicCmdKind::SubmitPhrase: {
 				if (cmd.slot < 0 || cmd.slot >= PHRASE_SLOTS) {
 					break;
 				}
 				PhraseSlot &slot = phrase_slots[cmd.slot];
+				if (slot.phrase.playback_epoch != epoch) {
+					slot.state.store((uint8_t)PhraseSlotState::Retired, std::memory_order_release);
+					break;
+				}
 				slot.state.store((uint8_t)PhraseSlotState::Active, std::memory_order_release);
-				scheduler.submit_phrase(slot.phrase);
+				scheduler.adopt_phrase(slot.phrase, false);
 				slot.state.store((uint8_t)PhraseSlotState::Retired, std::memory_order_release);
 				break;
 			}
@@ -855,7 +909,7 @@ void AudioStreamPlaybackSymphonyMusic::_drain_commands() {
 				scheduler.replace_future(cmd.tick, cmd.generation);
 				for (int i = 0; i < prepared_clip_count;) {
 					PreparedClip &pc = prepared_clips[i];
-					if (!pc.claimed && pc.generation <= cmd.generation && pc.tick >= cmd.tick) {
+					if (pc.playback_epoch == epoch && pc.generation <= cmd.generation && pc.tick >= cmd.tick) {
 						_return_clip_slot(i);
 						continue;
 					}
@@ -886,17 +940,26 @@ void AudioStreamPlaybackSymphonyMusic::_drain_commands() {
 			}
 			case MusicCmdKind::ClipPrepared: {
 				latency_active = true;
-				if (prepared_clip_count < MAX_PREPARED_CLIPS && cmd.ctx) {
-					PreparedClip &pc = prepared_clips[prepared_clip_count++];
-					pc.tick = cmd.tick;
-					pc.note_id = cmd.note_id;
-					pc.generation = cmd.generation;
-					pc.ctx = cmd.ctx;
-					pc.claimed = false;
-				} else if (cmd.ctx) {
+				const bool owned = cmd.ctx && cmd.ctx->pool_slot == cmd.pool_slot && cmd.ctx->reuse_generation.load(std::memory_order_acquire) == cmd.context_generation;
+				if (!owned) {
+					_push_status_audio(StatusEntry::Kind::ClipDropped, cmd.generation, cmd.track_id, cmd.note_id, 0.0f);
+					break;
+				}
+				if (cmd.playback_epoch != epoch || prepared_clip_count >= MAX_PREPARED_CLIPS) {
 					cmd.ctx->request_return();
 					_push_status_audio(StatusEntry::Kind::ClipDropped, cmd.generation, cmd.track_id, cmd.note_id, 0.0f);
+					break;
 				}
+				PreparedClip &pc = prepared_clips[prepared_clip_count++];
+				pc.tick = cmd.tick;
+				pc.note_id = cmd.note_id;
+				pc.track_id = cmd.track_id;
+				pc.generation = cmd.generation;
+				pc.clip_event_id = cmd.clip_event_id;
+				pc.pool_slot = cmd.pool_slot;
+				pc.context_generation = cmd.context_generation;
+				pc.playback_epoch = cmd.playback_epoch;
+				pc.ctx = cmd.ctx;
 				break;
 			}
 			case MusicCmdKind::Reset:
@@ -918,55 +981,63 @@ void AudioStreamPlaybackSymphonyMusic::_audio_restart() {
 			slot.reset_idle();
 		}
 	}
-	for (int i = 0; i < active_clip_count; i++) {
-		if (active_clips[i]) {
-			active_clips[i]->request_return();
+	while (active_clip_count > 0) {
+		SymphonyStretchContext *ctx = _take_active_clip(0);
+		if (ctx) {
+			ctx->request_return();
 		}
-		active_clips[i] = nullptr;
 	}
-	active_clip_count = 0;
-	for (int i = 0; i < prepared_clip_count; i++) {
-		if (prepared_clips[i].ctx && !prepared_clips[i].claimed) {
-			if (prepared_clips[i].ctx->get_ownership() == SymphonyStretchOwnership::Prepared) {
-				prepared_clips[i].ctx->set_ownership(SymphonyStretchOwnership::Returning);
-			} else {
-				prepared_clips[i].ctx->request_return();
-			}
-		}
-		prepared_clips[i] = PreparedClip{};
+	while (prepared_clip_count > 0) {
+		_return_clip_slot(0);
 	}
-	prepared_clip_count = 0;
 	for (int i = 0; i < latency_delay.size(); i++) {
 		latency_delay.write[i] = AudioFrame(0, 0);
 	}
 	latency_write = 0;
 	latency_active = false;
-	frames_rendered.store(0, std::memory_order_release);
+	frames_rendered.publish(0);
 }
 
 void AudioStreamPlaybackSymphonyMusic::_return_clip_slot(int p_index) {
 	if (p_index < 0 || p_index >= prepared_clip_count) {
 		return;
 	}
-	PreparedClip &pc = prepared_clips[p_index];
-	if (pc.ctx) {
-		if (pc.ctx->get_ownership() == SymphonyStretchOwnership::Prepared) {
-			pc.ctx->set_ownership(SymphonyStretchOwnership::Returning);
-		} else {
-			pc.ctx->request_return();
-		}
-		_push_status_audio(StatusEntry::Kind::ClipReturned, pc.generation, 0, pc.note_id, 0.0f);
-	}
+	PreparedClip taken = prepared_clips[p_index];
 	prepared_clips[p_index] = prepared_clips[prepared_clip_count - 1];
 	prepared_clips[prepared_clip_count - 1] = PreparedClip{};
 	prepared_clip_count--;
+	if (taken.ctx) {
+		_push_status_audio(StatusEntry::Kind::ClipReturned, taken.generation, taken.track_id, taken.note_id, 0.0f);
+		_retire_context(taken.ctx, taken.pool_slot, taken.context_generation);
+	}
+}
+
+SymphonyStretchContext *AudioStreamPlaybackSymphonyMusic::_take_active_clip(int p_index) {
+	if (p_index < 0 || p_index >= active_clip_count) {
+		return nullptr;
+	}
+	SymphonyStretchContext *ctx = active_clips[p_index];
+	active_clips[p_index] = active_clips[active_clip_count - 1];
+	active_clips[active_clip_count - 1] = nullptr;
+	active_clip_count--;
+	return ctx;
+}
+
+void AudioStreamPlaybackSymphonyMusic::_retire_context(SymphonyStretchContext *p_ctx, int p_pool_slot, uint32_t p_generation) {
+	if (!p_ctx) {
+		return;
+	}
+	if (p_ctx->pool_slot != p_pool_slot || p_ctx->reuse_generation.load(std::memory_order_acquire) != p_generation) {
+		return;
+	}
+	p_ctx->request_return();
 }
 
 void AudioStreamPlaybackSymphonyMusic::_return_stale_clips() {
 	const uint64_t now = scheduler.frames_rendered;
 	for (int i = 0; i < prepared_clip_count;) {
 		PreparedClip &pc = prepared_clips[i];
-		if (pc.claimed || !pc.ctx) {
+		if (!pc.ctx) {
 			i++;
 			continue;
 		}

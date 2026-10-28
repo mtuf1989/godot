@@ -614,10 +614,21 @@ playback.schedule_tempo(140.0, 960)  # tick, optional ramp_ticks
 playback.schedule_track_gain(0, 0.5, 1920, 480)  # track, gain, start_tick, fade_ticks — ramps on the audio thread
 var snap: Dictionary = playback.get_transport_snapshot()  # tick, frame, bpm, bar…
 var status: Array = playback.drain_status()  # phrase_activated is audio-true (scheduler), not submit-time
-var pcm: PackedVector2Array = playback.render_offline(48000)  # main thread only; refuses a player-attached playback
+
+var offline := stream.instantiate_offline_playback(1)  # 48 kHz before any phrase
+offline.submit_phrase({
+    "start_tick": 0, "generation": 1,
+    "events": [{"kind": "note_on", "tick": 0, "track": 0, "note_id": 1, "midi": 60, "velocity": 0.8, "duration_ticks": 480}],
+})
+var pcm := PackedVector2Array()
+while pcm.size() < 48000:
+    var chunk := offline.render_offline(mini(4096, 48000 - pcm.size()))
+    if chunk.is_empty():
+        break
+    pcm.append_array(chunk)
 ```
 
-`tempo_ratio` on clip events is **playback speed** (target BPM / source BPM), matching Signalsmith `seek(playbackRate)`. Values above 1 play the clip faster. PCM is Catmull-Rom resampled to the music rate at registration. A device rate change requires reload.
+`tempo_ratio` on clip events is **playback speed** (target BPM / source BPM), matching Signalsmith `seek(playbackRate)`. Values above 1 play the clip faster. Canonical PCM is Catmull-Rom resampled to 48 kHz at registration. Live playback admits a separate 44.1 kHz view when the device music rate is 44.1 kHz; that view is charged to the memory budget. `render_offline()` accepts only an offline playback and at most 4096 frames per call.
 
 `schedule_track_gain(track, gain, start_tick, fade_ticks)` honours `start_tick` and `fade_ticks` via an audio-side per-track ramp.
 
@@ -1390,6 +1401,21 @@ If you need independent volume control, use separate Godot audio buses.
 ## Voice Management & Virtualization
 
 Symphony manages a fixed pool of voice slots (default: 48) with importance-based stealing and virtualization.
+
+### Memory budget
+
+`audio/symphony/memory_budget_mib` sets Symphony's allocation budget. `0` selects the platform default: 128 MiB on desktop, 64 MiB on mobile, and 32 MiB on Web. Raising it only changes how much new audio may be admitted. It does not allocate that memory up front and it does not raise the voice or DSP caps.
+
+A settings menu persists the choice itself, then applies it:
+
+```gdscript
+var err := AudioManager.set_memory_budget_mib(saved_mib) # 0 restores the platform default
+if err == ERR_BUSY:
+    push_warning("Symphony memory budget is below what is already in use.")
+label.text = "%d MiB" % AudioManager.get_memory_budget_mib()
+```
+
+`get_memory_budget_mib()` returns the resolved budget, including the platform default when the setting is `0`. A negative value or one that overflows is rejected. Lowering the budget below memory already committed returns `ERR_BUSY` and leaves playback unchanged.
 
 ### How Voice Stealing Works
 

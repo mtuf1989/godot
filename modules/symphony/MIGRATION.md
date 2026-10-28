@@ -3,6 +3,13 @@
 Track breaking changes introduced while implementing `improve_plan_1_7.md`.
 Update this file with each commit that changes a public API.
 
+## Hardening API
+
+- `SymphonyVoiceManager.set_memory_budget_mib(mib) -> Error` and `get_memory_budget_mib() -> int`. Project setting `audio/symphony/memory_budget_mib` (`0` = platform default). `AudioManager` wraps both calls.
+- `AudioStreamSymphonyMusic.instantiate_offline_playback(seed = 0)` prepares a 48 kHz offline playback. `render_offline()` refuses live playbacks and accepts at most 4096 frames per call.
+- Clip PCM is stored canonically at 48 kHz. A live playback admits an extra rate-specific view when the device rate is 44.1 kHz.
+- `DialogueAudioPipeline.queue_line()` returns `bool`. `queue_limit` of `-1` uses project setting `audio/symphony/dialogue_queue_limit` (default 32).
+
 ## Status
 
 - **Milestone:** M3 C++ complete. Tech-debt plan **P0–P10** + music **N0–V1** + bug-fix **B0–B8** landed; **S0 / music N0 closed**. Remaining: listening / 30‑min profiling / RTSan CI follow-up.
@@ -254,7 +261,7 @@ Result: 218/218 Symphony cases passed; `ThreadSanitizer: reported 1 warnings` �
 - **`register_clip_wav(key, wav, source_bpm, body_start_s, body_end_s)`** is the GDScript entry for recorded phrases. It decodes any WAV format and Catmull-Rom resamples to the music rate. A device rate change requires reload.
 - **`phrase_activated`** in `drain_status()` is produced when the scheduler activates a phrase on the audio thread, not when main calls `submit_phrase`.
 - **`schedule_track_gain(track, gain, start_tick, fade_ticks)`** ramps on the audio thread from `start_tick`.
-- **`AudioStreamPlaybackSymphonyMusic.render_offline(frames) -> PackedVector2Array`**: main thread only; refuses playbacks registered with the voice manager; 48 kHz through `_mix_internal`.
+- **`AudioStreamPlaybackSymphonyMusic.render_offline(frames) -> PackedVector2Array`**: main thread only; refuses playbacks registered with the voice manager and live-mode playbacks. Use `instantiate_offline_playback` and at most 4096 frames per call. 48 kHz through `_mix_internal`.
 - **`BeatClock.update_transport(beat_position, bpm, beats_per_bar)`** is the PROCEDURAL-mode observer. Do not call `set_bpm` immediately on a tempo request; the transport snapshot is the source of truth.
 - **`MusicSystem.beat_hit` / `bar_hit`** forward `(index, target_time: float)`.
 - **`ProceduralMusicController.set_state` returns `bool`**. MusicSystem emits `transition_started` only for valid sections; `transition_completed` / `state_changed` fire when the new section's phrase activates.

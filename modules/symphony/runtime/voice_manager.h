@@ -6,6 +6,7 @@
 #include "core/variant/dictionary.h"
 #include "core/variant/array.h"
 #include "scene/resources/curve.h"
+#include "../core/symphony_seqlock.h"
 #include <atomic>
 
 class SoundEvent;
@@ -115,7 +116,10 @@ private:
 
 	VoiceSlot *slots = nullptr;
 	int pool_size = 48;
-	std::atomic<VoiceMetrics> metrics;
+	// VoiceMetrics is 20 bytes. std::atomic<VoiceMetrics> is not lock-free and
+	// takes a hidden mutex, including on single-threaded wasm32. SeqLock publishes
+	// it as 32-bit words. Main thread is the only writer.
+	SymphonySeqLock<VoiceMetrics> metrics;
 	int stolen_this_frame = 0;
 
 	// Event log ring buffer (written on main thread, read on main thread — no thread safety issue)

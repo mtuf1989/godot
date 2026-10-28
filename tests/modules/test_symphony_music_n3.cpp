@@ -302,6 +302,7 @@ TEST_CASE("[Symphony][B3] Tempo ratio is playback speed with bounded duration") 
 		}
 		const float expect = (float)clip.frames / ratio;
 		CHECK(Math::abs((float)produced - expect) < 64.0f * 4.0f);
+		ctx->request_return();
 		pool.reclaim_returned();
 	}
 	cache->release(key);

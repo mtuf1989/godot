@@ -8,8 +8,10 @@
 #include "../nodes/io/symphony_graph_output.h"
 #include "../nodes/io/symphony_graph_input.h"
 #include "../nodes/io/symphony_trigger_input.h"
+#include "../core/symphony_published_u64.h"
 
 #include <atomic>
+#include <cstdint>
 
 class AudioStreamPlaybackSymphony : public AudioStreamPlaybackResampled {
 	GDCLASS(AudioStreamPlaybackSymphony, AudioStreamPlaybackResampled)
@@ -66,17 +68,24 @@ private:
 	std::atomic<float> stat_cost_units{ 0.0f };
 	// Smoothed per-voice cost as % of the block deadline (asymmetric EWMA, spike-clamped).
 	std::atomic<float> stat_cost_pct_ewma{ 0.0f };
-	std::atomic<uint64_t> last_mix_seq{ 0 };
+	std::atomic<uint32_t> last_mix_seq{ 0 };
 	std::atomic<int32_t> last_output_frames{ 0 };
 	// Audio-owned: reseed the EWMA from the next sample after a package install.
 	bool cost_ewma_reseed = true;
-	// Manager-owned (written inside enforce_voice_limits only): when the floor last changed.
-	std::atomic<uint64_t> floor_changed_us{ UINT64_MAX };
+	// Manager-owned (written inside enforce_voice_limits only). Low 32 bits of the
+	// microsecond stamp; UINT64_MAX from the getter means the floor has never changed.
+	// A full atomic<uint64_t> is not lock-free on single-threaded wasm32.
+	std::atomic<uint32_t> floor_changed_lo{ 0 };
+	std::atomic<uint8_t> floor_stamp_valid{ 0 };
 
-	// Graph-rate frames actually rendered. get_playback_position() is frames / graph rate.
-	// Replaces the truncated microsecond accumulator (it drifted by tens of milliseconds
-	// over a few minutes whenever frames/rate was not an integer number of microseconds).
-	std::atomic<uint64_t> frames_rendered{ 0 };
+	// Graph-rate frames actually rendered. The mixing thread owns the counter and
+	// publishes it with 32-bit atomics. start() bumps frames_reset from any thread;
+	// the mixer applies that reset before the next add so start() never writes the
+	// 64-bit value itself.
+	SymphonyPublishedU64 frames_rendered;
+	std::atomic<uint32_t> frames_reset{ 0 };
+	std::atomic<uint32_t> frames_reset_seen{ 0 };
+	uint32_t frames_reset_applied = 0;
 	// Drawn once in instantiate_playback and reused for every LOD recompile of this voice.
 	// Main thread only (compile never runs on the audio thread).
 	uint64_t voice_seed = 0;
@@ -119,6 +128,7 @@ private:
 	void _adopt_pending(PreparedGraphPackage *p_pending);
 	void _cache_stream_metadata();
 	void _update_cost_stats(uint64_t p_mix_us, int p_frames, float p_out_rate);
+	void _apply_frame_reset();
 	void _note_rendered_frames(int p_frames);
 	void _sync_voice_lod();
 
@@ -134,7 +144,7 @@ public:
 	virtual int get_loop_count() const override;
 	virtual double get_playback_position() const override;
 	// Graph-rate frame counter. Music transport (P7) schedules against this.
-	[[nodiscard]] uint64_t get_frames_rendered() const { return frames_rendered.load(std::memory_order_acquire); }
+	[[nodiscard]] uint64_t get_frames_rendered() const;
 	// Unresampled graph-rate render. render_offline uses this so the WAV rate,
 	// frame count and pitch do not depend on the output device.
 	int mix_graph_rate(AudioFrame *p_buffer, int p_frames);
@@ -185,7 +195,12 @@ public:
 	[[nodiscard]] float get_cost_pct_ewma() const { return stat_cost_pct_ewma.load(std::memory_order_relaxed); }
 	[[nodiscard]] uint64_t get_last_mix_seq() const { return last_mix_seq.load(std::memory_order_relaxed); }
 	// Manager-only LOD floor change timestamp (UINT64_MAX = never changed).
-	[[nodiscard]] uint64_t get_floor_changed_us() const { return floor_changed_us.load(std::memory_order_relaxed); }
+	[[nodiscard]] uint64_t get_floor_changed_us() const {
+		if (floor_stamp_valid.load(std::memory_order_acquire) == 0) {
+			return UINT64_MAX;
+		}
+		return floor_changed_lo.load(std::memory_order_relaxed);
+	}
 	void set_budget_lod_floor_at(int32_t p_lod_tier, uint64_t p_now_us);
 
 	// Test hook: seed the smoothed cost and mark the voice as freshly mixed.

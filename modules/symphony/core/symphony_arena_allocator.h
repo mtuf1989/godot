@@ -19,7 +19,7 @@ struct ArenaAllocator {
 	size_t mark_offset = 0;
 
 	// P9: counts fresh memalloc inits (tests assert freelist reuse skips this).
-	static inline std::atomic<uint64_t> fresh_init_count{ 0 };
+	static inline std::atomic<uint32_t> fresh_init_count{ 0 };
 
 	// Record current bump offset for transactional operator construction.
 	void mark() { mark_offset = offset; }

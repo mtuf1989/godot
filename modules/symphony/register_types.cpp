@@ -179,6 +179,8 @@ void initialize_symphony_module(ModuleInitializationLevel p_level) {
 		GLOBAL_DEF(PropertyInfo(Variant::INT, "audio/symphony/category_caps/ui", PROPERTY_HINT_RANGE, "0,256,1,or_greater"), 0);
 		GLOBAL_DEF(PropertyInfo(Variant::INT, "audio/symphony/category_caps/ambient", PROPERTY_HINT_RANGE, "0,256,1,or_greater"), 0);
 		GLOBAL_DEF(PropertyInfo(Variant::INT, "audio/symphony/category_caps/voice", PROPERTY_HINT_RANGE, "0,256,1,or_greater"), 0);
+		GLOBAL_DEF(PropertyInfo(Variant::INT, "audio/symphony/memory_budget_mib", PROPERTY_HINT_RANGE, "0,4096,1"), 0);
+		GLOBAL_DEF(PropertyInfo(Variant::INT, "audio/symphony/dialogue_queue_limit", PROPERTY_HINT_RANGE, "1,256,1"), 32);
 
 		// Register Godot classes
 		GDREGISTER_CLASS(AudioStreamSymphony);

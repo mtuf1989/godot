@@ -45,8 +45,8 @@ struct TriggerBuffer {
 };
 
 // Process-wide dropped-trigger counter (game-thread fire / buffer push failures).
-inline std::atomic<uint64_t> &symphony_dropped_trigger_count() {
-	static std::atomic<uint64_t> counter{ 0 };
+inline std::atomic<uint32_t> &symphony_dropped_trigger_count() {
+	static std::atomic<uint32_t> counter{ 0 };
 	return counter;
 }
 

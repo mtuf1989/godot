@@ -6,13 +6,14 @@ Import("env_modules")
 
 env_symphony = env_modules.Clone()
 
-# Enable WebAssembly SIMD for auto-vectorization on web builds.
-if env["platform"] == "web":
-    env_symphony.Append(CCFLAGS=["-msimd128"])
+# Godot's web detect.py already adds -msimd128 when wasm_simd is on.
+# Do not force that flag here: wasm_simd=no must stay a scalar build.
+# PFFFT's wasm SIMD path is its SSE1 kernels, which Emscripten lowers when
+# -msse is set together with -msimd128. wasm_simd=no defines PFFFT_SIMD_DISABLE
+# so inherited SIMD flags cannot select a vector kernel.
 
 # --- pffft (Pretty Fast FFT) thirdparty library ---
 # BSD-like license. Used for spectral processing (PhaseVocoder, SpectralGate).
-# SIMD auto-detects from compiler flags set by Godot's platform build.
 env_pffft = env_modules.Clone()
 env_pffft.Append(CPPPATH=["thirdparty/pffft"])
 env_pffft.Append(CPPDEFINES=["PFFFT_STATIC_DEFINE"])
@@ -26,9 +27,11 @@ if env.msvc:
 else:
     env_pffft.Append(CCFLAGS=["-w"])
 
-# Web SIMD support (NEON path via SIMDe)
 if env["platform"] == "web":
-    env_pffft.Append(CCFLAGS=["-msimd128"])
+    if env["wasm_simd"]:
+        env_pffft.Append(CCFLAGS=["-msse"])
+    else:
+        env_pffft.Append(CPPDEFINES=["PFFFT_SIMD_DISABLE"])
 
 env_pffft.add_source_files(env.modules_sources, "thirdparty/pffft/pffft.c")
 env_pffft.add_source_files(env.modules_sources, "thirdparty/pffft/pffft_common.c")

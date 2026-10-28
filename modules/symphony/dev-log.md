@@ -1,5 +1,14 @@
 # Dev Log — Symphony Audio System
 
+## Hardening sections 2–3 (2026-10-27, uncommitted)
+
+Plan: `new-bugfix-plan.md`. Scope stopped before section 4. Suite: **358/358** `*Symphony*` on `bin/godot.macos.editor.arm64`. game-template `test/addons/symphony_audio`: **68/69** (`stone_impact` peak, same on the 2026-10-09 editor binary).
+
+- PCM leases per stretch context, context reuse generation, playback epoch, clip event id from the pre-sort ordinal. Phrase slot is queued before its command. Carry compact. RTPC coefficients are audio-owned.
+- `audio/symphony/memory_budget_mib` and `set_memory_budget_mib` / `get_memory_budget_mib`. Dialogue queue limit 32. Controller generation cap 8.
+- `instantiate_offline_playback`, canonical 48 kHz clips, `render_offline` refuses live playback and calls over 4096 frames. `rope_chain` output level scaled (gain param 0.25; MapRange id 19 × 0.65).
+- Next: section 4 Web qualification, then sanitizers, soaks, and listening. See the status block in `new-bugfix-plan.md`.
+
 ## B0–B8 bug-fix (2026-10-11)
 
 Post P0–P10 / N0–V1 review. Plan: `bugfix-plan.md`. Suite: **353/353** `*Symphony*`. GDScript `test/addons/symphony_audio`: **69/69**.

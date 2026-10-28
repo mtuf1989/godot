@@ -71,23 +71,21 @@ float RTPCEngine::_compute_block_alpha(float p_smooth_time_ms, int p_num_frames)
 	return 1.0f - expf(-(float)p_num_frames / (time_sec * sr));
 }
 
-void RTPCEngine::_recompute_block_alphas(int p_num_frames) {
+void RTPCEngine::smooth_all(int p_num_frames) {
+	// One published count for this callback. Coefficients are written only here.
 	const int count = global_param_count.load(std::memory_order_acquire);
-	for (int i = 0; i < count; i++) {
-		if (global_params[i].active) {
+	const bool dirty = alphas_dirty.exchange(false, std::memory_order_acq_rel);
+	if (dirty || p_num_frames != cached_mix_frames || count != audio_coeff_count) {
+		for (int i = 0; i < count; i++) {
+			if (!global_params[i].active) {
+				continue;
+			}
 			global_params[i].block_alpha_attack = _compute_block_alpha(global_params[i].attack_ms.load(std::memory_order_relaxed), p_num_frames);
 			global_params[i].block_alpha_release = _compute_block_alpha(global_params[i].release_ms.load(std::memory_order_relaxed), p_num_frames);
 		}
+		cached_mix_frames = p_num_frames;
+		audio_coeff_count = count;
 	}
-	cached_mix_frames = p_num_frames;
-}
-
-void RTPCEngine::smooth_all(int p_num_frames) {
-	const bool dirty = alphas_dirty.exchange(false, std::memory_order_acq_rel);
-	if (dirty || p_num_frames != cached_mix_frames) {
-		_recompute_block_alphas(p_num_frames);
-	}
-	const int count = global_param_count.load(std::memory_order_acquire);
 	for (int i = 0; i < count; i++) {
 		RTPCParameter &param = global_params[i];
 		if (!param.active) {
@@ -120,9 +118,8 @@ RTPCEngine::Handle RTPCEngine::register_parameter(const StringName &p_name, floa
 	const float smooth = MAX(0.0f, p_smooth_time_ms);
 	global_params[idx].attack_ms.store(smooth, std::memory_order_relaxed);
 	global_params[idx].release_ms.store(smooth, std::memory_order_relaxed);
-	const int frames = cached_mix_frames > 0 ? cached_mix_frames : SYMPHONY_MICRO_BLOCK_SIZE;
-	global_params[idx].block_alpha_attack = _compute_block_alpha(smooth, frames);
-	global_params[idx].block_alpha_release = global_params[idx].block_alpha_attack;
+	// Block coefficients are audio-owned. The mix callback computes them for
+	// this slot when it observes the published count.
 	global_params[idx].active = true;
 	global_param_index[p_name] = idx;
 	// Publish the slot before exposing the new count.

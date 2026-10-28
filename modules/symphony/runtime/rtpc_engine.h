@@ -57,12 +57,12 @@ private:
 	std::atomic<float> sample_rate{ 44100.0f };
 	float default_smooth_time_ms = DEFAULT_SMOOTH_TIME_MS;
 	int cached_mix_frames = 0; // Audio-owned
+	int audio_coeff_count = 0; // Audio-owned count whose coefficients were computed
 	std::atomic<bool> alphas_dirty{ true };
 	bool mix_callback_registered = false;
-	std::atomic<uint64_t> missing_handle_count{ 0 };
+	std::atomic<uint32_t> missing_handle_count{ 0 };
 
 	static void _mix_callback(void *p_userdata);
-	void _recompute_block_alphas(int p_num_frames);
 	[[nodiscard]] float _compute_block_alpha(float p_smooth_time_ms, int p_num_frames) const;
 
 protected:

@@ -34,16 +34,29 @@ void SymphonyMemoryBudget::set_global_limit_bytes(size_t p_bytes) {
 	global_limit_bytes = p_bytes;
 }
 
+void SymphonyMemoryBudget::_note_used() {
+	const size_t used = get_committed_bytes();
+	if (used > peak_used_bytes) {
+		peak_used_bytes = used;
+	}
+}
+
+void SymphonyMemoryBudget::_reject() {
+	rejected_admissions++;
+}
+
 bool SymphonyMemoryBudget::try_reserve(size_t p_bytes, String *r_error) {
 	symphony_rt_note(SymphonyRTViolation::Alloc, "SymphonyMemoryBudget::try_reserve");
 	if (p_bytes > per_graph_limit_bytes) {
+		_reject();
 		if (r_error) {
 			*r_error = vformat("Per-graph memory budget exceeded (%d bytes > %d limit).", (int64_t)p_bytes, (int64_t)per_graph_limit_bytes);
 		}
 		return false;
 	}
-	const size_t used = reserved_bytes + shared_pcm_bytes;
+	const size_t used = get_committed_bytes();
 	if (p_bytes > global_limit_bytes || used > global_limit_bytes - p_bytes) {
+		_reject();
 		if (r_error) {
 			*r_error = vformat("Global Symphony memory budget exceeded (need %d more bytes, %d/%d used including SharedPCM).", (int64_t)p_bytes, (int64_t)used, (int64_t)global_limit_bytes);
 		}
@@ -53,6 +66,7 @@ bool SymphonyMemoryBudget::try_reserve(size_t p_bytes, String *r_error) {
 	if (reserved_bytes > peak_reserved_bytes) {
 		peak_reserved_bytes = reserved_bytes;
 	}
+	_note_used();
 	return true;
 }
 
@@ -64,15 +78,38 @@ void SymphonyMemoryBudget::release(size_t p_bytes) {
 
 bool SymphonyMemoryBudget::try_reserve_shared(size_t p_bytes, String *r_error) {
 	symphony_rt_note(SymphonyRTViolation::Alloc, "SymphonyMemoryBudget::try_reserve_shared");
-	const size_t used = reserved_bytes + shared_pcm_bytes;
+	const size_t used = get_committed_bytes();
 	if (p_bytes > global_limit_bytes || used > global_limit_bytes - p_bytes) {
+		_reject();
 		if (r_error) {
 			*r_error = vformat("Global Symphony memory budget exceeded for SharedPCM (need %d more bytes, %d/%d used).", (int64_t)p_bytes, (int64_t)used, (int64_t)global_limit_bytes);
 		}
 		return false;
 	}
 	shared_pcm_bytes += p_bytes;
+	_note_used();
 	return true;
+}
+
+bool SymphonyMemoryBudget::try_reserve_working(size_t p_bytes, String *r_error) {
+	symphony_rt_note(SymphonyRTViolation::Alloc, "SymphonyMemoryBudget::try_reserve_working");
+	const size_t used = get_committed_bytes();
+	if (p_bytes > global_limit_bytes || used > global_limit_bytes - p_bytes) {
+		_reject();
+		if (r_error) {
+			*r_error = vformat("Global Symphony memory budget exceeded for working storage (need %d more bytes, %d/%d used).", (int64_t)p_bytes, (int64_t)used, (int64_t)global_limit_bytes);
+		}
+		return false;
+	}
+	working_bytes += p_bytes;
+	_note_used();
+	return true;
+}
+
+void SymphonyMemoryBudget::release_working(size_t p_bytes) {
+	symphony_rt_note(SymphonyRTViolation::Free, "SymphonyMemoryBudget::release_working");
+	ERR_FAIL_COND(p_bytes > working_bytes);
+	working_bytes -= p_bytes;
 }
 
 void SymphonyMemoryBudget::release_shared(size_t p_bytes) {
@@ -128,7 +165,10 @@ SymphonyMemoryBudget::Snapshot SymphonyMemoryBudget::get_snapshot() const {
 	snap.global_limit_bytes = global_limit_bytes;
 	snap.reserved_bytes = reserved_bytes;
 	snap.peak_reserved_bytes = peak_reserved_bytes;
+	snap.peak_used_bytes = peak_used_bytes;
 	snap.shared_pcm_bytes = shared_pcm_bytes;
+	snap.working_bytes = working_bytes;
+	snap.rejected_admissions = rejected_admissions;
 	snap.active_packages = active_packages.load(std::memory_order_relaxed);
 	snap.pending_packages = pending_packages.load(std::memory_order_relaxed);
 	snap.outgoing_packages = outgoing_packages.load(std::memory_order_relaxed);

@@ -50,8 +50,10 @@ class SymphonyVoiceManager : public Object {
 	bool has_released = false;
 	uint64_t last_release_us = 0;
 
-	std::atomic<uint64_t> callback_seq{ 0 };
-	std::atomic<uint64_t> metric_enforce_skipped{ 0 };
+	// 32-bit so single-threaded wasm32 does not lock inside libatomic.
+	// Callback identity only needs modular proximity (seq - last <= 1).
+	std::atomic<uint32_t> callback_seq{ 0 };
+	std::atomic<uint32_t> metric_enforce_skipped{ 0 };
 
 #if defined(__EMSCRIPTEN__) || defined(ANDROID_ENABLED) || defined(IOS_ENABLED)
 	static constexpr int32_t DEFAULT_CROSSFADE_TOKENS = 1;
@@ -70,9 +72,10 @@ class SymphonyVoiceManager : public Object {
 	// EWMA of microseconds per cost unit (×1000). Default 50 → 0.05 µs/unit (conservative).
 	std::atomic<int32_t> metric_us_per_cost_x1000{ 50 };
 	// Transition admission outcomes (audio thread increments).
-	std::atomic<uint64_t> metric_crossfade_transitions{ 0 };
-	std::atomic<uint64_t> metric_fallback_transitions{ 0 };
+	std::atomic<uint32_t> metric_crossfade_transitions{ 0 };
+	std::atomic<uint32_t> metric_fallback_transitions{ 0 };
 
+	int memory_budget_mib = 0;
 	bool update_callback_registered = false;
 	bool mix_callback_registered = false;
 	AudioServer *mix_callback_server = nullptr;
@@ -120,6 +123,11 @@ public:
 
 	void set_max_voices(int32_t p_max);
 	int32_t get_max_voices() const;
+
+	// 0 selects the platform default. Negative or overflowing values are rejected.
+	// Lowering below committed usage returns ERR_BUSY and leaves the limit unchanged.
+	Error set_memory_budget_mib(int64_t p_mib);
+	int get_memory_budget_mib() const;
 	void set_warning_threshold(float p_threshold);
 	float get_warning_threshold() const;
 	void set_critical_threshold(float p_threshold);

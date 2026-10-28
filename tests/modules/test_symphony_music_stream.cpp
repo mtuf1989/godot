@@ -287,19 +287,34 @@ TEST_CASE("[Symphony][B7] render_offline duration, repeatability, and player ref
 	phrase["events"] = events;
 
 	const int frames = (int)symphony_offline_rate(); // 1 s
+	auto render_chunked = [&](const Ref<AudioStreamPlaybackSymphonyMusic> &pb) {
+		PackedVector2Array all;
+		all.resize(frames);
+		int at = 0;
+		while (at < frames) {
+			const int n = MIN(4096, frames - at);
+			PackedVector2Array chunk = pb->render_offline(n);
+			REQUIRE(chunk.size() == n);
+			for (int i = 0; i < n; i++) {
+				all.write[at + i] = chunk[i];
+			}
+			at += n;
+		}
+		return all;
+	};
 	PackedVector2Array a;
 	PackedVector2Array b;
 	{
-		Ref<AudioStreamPlaybackSymphonyMusic> pb = music->instantiate_playback();
+		Ref<AudioStreamPlaybackSymphonyMusic> pb = music->instantiate_offline_playback(1);
 		REQUIRE(pb.is_valid());
 		REQUIRE_FALSE(pb->is_registered_with_voice_manager());
 		REQUIRE(pb->submit_phrase(phrase) == OK);
-		a = pb->render_offline(frames);
+		a = render_chunked(pb);
 	}
 	{
-		Ref<AudioStreamPlaybackSymphonyMusic> pb = music->instantiate_playback();
+		Ref<AudioStreamPlaybackSymphonyMusic> pb = music->instantiate_offline_playback(1);
 		REQUIRE(pb->submit_phrase(phrase) == OK);
-		b = pb->render_offline(frames);
+		b = render_chunked(pb);
 	}
 	REQUIRE(a.size() == frames);
 	REQUIRE(b.size() == frames);

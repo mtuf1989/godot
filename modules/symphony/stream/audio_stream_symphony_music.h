@@ -40,7 +40,13 @@ public:
 		StringName key;
 		StringName cache_key;
 		SymphonyMusicClipDesc desc; // pcm filled after register into stereo cache
-		float music_rate = 0.0f;
+		float music_rate = 0.0f; // canonical rate (48 kHz)
+		StringName view_key;
+		const float *view_pcm = nullptr;
+		int32_t view_frames = 0;
+		float view_rate = 0.0f;
+		int32_t view_body_start = 0;
+		int32_t view_body_end = 0;
 		bool registered = false;
 		bool usable = true;
 	};
@@ -77,7 +83,12 @@ public:
 	[[nodiscard]] int32_t get_clip_frames(const StringName &p_key) const;
 	[[nodiscard]] float get_clip_sample_rate(const StringName &p_key) const;
 
+	// Rate-specific live view of the canonical 48 kHz clip. No-op when p_rate is 48 kHz.
+	Error ensure_live_view(int32_t p_index, float p_rate);
+	bool copy_clip_for_rate(int32_t p_index, float p_rate, SymphonyMusicClipDesc &r_out) const;
+
 	virtual Ref<AudioStreamPlayback> instantiate_playback() override;
+	Ref<AudioStreamPlaybackSymphonyMusic> instantiate_offline_playback(int64_t p_seed = 0);
 	virtual double get_length() const override;
 	virtual bool is_monophonic() const override;
 

@@ -208,14 +208,15 @@ void AudioStreamPlaybackSymphony::set_budget_lod_floor(int32_t p_lod_tier) {
 
 void AudioStreamPlaybackSymphony::set_budget_lod_floor_at(int32_t p_lod_tier, uint64_t p_now_us) {
 	set_budget_lod_floor(p_lod_tier);
-	floor_changed_us.store(p_now_us, std::memory_order_relaxed);
+	floor_changed_lo.store(static_cast<uint32_t>(p_now_us), std::memory_order_relaxed);
+	floor_stamp_valid.store(1, std::memory_order_release);
 }
 
 void AudioStreamPlaybackSymphony::_test_set_cost_ewma(float p_pct) {
 	stat_cost_pct_ewma.store(p_pct, std::memory_order_relaxed);
 	cost_ewma_reseed = false;
 	SymphonyVoiceManager *mgr = SymphonyVoiceManager::get_singleton();
-	last_mix_seq.store(mgr ? mgr->get_callback_seq() : 0, std::memory_order_relaxed);
+	last_mix_seq.store(static_cast<uint32_t>(mgr ? mgr->get_callback_seq() : 0), std::memory_order_relaxed);
 }
 
 void AudioStreamPlaybackSymphony::_test_apply_cost_sample(float p_sample_pct, float p_deadline_s) {
@@ -231,7 +232,7 @@ void AudioStreamPlaybackSymphony::_test_apply_cost_sample(float p_sample_pct, fl
 	}
 	stat_cost_pct_ewma.store(ewma, std::memory_order_relaxed);
 	SymphonyVoiceManager *mgr = SymphonyVoiceManager::get_singleton();
-	last_mix_seq.store(mgr ? mgr->get_callback_seq() : 0, std::memory_order_relaxed);
+	last_mix_seq.store(static_cast<uint32_t>(mgr ? mgr->get_callback_seq() : 0), std::memory_order_relaxed);
 }
 
 void AudioStreamPlaybackSymphony::_sync_voice_lod() {
@@ -340,7 +341,9 @@ void AudioStreamPlaybackSymphony::start(double p_from_pos) {
 		_register_with_manager();
 	}
 	// Any thread: requests consumed by the mixing thread. active is stored last.
-	frames_rendered.store(0, std::memory_order_release);
+	// The mixer applies frames_reset before the next add. Publishing 0 here would
+	// race the mixing thread's single-writer counter.
+	frames_reset.fetch_add(1, std::memory_order_release);
 	resample_reset_pending.store(true, std::memory_order_release);
 	auto_fire_pending.store(true, std::memory_order_release);
 	active.store(true, std::memory_order_release);
@@ -359,23 +362,43 @@ int AudioStreamPlaybackSymphony::get_loop_count() const {
 	return 0;
 }
 
+uint64_t AudioStreamPlaybackSymphony::get_frames_rendered() const {
+	const uint32_t reset = frames_reset.load(std::memory_order_acquire);
+	const uint32_t seen = frames_reset_seen.load(std::memory_order_acquire);
+	if (reset != seen) {
+		return 0;
+	}
+	return frames_rendered.load();
+}
+
 double AudioStreamPlaybackSymphony::get_playback_position() const {
 	const double rate = (double)mix_rate_cached.load(std::memory_order_acquire);
 	if (rate <= 0.0) {
 		return 0.0;
 	}
-	return (double)frames_rendered.load(std::memory_order_acquire) / rate;
+	return (double)get_frames_rendered() / rate;
 }
 
 int AudioStreamPlaybackSymphony::mix_graph_rate(AudioFrame *p_buffer, int p_frames) {
 	return _mix_internal(p_buffer, p_frames);
 }
 
+void AudioStreamPlaybackSymphony::_apply_frame_reset() {
+	const uint32_t reset = frames_reset.load(std::memory_order_acquire);
+	if (reset == frames_reset_applied) {
+		return;
+	}
+	frames_rendered.publish(0);
+	frames_reset_applied = reset;
+	frames_reset_seen.store(reset, std::memory_order_release);
+}
+
 void AudioStreamPlaybackSymphony::_note_rendered_frames(int p_frames) {
 	if (p_frames <= 0) {
 		return;
 	}
-	frames_rendered.fetch_add((uint64_t)p_frames, std::memory_order_acq_rel);
+	_apply_frame_reset();
+	const uint64_t next = frames_rendered.fetch_add((uint64_t)p_frames) + (uint64_t)p_frames;
 	const double duration_limit = cached_duration_limit.load(std::memory_order_relaxed);
 	if (duration_limit <= 0.0) {
 		return;
@@ -384,7 +407,7 @@ void AudioStreamPlaybackSymphony::_note_rendered_frames(int p_frames) {
 	if (rate <= 0.0) {
 		return;
 	}
-	if ((double)frames_rendered.load(std::memory_order_relaxed) / rate >= duration_limit) {
+	if ((double)next / rate >= duration_limit) {
 		active.store(false, std::memory_order_release);
 	}
 }
@@ -456,7 +479,8 @@ int AudioStreamPlaybackSymphony::_mix_internal(AudioFrame *p_buffer, int p_frame
 	}
 
 	int frames_processed = 0;
-	const uint64_t mix_start_frame = frames_rendered.load(std::memory_order_acquire);
+	_apply_frame_reset();
+	const uint64_t mix_start_frame = frames_rendered.writer_value();
 	while (frames_processed < p_frames) {
 		int chunk = MIN(SYMPHONY_MICRO_BLOCK_SIZE, p_frames - frames_processed);
 		// N1 / P7 R: TriggerInput schedules against absolute graph frames.
@@ -643,7 +667,7 @@ int AudioStreamPlaybackSymphony::mix(AudioFrame *p_buffer, float p_rate_scale, i
 	_update_cost_stats(mix_us, p_frames, out_rate);
 
 	SymphonyVoiceManager *mgr = SymphonyVoiceManager::get_singleton();
-	last_mix_seq.store(mgr ? mgr->get_callback_seq() : 0, std::memory_order_relaxed);
+	last_mix_seq.store(static_cast<uint32_t>(mgr ? mgr->get_callback_seq() : 0), std::memory_order_relaxed);
 	return mixed > 0 ? mixed : 0;
 }
 

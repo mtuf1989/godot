@@ -14,6 +14,9 @@
 #include "core/os/memory.h"
 #include "core/string/ustring.h"
 #include "servers/audio/audio_frame.h"
+#include "../core/symphony_memory_budget.h"
+#include "../core/symphony_pin_types.h"
+#include "symphony_music_stereo_pcm.h"
 
 #include <atomic>
 #include <cstdint>
@@ -57,6 +60,11 @@ public:
 	int scratch_cap = 0;
 	bool finished = false;
 	int32_t common_latency = 0; // inputLatency + outputLatency at configure time
+	int pool_slot = -1;
+	std::atomic<uint32_t> reuse_generation{ 1 };
+	StringName lease_key;
+	bool lease_held = false;
+	size_t scratch_charged = 0;
 
 	// Scratch channel pointers for process() (audio thread).
 	std::vector<float> in_l;
@@ -94,8 +102,20 @@ public:
 
 		common_latency = stretch.inputLatency() + stretch.outputLatency();
 		const int pre = stretch.inputLatency();
-		scratch_cap = MAX(pre, (int)Math::ceil(64.0 * (double)clip.tempo_ratio_max) + 2 + pre);
-		_ensure_scratch(scratch_cap);
+		const int block = MAX(SYMPHONY_MICRO_BLOCK_SIZE, 64);
+		scratch_cap = MAX(pre, (int)Math::ceil((double)block * (double)clip.tempo_ratio_max) + 2 + pre);
+		if (!_ensure_scratch(scratch_cap)) {
+			_release_lease();
+			return false;
+		}
+		if (p_clip.pcm_key != StringName()) {
+			SymphonyMusicStereoCache *cache = SymphonyMusicStereoCache::get_singleton();
+			if (!cache || !cache->retain(p_clip.pcm_key)) {
+				return false;
+			}
+			lease_key = p_clip.pcm_key;
+			lease_held = true;
+		}
 		src_acc = 0.0;
 
 		// Seek: provide first inputLatency samples starting at body_start (with lead).
@@ -114,26 +134,31 @@ public:
 		return ownership.compare_exchange_strong(expected, (uint8_t)SymphonyStretchOwnership::Active, std::memory_order_acq_rel, std::memory_order_acquire);
 	}
 
-	// Audio thread: mark for main-thread reclaim after playback ends.
+	// Audio thread: last touch. Caller must already have dropped every audio-side pointer.
 	void request_return() {
-		uint8_t expected = (uint8_t)SymphonyStretchOwnership::Active;
-		ownership.compare_exchange_strong(expected, (uint8_t)SymphonyStretchOwnership::Returning, std::memory_order_release, std::memory_order_relaxed);
+		uint8_t state = ownership.load(std::memory_order_acquire);
+		if (state == (uint8_t)SymphonyStretchOwnership::Active || state == (uint8_t)SymphonyStretchOwnership::Prepared) {
+			ownership.compare_exchange_strong(state, (uint8_t)SymphonyStretchOwnership::Returning, std::memory_order_release, std::memory_order_relaxed);
+		}
 	}
 
 	// Main thread: free after audio acknowledged return.
 	void reclaim() {
 		ERR_FAIL_COND(get_ownership() == SymphonyStretchOwnership::Active);
-		set_ownership(SymphonyStretchOwnership::Free);
+		_release_lease();
 		clip = {};
 		finished = false;
 		source_pos = 0.0;
 		src_acc = 0.0;
+		reuse_generation.fetch_add(1, std::memory_order_release);
+		set_ownership(SymphonyStretchOwnership::Free);
 	}
 
 	// Audio thread: render p_frames of stretched audio into p_out (additive).
-	void process_add(AudioFrame *p_out, int p_frames) {
+	// Returns true when the clip has ended. Does not change ownership.
+	bool process_add(AudioFrame *p_out, int p_frames) {
 		if (get_ownership() != SymphonyStretchOwnership::Active || finished || !clip.pcm || p_frames <= 0) {
-			return;
+			return finished;
 		}
 		// tempo_ratio is playback speed (target BPM / source BPM), matching seek(playbackRate).
 		src_acc += (double)p_frames * (double)tempo_ratio;
@@ -144,6 +169,7 @@ public:
 		}
 		DEV_ASSERT(in_n <= scratch_cap && p_frames <= scratch_cap);
 		in_n = MIN(in_n, scratch_cap);
+		p_frames = MIN(p_frames, scratch_cap);
 		_fill_input_from_source((int32_t)source_pos, in_n);
 		source_pos += (double)in_n;
 
@@ -161,25 +187,44 @@ public:
 		const int32_t end = clip.body_end + clip.tail_samples;
 		if ((int32_t)source_pos >= end + stretch.inputLatency()) {
 			finished = true;
-			request_return();
 		}
+		return finished;
 	}
 
 	[[nodiscard]] int input_latency() const { return stretch.inputLatency(); }
 	[[nodiscard]] int output_latency() const { return stretch.outputLatency(); }
 
 private:
-	void _ensure_scratch(int n) {
+	void _release_lease() {
+		if (!lease_held) {
+			return;
+		}
+		if (SymphonyMusicStereoCache *cache = SymphonyMusicStereoCache::get_singleton()) {
+			cache->release(lease_key);
+		}
+		lease_held = false;
+		lease_key = StringName();
+	}
+
+	bool _ensure_scratch(int n) {
 		if ((int)in_l.size() < n) {
+			const size_t grown = (size_t)(n - (int)in_l.size()) * 4 * sizeof(float);
+			if (SymphonyMemoryBudget *budget = SymphonyMemoryBudget::get_singleton()) {
+				if (!budget->try_reserve_working(grown)) {
+					return false;
+				}
+			}
 			in_l.resize(n);
 			in_r.resize(n);
 			out_l.resize(n);
 			out_r.resize(n);
+			scratch_charged += grown;
 		}
 		in_ptrs[0] = in_l.data();
 		in_ptrs[1] = in_r.data();
 		out_ptrs[0] = out_l.data();
 		out_ptrs[1] = out_r.data();
+		return true;
 	}
 
 	void _fill_input_from_source(int32_t p_start, int p_count) {
@@ -201,6 +246,12 @@ class SymphonyStretchPool {
 public:
 	static constexpr int MAX_CONTEXTS = 8;
 	SymphonyStretchContext contexts[MAX_CONTEXTS];
+
+	SymphonyStretchPool() {
+		for (int i = 0; i < MAX_CONTEXTS; i++) {
+			contexts[i].pool_slot = i;
+		}
+	}
 
 	SymphonyStretchContext *acquire_prepared(const SymphonyMusicClipDesc &p_clip, float p_tempo_ratio, float p_transpose_st) {
 		for (int i = 0; i < MAX_CONTEXTS; i++) {

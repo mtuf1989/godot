@@ -4,6 +4,7 @@
 
 #include "audio_stream_symphony_music.h"
 #include "audio_stream_playback_symphony_music.h"
+#include "../core/symphony_memory_budget.h"
 #include "../core/symphony_rate_policy.h"
 #include "../core/symphony_seed.h"
 #include "../nodes/generators/symphony_wave_player.h"
@@ -28,6 +29,7 @@ void AudioStreamSymphonyMusic::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("register_clip_wav", "key", "wav", "source_bpm", "body_start_s", "body_end_s"), &AudioStreamSymphonyMusic::register_clip_wav, DEFVAL(120.0f), DEFVAL(0.0f), DEFVAL(0.0f));
 	ClassDB::bind_method(D_METHOD("find_clip_index", "key"), &AudioStreamSymphonyMusic::find_clip_index);
 	ClassDB::bind_method(D_METHOD("get_clip_count"), &AudioStreamSymphonyMusic::get_clip_count);
+	ClassDB::bind_method(D_METHOD("instantiate_offline_playback", "seed"), &AudioStreamSymphonyMusic::instantiate_offline_playback, DEFVAL(0));
 
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "mix_rate"), "set_mix_rate", "get_mix_rate");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "initial_bpm"), "set_initial_bpm", "get_initial_bpm");
@@ -95,33 +97,88 @@ Error AudioStreamSymphonyMusic::register_clip_pcm(const StringName &p_key, const
 	if (AudioServer::get_singleton()) {
 		device = AudioServer::get_singleton()->get_mix_rate();
 	}
-	const float music_rate = symphony_select_music_rate(device);
+	const float live_rate = symphony_select_music_rate(device);
+	const float canonical_rate = symphony_offline_rate();
 	const int32_t src_frames = p_interleaved_stereo.size() / 2;
-	Vector<float> resampled;
-	if (!symphony_music_resample_stereo_float(p_interleaved_stereo.ptr(), src_frames, true, p_sample_rate, music_rate, resampled)) {
+	Vector<float> canonical;
+	if (!symphony_music_resample_stereo_float(p_interleaved_stereo.ptr(), src_frames, true, p_sample_rate, canonical_rate, canonical)) {
 		return ERR_INVALID_PARAMETER;
 	}
-	const int32_t frames = resampled.size() / 2;
-	const double scale = (double)music_rate / MAX((double)p_sample_rate, 1.0);
+	const int32_t frames = canonical.size() / 2;
+	const double scale = (double)canonical_rate / MAX((double)p_sample_rate, 1.0);
 	const int32_t body_start = CLAMP((int32_t)Math::floor((double)MAX(p_body_start, 0) * scale), 0, frames);
 	const int32_t body_end = (p_body_end <= 0) ? frames : CLAMP((int32_t)Math::floor((double)p_body_end * scale), body_start, frames);
+
+	Vector<float> view_samples;
+	const bool need_view = Math::abs(live_rate - canonical_rate) > 0.5f;
+	if (need_view && !symphony_music_resample_stereo_float(canonical.ptr(), frames, true, canonical_rate, live_rate, view_samples)) {
+		return ERR_INVALID_PARAMETER;
+	}
 
 	int slot = find_clip_index(p_key);
 	if (slot < 0) {
 		ERR_FAIL_COND_V(clip_count >= MAX_CLIPS, ERR_OUT_OF_MEMORY);
 	}
 
-	const uint64_t hash = SymphonyMusicStereoCache::hash_pcm(resampled.ptr(), frames);
-	const StringName cache_key = SymphonyMusicStereoCache::make_cache_key(p_key, music_rate, frames, hash);
-	const float *pcm = cache->acquire(cache_key, resampled.ptr(), frames, music_rate);
-	ERR_FAIL_COND_V(!pcm, ERR_OUT_OF_MEMORY);
+	const size_t prep_bytes = (size_t)canonical.size() * sizeof(float) + (size_t)view_samples.size() * sizeof(float);
+	SymphonyMemoryBudget *budget = SymphonyMemoryBudget::get_singleton();
+	bool prep_held = false;
+	if (budget && prep_bytes > 0) {
+		String budget_error;
+		if (!budget->try_reserve(prep_bytes, &budget_error)) {
+			ERR_PRINT(budget_error);
+			return ERR_OUT_OF_MEMORY;
+		}
+		prep_held = true;
+	}
+	auto release_prep = [&]() {
+		if (prep_held && budget) {
+			budget->release(prep_bytes);
+			prep_held = false;
+		}
+	};
+
+	const uint64_t hash = SymphonyMusicStereoCache::hash_pcm(canonical.ptr(), frames);
+	const StringName cache_key = SymphonyMusicStereoCache::make_cache_key(p_key, canonical_rate, frames, hash);
+	const float *pcm = cache->acquire(cache_key, canonical.ptr(), frames, canonical_rate);
+	if (!pcm) {
+		release_prep();
+		return ERR_OUT_OF_MEMORY;
+	}
+
+	StringName view_key;
+	const float *view_pcm = nullptr;
+	int32_t view_frames = 0;
+	int32_t view_body_start = 0;
+	int32_t view_body_end = 0;
+	if (need_view) {
+		view_frames = view_samples.size() / 2;
+		const uint64_t view_hash = SymphonyMusicStereoCache::hash_pcm(view_samples.ptr(), view_frames);
+		view_key = SymphonyMusicStereoCache::make_cache_key(p_key, live_rate, view_frames, view_hash);
+		view_pcm = cache->acquire(view_key, view_samples.ptr(), view_frames, live_rate);
+		if (!view_pcm) {
+			cache->release(cache_key);
+			release_prep();
+			return ERR_OUT_OF_MEMORY;
+		}
+		const double view_scale = (double)live_rate / (double)canonical_rate;
+		view_body_start = CLAMP((int32_t)Math::floor((double)body_start * view_scale), 0, view_frames);
+		view_body_end = CLAMP((int32_t)Math::floor((double)body_end * view_scale), view_body_start, view_frames);
+	}
 
 	if (slot < 0) {
 		slot = clip_count++;
-	} else if (clips[slot].registered && clips[slot].cache_key != StringName() && clips[slot].cache_key != cache_key) {
-		cache->release(clips[slot].cache_key);
-	} else if (clips[slot].registered && clips[slot].cache_key == cache_key) {
-		cache->release(cache_key); // extra acquire of the same entry
+	} else if (clips[slot].registered) {
+		if (clips[slot].cache_key != StringName() && clips[slot].cache_key != cache_key) {
+			cache->release(clips[slot].cache_key);
+		} else if (clips[slot].cache_key == cache_key) {
+			cache->release(cache_key);
+		}
+		if (clips[slot].view_key != StringName() && clips[slot].view_key != view_key) {
+			cache->release(clips[slot].view_key);
+		} else if (need_view && clips[slot].view_key == view_key) {
+			cache->release(view_key);
+		}
 	}
 
 	ClipConfig &c = clips[slot];
@@ -131,13 +188,20 @@ Error AudioStreamSymphonyMusic::register_clip_pcm(const StringName &p_key, const
 	c.desc.pcm_key = cache_key;
 	c.desc.pcm = pcm;
 	c.desc.frames = cache->get_frames(cache_key);
-	c.desc.sample_rate = music_rate;
+	c.desc.sample_rate = canonical_rate;
 	c.desc.source_bpm = CLAMP(p_source_bpm, 1.0f, 999.0f);
 	c.desc.body_start = body_start;
 	c.desc.body_end = body_end;
-	c.music_rate = music_rate;
+	c.music_rate = canonical_rate;
+	c.view_key = view_key;
+	c.view_pcm = view_pcm;
+	c.view_frames = view_frames;
+	c.view_rate = need_view ? live_rate : 0.0f;
+	c.view_body_start = view_body_start;
+	c.view_body_end = view_body_end;
 	c.registered = true;
 	c.usable = true;
+	release_prep();
 	return OK;
 }
 
@@ -185,13 +249,89 @@ int32_t AudioStreamSymphonyMusic::find_clip_index(const StringName &p_key) const
 int32_t AudioStreamSymphonyMusic::get_clip_frames(const StringName &p_key) const {
 	const int32_t idx = find_clip_index(p_key);
 	ERR_FAIL_COND_V(idx < 0, 0);
+	if (clips[idx].view_pcm && clips[idx].view_frames > 0) {
+		return clips[idx].view_frames;
+	}
 	return clips[idx].desc.frames;
 }
 
 float AudioStreamSymphonyMusic::get_clip_sample_rate(const StringName &p_key) const {
 	const int32_t idx = find_clip_index(p_key);
 	ERR_FAIL_COND_V(idx < 0, 0.0f);
+	if (clips[idx].view_pcm && clips[idx].view_rate > 0.0f) {
+		return clips[idx].view_rate;
+	}
 	return clips[idx].desc.sample_rate;
+}
+
+Error AudioStreamSymphonyMusic::ensure_live_view(int32_t p_index, float p_rate) {
+	ERR_FAIL_INDEX_V(p_index, clip_count, ERR_INVALID_PARAMETER);
+	ClipConfig &c = clips[p_index];
+	ERR_FAIL_COND_V(!c.registered || !c.desc.pcm || c.desc.frames <= 0, ERR_UNAVAILABLE);
+	if (Math::abs(p_rate - c.desc.sample_rate) <= 0.5f) {
+		c.usable = true;
+		return OK;
+	}
+	if (c.view_pcm && Math::abs(c.view_rate - p_rate) <= 0.5f) {
+		c.usable = true;
+		return OK;
+	}
+	SymphonyMusicStereoCache *cache = SymphonyMusicStereoCache::get_singleton();
+	ERR_FAIL_COND_V(!cache, ERR_UNAVAILABLE);
+	Vector<float> view_samples;
+	if (!symphony_music_resample_stereo_float(c.desc.pcm, c.desc.frames, true, c.desc.sample_rate, p_rate, view_samples)) {
+		return ERR_INVALID_PARAMETER;
+	}
+	const int32_t view_frames = view_samples.size() / 2;
+	const size_t prep_bytes = (size_t)view_samples.size() * sizeof(float);
+	SymphonyMemoryBudget *budget = SymphonyMemoryBudget::get_singleton();
+	if (budget && !budget->try_reserve(prep_bytes)) {
+		return ERR_OUT_OF_MEMORY;
+	}
+	const uint64_t view_hash = SymphonyMusicStereoCache::hash_pcm(view_samples.ptr(), view_frames);
+	const StringName view_key = SymphonyMusicStereoCache::make_cache_key(c.key, p_rate, view_frames, view_hash);
+	const float *view_pcm = cache->acquire(view_key, view_samples.ptr(), view_frames, p_rate);
+	if (budget) {
+		budget->release(prep_bytes);
+	}
+	if (!view_pcm) {
+		return ERR_OUT_OF_MEMORY;
+	}
+	if (c.view_key != StringName() && c.view_key != view_key) {
+		cache->release(c.view_key);
+	} else if (c.view_key == view_key) {
+		cache->release(view_key);
+	}
+	const double view_scale = (double)p_rate / (double)c.desc.sample_rate;
+	c.view_key = view_key;
+	c.view_pcm = view_pcm;
+	c.view_frames = view_frames;
+	c.view_rate = p_rate;
+	c.view_body_start = CLAMP((int32_t)Math::floor((double)c.desc.body_start * view_scale), 0, view_frames);
+	c.view_body_end = CLAMP((int32_t)Math::floor((double)c.desc.body_end * view_scale), c.view_body_start, view_frames);
+	c.usable = true;
+	return OK;
+}
+
+bool AudioStreamSymphonyMusic::copy_clip_for_rate(int32_t p_index, float p_rate, SymphonyMusicClipDesc &r_out) const {
+	if (p_index < 0 || p_index >= clip_count || !clips[p_index].registered || !clips[p_index].usable) {
+		return false;
+	}
+	const ClipConfig &c = clips[p_index];
+	r_out = c.desc;
+	if (Math::abs(p_rate - c.desc.sample_rate) <= 0.5f) {
+		return r_out.pcm != nullptr;
+	}
+	if (!c.view_pcm || Math::abs(c.view_rate - p_rate) > 0.5f) {
+		return false;
+	}
+	r_out.pcm = c.view_pcm;
+	r_out.pcm_key = c.view_key;
+	r_out.frames = c.view_frames;
+	r_out.sample_rate = c.view_rate;
+	r_out.body_start = c.view_body_start;
+	r_out.body_end = c.view_body_end;
+	return true;
 }
 
 Ref<AudioStreamPlayback> AudioStreamSymphonyMusic::instantiate_playback() {
@@ -204,25 +344,37 @@ Ref<AudioStreamPlayback> AudioStreamSymphonyMusic::instantiate_playback() {
 		device = AudioServer::get_singleton()->get_mix_rate();
 	}
 	const float music_rate = symphony_select_music_rate(device);
-	bool warned_rate = false;
 	for (int i = 0; i < clip_count; i++) {
 		if (!clips[i].registered) {
 			continue;
 		}
-		if (Math::abs(clips[i].music_rate - music_rate) > 0.5f) {
+		if (ensure_live_view(i, music_rate) != OK) {
 			clips[i].usable = false;
-			if (!warned_rate) {
-				WARN_PRINT("AudioStreamSymphonyMusic: clip music_rate differs from playback rate; reload clips after a device rate change.");
-				warned_rate = true;
-			}
-		} else {
-			clips[i].usable = true;
+			WARN_PRINT("AudioStreamSymphonyMusic: live clip view could not be admitted; clip will be dropped until memory is available.");
 		}
 	}
 	playback->_bind_music_stream(Ref<AudioStreamSymphonyMusic>(this), symphony_draw_voice_seed(), music_rate);
 
 	if (Thread::is_main_thread()) {
 		playback->_prepare_pools();
+	}
+	return playback;
+}
+
+Ref<AudioStreamPlaybackSymphonyMusic> AudioStreamSymphonyMusic::instantiate_offline_playback(int64_t p_seed) {
+	ERR_FAIL_COND_V_MSG(p_seed < 0, Ref<AudioStreamPlaybackSymphonyMusic>(), "AudioStreamSymphonyMusic::instantiate_offline_playback rejects a negative seed.");
+	Ref<AudioStreamPlaybackSymphonyMusic> playback;
+	playback.instantiate();
+	playback->offline_mode = true;
+	const float rate = symphony_offline_rate();
+	for (int i = 0; i < clip_count; i++) {
+		if (clips[i].registered) {
+			clips[i].usable = clips[i].desc.pcm != nullptr;
+		}
+	}
+	playback->_bind_music_stream(Ref<AudioStreamSymphonyMusic>(this), (uint64_t)p_seed, rate);
+	if (!playback->_prepare_pools()) {
+		return Ref<AudioStreamPlaybackSymphonyMusic>();
 	}
 	return playback;
 }
@@ -243,6 +395,9 @@ AudioStreamSymphonyMusic::~AudioStreamSymphonyMusic() {
 	for (int i = 0; i < clip_count; i++) {
 		if (clips[i].registered) {
 			cache->release(clips[i].cache_key != StringName() ? clips[i].cache_key : clips[i].key);
+			if (clips[i].view_key != StringName()) {
+				cache->release(clips[i].view_key);
+			}
 			clips[i].registered = false;
 		}
 	}

@@ -20,7 +20,7 @@ SymphonyVoicePool::SymphonyVoicePool() {
 	slots = memnew_arr(VoiceSlot, pool_size);
 	slot_attenuation_curves = memnew_arr(Ref<Curve>, pool_size);
 	VoiceMetrics m;
-	metrics.store(m, std::memory_order_relaxed);
+	metrics.store(m);
 }
 
 SymphonyVoicePool::~SymphonyVoicePool() {
@@ -270,34 +270,34 @@ const SymphonyVoicePool::VoiceSlot *SymphonyVoicePool::get_slot(int p_index) con
 }
 
 int SymphonyVoicePool::get_active_voice_count() const {
-	VoiceMetrics m = metrics.load(std::memory_order_relaxed);
+	VoiceMetrics m = metrics.load();
 	return m.active;
 }
 
 int SymphonyVoicePool::get_virtual_voice_count() const {
-	VoiceMetrics m = metrics.load(std::memory_order_relaxed);
+	VoiceMetrics m = metrics.load();
 	return m.virtual_count;
 }
 
 int SymphonyVoicePool::get_stolen_this_frame() const {
-	VoiceMetrics m = metrics.load(std::memory_order_relaxed);
+	VoiceMetrics m = metrics.load();
 	return m.stolen_this_frame;
 }
 
 float SymphonyVoicePool::get_budget_percent() const {
-	VoiceMetrics m = metrics.load(std::memory_order_relaxed);
+	VoiceMetrics m = metrics.load();
 	return m.budget_percent;
 }
 
 float SymphonyVoicePool::get_occupancy_percent() const {
-	VoiceMetrics m = metrics.load(std::memory_order_relaxed);
+	VoiceMetrics m = metrics.load();
 	return m.occupancy_percent;
 }
 
 void SymphonyVoicePool::set_measured_budget_percent(float p_percent) {
-	VoiceMetrics m = metrics.load(std::memory_order_relaxed);
+	VoiceMetrics m = metrics.load();
 	m.budget_percent = p_percent;
-	metrics.store(m, std::memory_order_relaxed);
+	metrics.store(m);
 }
 
 int64_t SymphonyVoicePool::make_voice_handle(int p_slot) const {
@@ -972,14 +972,14 @@ void SymphonyVoicePool::process_frame() {
 	// Update LOD targets based on distance
 	update_lod_targets();
 
-	VoiceMetrics previous = metrics.load(std::memory_order_relaxed);
+	VoiceMetrics previous = metrics.load();
 	VoiceMetrics m;
 	m.active = active;
 	m.virtual_count = virtual_count;
 	m.stolen_this_frame = stolen_this_frame;
 	m.occupancy_percent = (pool_size > 0) ? ((float)active / (float)pool_size) * 100.0f : 0.0f;
 	m.budget_percent = previous.budget_percent;
-	metrics.store(m, std::memory_order_relaxed);
+	metrics.store(m);
 
 	stolen_this_frame = 0;
 }

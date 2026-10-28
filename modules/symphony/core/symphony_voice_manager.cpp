@@ -6,6 +6,7 @@
 #include "symphony_graph_package_retirement.h"
 #include "symphony_realtime_scope.h"
 #include "core/config/engine.h"
+#include "core/config/project_settings.h"
 #include "core/object/class_db.h"
 #include "core/object/object.h"
 #include "core/os/thread.h"
@@ -15,6 +16,7 @@
 
 #include <cfloat>
 #include <climits>
+#include <cstdint>
 
 SymphonyVoiceManager *SymphonyVoiceManager::singleton = nullptr;
 
@@ -26,6 +28,8 @@ void SymphonyVoiceManager::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_stolen_this_frame"), &SymphonyVoiceManager::get_stolen_this_frame);
 	ClassDB::bind_method(D_METHOD("set_max_voices", "max"), &SymphonyVoiceManager::set_max_voices);
 	ClassDB::bind_method(D_METHOD("get_max_voices"), &SymphonyVoiceManager::get_max_voices);
+	ClassDB::bind_method(D_METHOD("set_memory_budget_mib", "mib"), &SymphonyVoiceManager::set_memory_budget_mib);
+	ClassDB::bind_method(D_METHOD("get_memory_budget_mib"), &SymphonyVoiceManager::get_memory_budget_mib);
 	ClassDB::bind_method(D_METHOD("set_warning_threshold", "threshold"), &SymphonyVoiceManager::set_warning_threshold);
 	ClassDB::bind_method(D_METHOD("get_warning_threshold"), &SymphonyVoiceManager::get_warning_threshold);
 	ClassDB::bind_method(D_METHOD("set_critical_threshold", "threshold"), &SymphonyVoiceManager::set_critical_threshold);
@@ -54,6 +58,11 @@ static bool _symphony_editor_ui_session() {
 
 SymphonyVoiceManager::SymphonyVoiceManager() {
 	singleton = this;
+	int64_t configured_mib = 0;
+	if (ProjectSettings::get_singleton() && ProjectSettings::get_singleton()->has_setting("audio/symphony/memory_budget_mib")) {
+		configured_mib = (int64_t)ProjectSettings::get_singleton()->get_setting("audio/symphony/memory_budget_mib");
+	}
+	(void)set_memory_budget_mib(configured_mib);
 	if (AudioServer::get_singleton()) {
 		AudioServer::get_singleton()->add_update_callback(_update_callback, this);
 		update_callback_registered = true;
@@ -284,13 +293,50 @@ Dictionary SymphonyVoiceManager::get_debug_metrics() const {
 		d["memory_reserved_bytes"] = (int64_t)snap.reserved_bytes;
 		d["memory_peak_reserved_bytes"] = (int64_t)snap.peak_reserved_bytes;
 		d["memory_shared_pcm_bytes"] = (int64_t)snap.shared_pcm_bytes;
-		d["memory_global_used_bytes"] = (int64_t)(snap.reserved_bytes + snap.shared_pcm_bytes);
+		d["memory_working_bytes"] = (int64_t)snap.working_bytes;
+		d["memory_peak_used_bytes"] = (int64_t)snap.peak_used_bytes;
+		d["memory_rejected_admissions"] = (int64_t)snap.rejected_admissions;
+		d["memory_retained_pcm_bytes"] = (int64_t)snap.shared_pcm_bytes;
+		d["memory_reusable_bytes"] = (int64_t)snap.working_bytes;
+		d["memory_global_used_bytes"] = (int64_t)(snap.reserved_bytes + snap.shared_pcm_bytes + snap.working_bytes);
 		d["packages_active"] = (int)snap.active_packages;
 		d["packages_pending"] = (int)snap.pending_packages;
 		d["packages_outgoing"] = (int)snap.outgoing_packages;
 		d["packages_retired"] = (int)snap.retired_packages;
 	}
 	return d;
+}
+
+Error SymphonyVoiceManager::set_memory_budget_mib(int64_t p_mib) {
+	if (p_mib < 0) {
+		return ERR_INVALID_PARAMETER;
+	}
+	const uint64_t mib_unit = 1024ull * 1024ull;
+	size_t bytes = 0;
+	if (p_mib == 0) {
+		bytes = SymphonyMemoryBudget::DEFAULT_GLOBAL_BYTES;
+	} else if ((uint64_t)p_mib > (uint64_t)SIZE_MAX / mib_unit) {
+		return ERR_INVALID_PARAMETER;
+	} else {
+		bytes = (size_t)p_mib * (size_t)mib_unit;
+	}
+	SymphonyMemoryBudget *budget = SymphonyMemoryBudget::get_singleton();
+	if (!budget) {
+		return ERR_UNAVAILABLE;
+	}
+	if (bytes < budget->get_committed_bytes()) {
+		return ERR_BUSY;
+	}
+	budget->set_global_limit_bytes(bytes);
+	memory_budget_mib = (int)(bytes / mib_unit);
+	return OK;
+}
+
+int SymphonyVoiceManager::get_memory_budget_mib() const {
+	if (memory_budget_mib > 0) {
+		return memory_budget_mib;
+	}
+	return (int)(SymphonyMemoryBudget::DEFAULT_GLOBAL_BYTES / (1024ull * 1024ull));
 }
 
 void SymphonyVoiceManager::set_max_voices(int32_t p_max) {
@@ -367,6 +413,16 @@ void SymphonyVoiceManager::enforce_voice_limits() {
 	_enforce_voice_limits_at(symphony_time_usec());
 }
 
+// Floor stamps publish the low 32 bits of the microsecond clock. Modular
+// subtraction stays correct across the uint32 wrap for dwells under 2^32 µs.
+static bool _floor_change_within(uint64_t p_now_us, uint64_t p_changed_us, uint64_t p_dwell_us) {
+	if (p_changed_us == UINT64_MAX) {
+		return false;
+	}
+	const uint32_t delta = (uint32_t)p_now_us - (uint32_t)p_changed_us;
+	return delta < (uint32_t)p_dwell_us;
+}
+
 void SymphonyVoiceManager::_enforce_voice_limits_at(uint64_t p_now_us) {
 	// Audio thread only: fixed stack snapshots + per-voice atomics. No ObjectDB, heap containers,
 	// Resource access, package memory or graph compilation (plan §6, I6).
@@ -380,7 +436,7 @@ void SymphonyVoiceManager::_enforce_voice_limits_at(uint64_t p_now_us) {
 		BinaryMutex &mutex;
 		~ListUnlock() { mutex.unlock(); }
 	} list_unlock{ voice_lifetime_mutex };
-	const uint64_t seq = callback_seq.load(std::memory_order_acquire);
+	const uint32_t seq = callback_seq.load(std::memory_order_acquire);
 
 	struct VoiceSnapshot {
 		AudioStreamPlaybackSymphony *voice = nullptr;
@@ -409,7 +465,7 @@ void SymphonyVoiceManager::_enforce_voice_limits_at(uint64_t p_now_us) {
 		}
 		AudioStreamPlaybackSymphony *v = *it;
 		// Only voices that mixed during the previous callback interval count (paused/stopped drop out).
-		if (!v || !v->is_playing() || seq - v->get_last_mix_seq() > 1) {
+		if (!v || !v->is_playing() || (uint32_t)(seq - (uint32_t)v->get_last_mix_seq()) > 1u) {
 			continue;
 		}
 		VoiceSnapshot &snap = snapshots[voice_count];
@@ -466,7 +522,7 @@ void SymphonyVoiceManager::_enforce_voice_limits_at(uint64_t p_now_us) {
 				if (snap.floor >= snap.max_lod) {
 					continue;
 				}
-				if (snap.floor_changed_us != UINT64_MAX && (p_now_us - snap.floor_changed_us) < FLOOR_CHANGE_MIN_US) {
+				if (_floor_change_within(p_now_us, snap.floor_changed_us, FLOOR_CHANGE_MIN_US)) {
 					continue;
 				}
 				if (snap.cost > best_cost) {
@@ -502,7 +558,7 @@ void SymphonyVoiceManager::_enforce_voice_limits_at(uint64_t p_now_us) {
 			if (snap.floor <= 0) {
 				continue;
 			}
-			if (snap.floor_changed_us != UINT64_MAX && (p_now_us - snap.floor_changed_us) < RELEASE_DWELL_US) {
+			if (_floor_change_within(p_now_us, snap.floor_changed_us, RELEASE_DWELL_US)) {
 				continue;
 			}
 			// Going up a tier is projected to cost 1/0.6 of the current tier.

@@ -31,18 +31,22 @@ struct SymphonyMusicEvent {
 	float payload = 0.0f;
 	int32_t duration_ticks = 0;
 	int32_t generation = 0;
+	int32_t clip_event_id = -1; // ordinal in the submitted phrase, assigned before sorting
+	uint32_t playback_epoch = 0;
 };
 
 struct SymphonyMusicPhrase {
 	static constexpr int MAX_EVENTS = 4096;
 	int64_t start_tick = 0;
 	int32_t generation = 0;
+	uint32_t playback_epoch = 0;
 	int32_t event_count = 0;
 	SymphonyMusicEvent events[MAX_EVENTS];
 
 	void clear() {
 		start_tick = 0;
 		generation = 0;
+		playback_epoch = 0;
 		event_count = 0;
 	}
 
@@ -130,18 +134,27 @@ public:
 		snapshot_lock.store(transport.snapshot_at_frame(0));
 	}
 
-	bool submit_phrase(const SymphonyMusicPhrase &p_phrase) {
+	// Copies into preallocated current/next. p_sort is for direct unit tests.
+	// The audio callback passes false: the main thread already sorted.
+	bool adopt_phrase(const SymphonyMusicPhrase &p_phrase, bool p_sort) {
 		if (p_phrase.event_count < 0 || p_phrase.event_count > SymphonyMusicPhrase::MAX_EVENTS) {
 			return false;
 		}
-		SymphonyMusicPhrase incoming = p_phrase;
-		for (int i = 0; i < incoming.event_count; i++) {
-			incoming.events[i].generation = incoming.generation;
+		const bool activating = !has_current;
+		SymphonyMusicPhrase *dst = activating ? &current : &next;
+		dst->start_tick = p_phrase.start_tick;
+		dst->generation = p_phrase.generation;
+		dst->playback_epoch = p_phrase.playback_epoch;
+		dst->event_count = p_phrase.event_count;
+		for (int i = 0; i < p_phrase.event_count; i++) {
+			dst->events[i] = p_phrase.events[i];
+			dst->events[i].generation = p_phrase.generation;
+			dst->events[i].playback_epoch = p_phrase.playback_epoch;
 		}
-		incoming.sort_stable();
-		// The first phrase is the active one. A later submit is pending until its boundary.
-		if (!has_current) {
-			current = incoming;
+		if (p_sort) {
+			dst->sort_stable();
+		}
+		if (activating) {
 			has_current = true;
 			event_cursor = 0;
 			active_generation = current.generation;
@@ -149,9 +162,12 @@ public:
 			_skip_elapsed_on_activate();
 			return true;
 		}
-		next = incoming;
 		has_next = true;
 		return true;
+	}
+
+	bool submit_phrase(const SymphonyMusicPhrase &p_phrase) {
+		return adopt_phrase(p_phrase, true);
 	}
 
 	bool replace_future(int64_t p_from_tick, int32_t p_generation) {
@@ -300,7 +316,21 @@ private:
 		_push_notice(NoticeKind::PhraseLate, active_generation, 0, 0, (float)skipped);
 	}
 
+	void _compact_carry() {
+		if (carry_cursor <= 0) {
+			return;
+		}
+		const int live = carry_count - carry_cursor;
+		for (int i = 0; i < live; i++) {
+			carry_events[i] = carry_events[carry_cursor + i];
+			carry_frames[i] = carry_frames[carry_cursor + i];
+		}
+		carry_count = live;
+		carry_cursor = 0;
+	}
+
 	bool _push_carry(const SymphonyMusicEvent &p_ev, uint64_t p_frame) {
+		_compact_carry();
 		if (carry_count >= CARRY_CAP) {
 			return false;
 		}
