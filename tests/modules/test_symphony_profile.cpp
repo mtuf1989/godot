@@ -2,8 +2,10 @@
 /*  test_symphony_profile.cpp                                             */
 /*  Suite: [Symphony][Profile] — mixed-workload callback percentiles.     */
 /*                                                                        */
-/*  Default smoke is about one second per workload. Full soak, with each  */
-/*  spectral workload using SYMPHONY_PROFILE_SECONDS and no shorter cap:  */
+/*  Default smoke is about one second per workload. Samples live in a      */
+/*  fixed log2-microsecond histogram, not a duration-growing vector.      */
+/*  Full soak, with each spectral workload using SYMPHONY_PROFILE_SECONDS */
+/*  and no shorter cap:                                                   */
 /*    SYMPHONY_PROFILE_SECONDS=1800 bin/godot… --test \                    */
 /*      --test-case='*Symphony*Profile*30*'                                */
 /*  Prefer template_release before treating P99 as a release gate.        */
@@ -29,6 +31,8 @@ TEST_FORCE_LINK(test_symphony_profile)
 #include "servers/audio/audio_effect.h"
 
 #include <cmath>
+#include <cstdio>
+#include <ctime>
 
 namespace TestSymphonyProfile {
 
@@ -65,13 +69,74 @@ static int64_t _debug_i64(const char *p_key) {
 	return (int64_t)value;
 }
 
-static void _percentile(Vector<uint64_t> &p_samples, uint64_t &r_p50, uint64_t &r_p95, uint64_t &r_p99) {
-	REQUIRE(p_samples.size() > 0);
-	p_samples.sort();
-	const int n = p_samples.size();
-	r_p50 = p_samples[(n - 1) / 2];
-	r_p95 = p_samples[CLAMP((int)((n - 1) * 0.95), 0, n - 1)];
-	r_p99 = p_samples[CLAMP((int)((n - 1) * 0.99), 0, n - 1)];
+// Log2 microsecond histogram. Rank is the bucket that contains the sample, so
+// the printed low/high edges are the percentile resolution. A 43 µs sample
+// lands in 32-64, which is a 32 µs bin, not an exact 43.
+struct UsecHistogram {
+	uint32_t counts[SYMPHONY_METER_BUCKETS] = {};
+	uint64_t n = 0;
+
+	void add(uint64_t p_us) {
+		const int bucket = symphony_meter_bucket(p_us);
+		if (counts[bucket] != UINT32_MAX) {
+			counts[bucket]++;
+		}
+		n++;
+	}
+
+	bool percentile(double p_rank, uint64_t &r_lo, uint64_t &r_hi) const {
+		if (n == 0 || n > UINT32_MAX) {
+			return false;
+		}
+		return symphony_meter_percentile(counts, SYMPHONY_METER_BUCKETS, (uint32_t)n, p_rank, r_lo, r_hi);
+	}
+};
+
+struct MemSnap {
+	int64_t used = -1;
+	int64_t reserved = -1;
+	int64_t shared_pcm = -1;
+	int64_t working = -1;
+	int64_t peak = -1;
+};
+
+static MemSnap _mem_snap() {
+	MemSnap snap;
+	snap.used = _debug_i64("memory_global_used_bytes");
+	snap.reserved = _debug_i64("memory_reserved_bytes");
+	snap.shared_pcm = _debug_i64("memory_shared_pcm_bytes");
+	snap.working = _debug_i64("memory_working_bytes");
+	snap.peak = _debug_i64("memory_peak_used_bytes");
+	return snap;
+}
+
+static String _bucket_text(uint64_t p_lo, uint64_t p_hi) {
+	if (p_hi == UINT64_MAX) {
+		return vformat("%d-inf", (int64_t)p_lo);
+	}
+	return vformat("%d-%d", (int64_t)p_lo, (int64_t)p_hi);
+}
+
+static uint64_t _bucket_width(uint64_t p_lo, uint64_t p_hi) {
+	if (p_hi == UINT64_MAX || p_hi <= p_lo) {
+		return UINT64_MAX;
+	}
+	return p_hi - p_lo;
+}
+
+// Thread CPU time. Sampled around render so a wall-clock spike can be split
+// into on-CPU mix time and time the thread was not running. UINT64_MAX means
+// this platform has no thread CPU clock.
+static uint64_t _thread_cpu_usec() {
+#if defined(CLOCK_THREAD_CPUTIME_ID)
+	struct timespec ts;
+	if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts) != 0) {
+		return UINT64_MAX;
+	}
+	return (uint64_t)ts.tv_sec * 1000000ull + (uint64_t)ts.tv_nsec / 1000ull;
+#else
+	return UINT64_MAX;
+#endif
 }
 
 static void _connect(GraphDescription &r_desc, int p_from, int p_from_pin, int p_to, int p_to_pin) {
@@ -228,7 +293,7 @@ static GraphDescription _instrument() {
 	return desc;
 }
 
-static void _run_workload(const Workload &p_workload, float p_mix_rate, int p_callback_frames, int p_seconds, bool p_require_gate) {
+static void _run_workload(const Workload &p_workload, float p_mix_rate, int p_callback_frames, int p_seconds, bool p_require_gate, bool p_repeat_memory = false) {
 	REQUIRE(p_workload.spatial + p_workload.phase_vocoders + p_workload.spectral_gates <= p_workload.sfx);
 	REQUIRE(p_callback_frames > 0);
 
@@ -245,6 +310,19 @@ static void _run_workload(const Workload &p_workload, float p_mix_rate, int p_ca
 	} restore{ dummy, dummy->get_mix_rate() };
 	dummy->set_mix_rate((int)p_mix_rate);
 
+	// Stretch scratch stays with a live playback and is released when that playback
+	// is destroyed. Graph arenas on the freelist stay with the stream and are freed
+	// with it. Stereo PCM and budgeted graph bytes release with their last owner.
+	// peak_used_bytes is a high-water mark and is not reclaimed.
+	const MemSnap baseline = _mem_snap();
+	REQUIRE(baseline.used >= 0);
+	const int pass_count = (p_repeat_memory || p_require_gate) ? 2 : 1;
+	int64_t first_warmup_used = -1;
+	int64_t peak_after_first = baseline.peak;
+
+	for (int pass = 0; pass < pass_count; pass++) {
+	const int pass_seconds = pass == 0 ? p_seconds : 1;
+	const bool pass_gate = p_require_gate && pass == 0;
 	const uint64_t prepare_start = OS::get_singleton()->get_ticks_usec();
 	Vector<Ref<AudioStreamSymphony>> streams;
 	Vector<Ref<AudioStreamPlayback>> playbacks;
@@ -349,9 +427,22 @@ static void _run_workload(const Workload &p_workload, float p_mix_rate, int p_ca
 	const uint64_t prepare_us = OS::get_singleton()->get_ticks_usec() - prepare_start;
 
 	const uint64_t deadline_us = (uint64_t)((double)p_callback_frames / (double)p_mix_rate * 1.0e6);
-	const uint64_t end_us = OS::get_singleton()->get_ticks_usec() + uint64_t(p_seconds) * 1'000'000ull;
-	Vector<uint64_t> samples;
-	uint64_t misses = 0;
+	const uint64_t end_us = OS::get_singleton()->get_ticks_usec() + uint64_t(pass_seconds) * 1'000'000ull;
+	// time() is independent of the engine tick clock. The loop stops when either
+	// clock says the pass is over, so a stuck usec clock cannot run past the soak.
+	const time_t wall_start = time(nullptr);
+	const time_t wall_deadline = wall_start + pass_seconds + 2;
+	time_t last_beat = wall_start;
+	bool stopped_on_wall = false;
+	UsecHistogram wall_hist;
+	UsecHistogram cpu_hist;
+	uint64_t wall_misses = 0;
+	uint64_t scheduler_stalls = 0;
+	uint64_t mix_deadline_misses = 0;
+	uint64_t unclassified_wall_misses = 0;
+	uint64_t max_wall_us = 0;
+	uint64_t max_cpu_us = 0;
+	bool cpu_known = true;
 	double energy = 0.0;
 	AudioFrame *chunk = (AudioFrame *)memalloc(sizeof(AudioFrame) * p_callback_frames);
 	AudioFrame *wet = (AudioFrame *)memalloc(sizeof(AudioFrame) * p_callback_frames);
@@ -382,25 +473,66 @@ static void _run_workload(const Workload &p_workload, float p_mix_rate, int p_ca
 	for (int i = 0; i < 4; i++) {
 		render_once();
 	}
-	const int64_t memory_used_after_warmup = _debug_i64("memory_global_used_bytes");
+	const MemSnap warmed = _mem_snap();
+	uint64_t loop_iters = 0;
 	while (OS::get_singleton()->get_ticks_usec() < end_us) {
-		const uint64_t t0 = OS::get_singleton()->get_ticks_usec();
+		if ((++loop_iters & 0xffff) == 0) {
+			const time_t now = time(nullptr);
+			if (now >= wall_deadline) {
+				stopped_on_wall = true;
+				break;
+			}
+			if (now - last_beat >= 60) {
+				fprintf(stderr, "profile beat workload=%s pass=%d elapsed_s=%ld\n", p_workload.name, pass, (long)(now - wall_start));
+				last_beat = now;
+			}
+		}
+		const uint64_t cpu0 = _thread_cpu_usec();
+		const uint64_t wall0 = OS::get_singleton()->get_ticks_usec();
 		render_once();
-		const uint64_t dt = OS::get_singleton()->get_ticks_usec() - t0;
-		samples.push_back(dt);
-		if (dt > deadline_us) {
-			misses++;
+		const uint64_t wall1 = OS::get_singleton()->get_ticks_usec();
+		const uint64_t cpu1 = _thread_cpu_usec();
+		const uint64_t wall_us = wall1 - wall0;
+		wall_hist.add(wall_us);
+		if (wall_us > max_wall_us) {
+			max_wall_us = wall_us;
+		}
+		const bool this_cpu_known = cpu0 != UINT64_MAX && cpu1 != UINT64_MAX && cpu1 >= cpu0;
+		uint64_t cpu_us = 0;
+		if (!this_cpu_known) {
+			cpu_known = false;
+		} else {
+			cpu_us = cpu1 - cpu0;
+			if (cpu_us > wall_us) {
+				cpu_us = wall_us;
+			}
+			cpu_hist.add(cpu_us);
+			if (cpu_us > max_cpu_us) {
+				max_cpu_us = cpu_us;
+			}
+		}
+		if (wall_us > deadline_us) {
+			wall_misses++;
+			if (!this_cpu_known) {
+				unclassified_wall_misses++;
+			} else if (cpu_us > deadline_us) {
+				mix_deadline_misses++;
+			} else {
+				scheduler_stalls++;
+			}
 		}
 		energy += (double)chunk[0].left * (double)chunk[0].left;
 	}
 	memfree(chunk);
 	memfree(wet);
 
-	const int64_t memory_used_before_teardown = _debug_i64("memory_global_used_bytes");
-	const int64_t memory_peak_before_teardown = _debug_i64("memory_peak_used_bytes");
+	const MemSnap before_teardown = _mem_snap();
 
-	uint64_t p50 = 0, p95 = 0, p99 = 0;
-	_percentile(samples, p50, p95, p99);
+	uint64_t p50_lo = 0, p50_hi = 0, p95_lo = 0, p95_hi = 0, p99_lo = 0, p99_hi = 0;
+	uint64_t cpu_p99_lo = 0, cpu_p99_hi = 0;
+	const bool have_wall = wall_hist.percentile(0.50, p50_lo, p50_hi) && wall_hist.percentile(0.95, p95_lo, p95_hi) && wall_hist.percentile(0.99, p99_lo, p99_hi);
+	const bool have_cpu_p99 = cpu_hist.percentile(0.99, cpu_p99_lo, cpu_p99_hi);
+	REQUIRE(have_wall);
 
 	for (int i = 0; i < voices.size(); i++) {
 		if (voices[i].is_valid()) {
@@ -421,24 +553,70 @@ static void _run_workload(const Workload &p_workload, float p_mix_rate, int p_ca
 	if (SymphonyVoiceManager::get_singleton()) {
 		SymphonyVoiceManager::get_singleton()->process_deferred_lod();
 	}
-	const int64_t memory_used_after_teardown = _debug_i64("memory_global_used_bytes");
+	const MemSnap after = _mem_snap();
+	const int device_underruns = AudioDriver::get_singleton() ? AudioDriver::get_singleton()->get_output_underrun_count() : -1;
 	MESSAGE("profile workload=", String(p_workload.name),
-			" rate=", p_mix_rate, " cb=", p_callback_frames,
-			" s=", p_seconds, " n=", samples.size(),
+			" pass=", pass, " rate=", p_mix_rate, " cb=", p_callback_frames,
+			" s=", pass_seconds, " n=", wall_hist.n,
+			" histogram=log2_microseconds percentile=nearest_rank_bucket_low",
 			" prepare_us=", prepare_us,
-			" p50_us=", p50, " p95_us=", p95, " p99_us=", p99,
-			" deadline_us=", deadline_us, " deadline_misses=", misses,
-			" p99_fraction=", (deadline_us > 0 ? (double)p99 / (double)deadline_us : 0.0),
-			" memory_used_after_warmup=", memory_used_after_warmup,
-			" memory_used_before_teardown=", memory_used_before_teardown,
-			" memory_peak_before_teardown=", memory_peak_before_teardown,
-			" memory_used_after_teardown=", memory_used_after_teardown);
+			" p50_us=", p50_lo, " p50_bucket=", _bucket_text(p50_lo, p50_hi), " p50_width_us=", _bucket_width(p50_lo, p50_hi),
+			" p95_us=", p95_lo, " p95_bucket=", _bucket_text(p95_lo, p95_hi), " p95_width_us=", _bucket_width(p95_lo, p95_hi),
+			" p99_us=", p99_lo, " p99_bucket=", _bucket_text(p99_lo, p99_hi), " p99_width_us=", _bucket_width(p99_lo, p99_hi),
+			" cpu_p99_us=", (have_cpu_p99 ? String(vformat("%d", (int64_t)cpu_p99_lo)) : String("unavailable")),
+			" cpu_p99_bucket=", (have_cpu_p99 ? _bucket_text(cpu_p99_lo, cpu_p99_hi) : String("unavailable")),
+			" deadline_us=", deadline_us,
+			" stopped_on=", String(stopped_on_wall ? "wall" : "ticks"),
+			" tight_loop_wall_misses=", wall_misses,
+			" scheduler_stalls=", scheduler_stalls,
+			" mix_deadline_misses=", mix_deadline_misses,
+			" max_wall_us=", max_wall_us, " max_cpu_us=", (cpu_known ? String(vformat("%d", (int64_t)max_cpu_us)) : String("unavailable")),
+			" device_underruns=", (device_underruns < 0 ? String("unavailable") : String(vformat("%d", device_underruns))),
+			" p99_fraction=", (deadline_us > 0 ? (double)p99_hi / (double)deadline_us : 0.0),
+			" memory_baseline_used=", baseline.used,
+			" memory_baseline_reserved=", baseline.reserved,
+			" memory_baseline_shared_pcm=", baseline.shared_pcm,
+			" memory_baseline_working=", baseline.working,
+			" memory_baseline_peak=", baseline.peak,
+			" memory_used_after_warmup=", warmed.used,
+			" memory_used_before_teardown=", before_teardown.used,
+			" memory_peak_before_teardown=", before_teardown.peak,
+			" memory_used_after_teardown=", after.used,
+			" memory_after_reserved=", after.reserved,
+			" memory_after_shared_pcm=", after.shared_pcm,
+			" memory_after_working=", after.working,
+			" retained_caches=none_after_playback_and_stream_destruction");
+	fflush(stdout);
 
-	CHECK(samples.size() > 10);
+	CHECK(wall_hist.n > 10);
 	CHECK(energy > 0.0);
-	if (p_require_gate) {
-		CHECK(p99 * 2 < deadline_us);
-		CHECK(misses == 0);
+	CHECK(after.used == baseline.used);
+	CHECK(after.reserved == baseline.reserved);
+	CHECK(after.shared_pcm == baseline.shared_pcm);
+	CHECK(after.working == baseline.working);
+	if (pass == 0) {
+		first_warmup_used = warmed.used;
+		peak_after_first = after.peak;
+	} else {
+		CHECK(warmed.used == first_warmup_used);
+		CHECK(after.peak == peak_after_first);
+	}
+	if (pass_gate) {
+		REQUIRE(p99_hi != UINT64_MAX);
+		CHECK(p99_hi * 2 < deadline_us);
+		if (have_cpu_p99) {
+			REQUIRE(cpu_p99_hi != UINT64_MAX);
+			CHECK(cpu_p99_hi * 2 < deadline_us);
+		}
+		// Wall-clock spikes whose on-CPU time stayed under the deadline are
+		// scheduler stalls. A mix miss is on-CPU time over the deadline.
+		// Device underruns are the driver counter above, not this tight loop.
+		CHECK(mix_deadline_misses == 0);
+		if (!cpu_known) {
+			CHECK(wall_misses == 0);
+		}
+		CHECK(unclassified_wall_misses == 0);
+	}
 	}
 }
 
@@ -480,6 +658,10 @@ TEST_CASE("[Symphony][Profile] web baseline accepts non-128 callback sizes") {
 
 TEST_CASE("[Symphony][Profile] web spectral baseline at 48 kHz / 128") {
 	_run_workload(_web(true), 48000.0f, 128, MIN(1, _profile_seconds()), false);
+}
+
+TEST_CASE("[Symphony][Profile] repeated workload returns to the byte baseline") {
+	_run_workload(_web(true), 48000.0f, 128, MIN(1, _profile_seconds()), false, true);
 }
 
 TEST_CASE("[Symphony][Profile] desktop baseline at 48 kHz / 128") {

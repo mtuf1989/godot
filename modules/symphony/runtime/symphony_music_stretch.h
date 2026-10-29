@@ -143,6 +143,7 @@ public:
 	}
 
 	// Main thread: free after audio acknowledged return.
+	// Scratch stays allocated so the next clip on this context does not reallocate.
 	void reclaim() {
 		ERR_FAIL_COND(get_ownership() == SymphonyStretchOwnership::Active);
 		_release_lease();
@@ -152,6 +153,12 @@ public:
 		src_acc = 0.0;
 		reuse_generation.fetch_add(1, std::memory_order_release);
 		set_ownership(SymphonyStretchOwnership::Free);
+	}
+
+	// Scratch is process storage for this context. Reclaim keeps it. Destruction frees it.
+	~SymphonyStretchContext() {
+		_release_scratch_charge();
+		_release_lease();
 	}
 
 	// Audio thread: render p_frames of stretched audio into p_out (additive).
@@ -195,6 +202,16 @@ public:
 	[[nodiscard]] int output_latency() const { return stretch.outputLatency(); }
 
 private:
+	void _release_scratch_charge() {
+		if (scratch_charged == 0) {
+			return;
+		}
+		if (SymphonyMemoryBudget *budget = SymphonyMemoryBudget::get_singleton()) {
+			budget->release_working(scratch_charged);
+		}
+		scratch_charged = 0;
+	}
+
 	void _release_lease() {
 		if (!lease_held) {
 			return;
